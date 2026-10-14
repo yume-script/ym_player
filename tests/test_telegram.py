@@ -294,3 +294,99 @@ def test_config_telegram_fields(monkeypatch, tmp_path):
     # 빈 api_hash로 저장하면 기존 값 유지
     config_store.replace_sources(cfg, [{"id": "t", "type": "telegram", "api_id": "99", "api_hash": ""}])
     assert cfg["sources"][0]["api_hash"] == "H"
+
+
+def _source():
+    return telegram_src.TelegramSource(config_store.get_source(config_store.load(), "tg"))
+
+
+def test_cached_list_does_not_wait_for_telegram(env):
+    """이미 색인한 채널은 텔레그램이 느려도 DB에서 바로 돌려주고, 새 영상은 뒤에서 받는다."""
+    env.authorized = True
+
+    async def main():
+        tg = _source()
+        first = await tg.videos([777], limit=10)
+        assert first["items"][0]["msg"] == 999 and first["syncing"] is False  # 첫 색인은 기다림
+
+        # 새 영상이 올라왔고 텔레그램 응답이 느려졌다
+        env.msgs[1002] = video_msg(1002, caption="새 영상")
+        slow = env.iter_messages
+
+        async def slow_iter(*a, **k):
+            await asyncio.sleep(0.5)
+            async for m in slow(*a, **k):
+                yield m
+        env.iter_messages = slow_iter
+        telegram_src.save_sync_state("tg", 777, latest_at=0)  # 2분 지난 것처럼
+
+        loop = asyncio.get_running_loop()
+        t0 = loop.time()
+        cached = await tg.videos([777], limit=10)
+        assert loop.time() - t0 < 0.3, "느린 텔레그램을 기다리면 안 된다"
+        assert cached["syncing"] is True and cached["items"][0]["msg"] == 999
+        await tg._tasks[("latest", 777)]
+        fresh = await tg.videos([777], limit=10)
+        assert fresh["items"][0]["msg"] == 1002 and fresh["syncing"] is False
+        # 뒤 작업을 끝까지 정리
+        await asyncio.gather(*[t for t in tg._tasks.values() if not t.done()], return_exceptions=True)
+
+    asyncio.run(main())
+
+
+def test_older_pages_are_prefetched_in_background(env):
+    env.authorized = True
+
+    async def main():
+        tg = _source()
+        await tg.videos([777], limit=40)          # 최신 400개(133개 영상) 색인
+        assert telegram_src.sync_state("tg", 777)["oldest"] == 601
+        page = await tg.videos([777], offset=60, limit=40)  # 이 페이지는 꽉 차지만 뒤에 남은 게 33개 < 80
+        assert len(page["items"]) == 40 and telegram_src.sync_state("tg", 777)["oldest"] == 601  # 기다리진 않음
+        await tg._tasks[("older", 777)]  # 다음 페이지 몫은 뒤에서
+        assert telegram_src.sync_state("tg", 777)["oldest"] == 201
+        await asyncio.gather(*[t for t in tg._tasks.values() if not t.done()], return_exceptions=True)
+
+    asyncio.run(main())
+
+
+def test_thumbnails_reuse_scanned_messages_and_dedupe(env):
+    env.authorized = True
+    calls = {"get": 0, "download": 0}
+    orig_get, orig_dl = env.get_messages, env.download_media
+
+    async def counted_get(peer, ids):
+        calls["get"] += 1
+        return await orig_get(peer, ids)
+
+    async def counted_dl(msg, file=bytes, thumb=None):
+        calls["download"] += 1
+        await asyncio.sleep(0.05)
+        return await orig_dl(msg, file=file, thumb=thumb)
+
+    env.get_messages, env.download_media = counted_get, counted_dl
+
+    async def main():
+        tg = _source()
+        await tg.videos([777], limit=10, fill=False)
+        prefetch = [t for k, t in tg._tasks.items() if k[0] == "thumbs"]
+        assert prefetch, "새로 색인한 영상의 썸네일을 뒤에서 미리 받아야 한다"
+        await asyncio.gather(*prefetch)
+        assert calls["download"] == telegram_src.THUMB_PREFETCH and calls["get"] == 0  # 훑을 때 받은 메시지 재사용
+        # 미리 받은 건 디스크에서, 동시에 같은 걸 달라고 하면 한 번만 받는다
+        before = calls["download"]
+        await tg.thumbnail(777, 999)
+        # 603: 훑을 때 받은 메시지지만 미리 받은 60개에는 없음
+        paths = await asyncio.gather(*(tg.thumbnail(777, 603) for _ in range(5)))
+        assert len(set(paths)) == 1 and calls["download"] == before + 1
+        assert telegram_src.THUMB_CONCURRENCY >= 1 and calls["get"] == 0
+
+    asyncio.run(main())
+
+
+def test_status_reports_crypto_speedup(env):
+    async def main():
+        st = await _source().status()
+        assert st["fast_crypto"] == telegram_src.fast_crypto()
+
+    asyncio.run(main())

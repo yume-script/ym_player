@@ -465,17 +465,18 @@ async def tg_videos(request, tg):
 
 @telegram_api
 async def tg_home(request, tg):
-    """홈 줄: 이어보기 + 채널마다 최신 영상 몇 개."""
-    rows = []
-    for ch in tg.channels:
+    """홈 줄: 이어보기 + 채널마다 최신 영상 몇 개. 채널들을 동시에, 오래된 쪽 채우기 없이."""
+    async def one(ch):
         try:
-            data = await tg.videos([ch], limit=12)
+            data = await tg.videos([ch], limit=12, fill=False)
         except telegram_src.TgError:
             raise
         except Exception as e:
             log.warning("telegram 홈 %s 실패: %s", ch, e)
-            continue
-        rows.append({"channel": ch, "items": data["items"]})
+            return None
+        return {"channel": ch, "items": data["items"]}
+
+    rows = [r for r in await asyncio.gather(*(one(ch) for ch in tg.channels)) if r]
     return web.json_response({"success": True, "continue": telegram_src.continue_watching(tg.sid, tg.channels),
                               "channels": rows})
 

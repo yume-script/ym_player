@@ -28,7 +28,15 @@ STREAM_CHUNK = 512 * 1024
 LATEST_SYNC_SEC = 120
 SCAN_BATCH = 400          # 한 번에 훑는 메시지 수 (동영상이 아닌 글/사진도 섞여 있다)
 OLDER_BATCHES_PER_PAGE = 3
-DOC_CACHE_SIZE = 64
+MSG_CACHE_SIZE = 3000     # 훑으면서 받은 메시지 객체를 기억 -> 썸네일/재생 때 다시 요청하지 않음
+THUMB_CONCURRENCY = 4     # 썸네일 동시 다운로드 수 (텔레그램 요청 제한에 안 걸리게)
+THUMB_PREFETCH = 60       # 새로 색인한 영상 중 미리 받아 둘 썸네일 수 (채널마다, 한 번 훑을 때)
+
+
+def fast_crypto():
+    """cryptg(C 암호화 모듈)가 있으면 Telethon이 알아서 쓴다. 없으면 순수 파이썬 AES라 큰 파일이 느리다."""
+    import importlib.util
+    return importlib.util.find_spec("cryptg") is not None
 
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".mpeg", ".mpg", ".ts"}
 # 브라우저 <video>에 넘길 Content-Type. mkv는 Chrome의 webm(Matroska) 파서가 대개 읽어서 webm으로 알린다
@@ -259,7 +267,12 @@ class TelegramSource:
         self._connect_lock = asyncio.Lock()
         self._sync_locks = {}
         self._code_hash = None
-        self._docs = OrderedDict()  # (channel, msg) -> Document (Range 요청마다 메시지를 다시 받지 않게)
+        self._msgs = OrderedDict()  # (channel, msg) -> Message (썸네일/Range 요청마다 메시지를 다시 받지 않게)
+        self._tasks = {}            # 뒤에서 도는 작업 (같은 일을 겹쳐 돌리지 않게 이름으로)
+        self._thumb_sem = asyncio.Semaphore(THUMB_CONCURRENCY)
+        self._thumb_inflight = {}
+        if not fast_crypto():
+            log.warning("cryptg가 없어 텔레그램 암호화를 순수 파이썬으로 처리합니다 (느림): pip install cryptg")
 
     def matches(self, src):
         return (str(src.get("api_id") or "").strip(), str(src.get("api_hash") or "").strip()) == (self.api_id, self.api_hash)
@@ -304,12 +317,13 @@ class TelegramSource:
         try:
             client = await self.get_client()
             if not await client.is_user_authorized():
-                return {"authorized": False, "phone": self.phone}
+                return {"authorized": False, "phone": self.phone, "fast_crypto": fast_crypto()}
             me = await client.get_me()
             name = " ".join(x for x in (getattr(me, "first_name", ""), getattr(me, "last_name", "")) if x)
-            return {"authorized": True, "name": name or getattr(me, "username", "") or "", "phone": self.phone}
+            return {"authorized": True, "name": name or getattr(me, "username", "") or "", "phone": self.phone,
+                    "fast_crypto": fast_crypto()}
         except TgError as e:
-            return {"authorized": False, "error": str(e), "phone": self.phone}
+            return {"authorized": False, "error": str(e), "phone": self.phone, "fast_crypto": fast_crypto()}
 
     async def send_code(self, phone=""):
         phone = re.sub(r"[\s-]", "", phone or self.phone)
@@ -388,6 +402,22 @@ class TelegramSource:
             raise TgError("이 채널을 찾을 수 없습니다 (채널에서 나갔거나 접근할 수 없음).")
         return InputPeerChannel(int(channel), int(row["access_hash"]))
 
+    # ----- 뒤에서 돌리기 -----
+    def background(self, key, make_coro):
+        """같은 key의 작업이 이미 돌고 있으면 새로 띄우지 않는다. 실패는 로그만."""
+        task = self._tasks.get(key)
+        if task and not task.done():
+            return task
+
+        async def runner():
+            try:
+                await make_coro()
+            except Exception as e:
+                log.warning("telegram 뒤 작업 %s 실패: %s", key, e)
+
+        task = self._tasks[key] = asyncio.ensure_future(runner())
+        return task
+
     # ----- 색인 -----
     def _lock(self, channel):
         return self._sync_locks.setdefault(channel, asyncio.Lock())
@@ -401,8 +431,12 @@ class TelegramSource:
             item = message_to_video(msg)
             if item:
                 items.append(item)
-                self._remember_doc(channel, msg)
+                self._remember(channel, msg)
         upsert_videos(self.sid, channel, items)
+        # 새로 찾은 영상의 썸네일은 화면이 달라고 하기 전에 뒤에서 미리 받아 둔다
+        wanted = [it["msg"] for it in items if it["has_thumb"]][:THUMB_PREFETCH]
+        if wanted:
+            self.background(("thumbs", channel, wanted[0]), lambda: self.prefetch_thumbs(channel, wanted))
         return items, ids
 
     async def sync_latest(self, channel, force=False):
@@ -429,48 +463,67 @@ class TelegramSource:
             save_sync_state(self.sid, channel, oldest=min(ids + [st["oldest"]]), complete=int(len(ids) < SCAN_BATCH))
             return bool(ids)
 
-    async def videos(self, channels, offset=0, limit=40, q="", sort="latest"):
-        """목록. 채널 하나를 최신순으로 볼 때는 모자라면 오래된 쪽을 더 훑어서 채운다."""
+    async def videos(self, channels, offset=0, limit=40, q="", sort="latest", fill=True):
+        """목록. 이미 색인한 채널은 DB에서 바로 돌려주고 새 영상 받기는 뒤에서 한다 (기다리지 않음).
+
+        - 처음 보는 채널만 첫 SCAN_BATCH개를 받을 때까지 기다린다 (보여줄 게 없으니까)
+        - 채널 하나를 최신순으로 내려 보다가 색인이 모자라면 그때만 오래된 쪽을 기다려서 채우고,
+          다음 페이지 몫은 뒤에서 미리 훑어 둔다 -> 다음 스크롤은 바로 나온다
+        - fill=False(홈 줄)면 오래된 쪽은 건드리지 않는다
+        """
         channels = [c for c in channels if c in self.channels] if self.channels else []
+        syncing = False
         for c in channels:
-            try:
-                await self.sync_latest(c)
-            except TgError:
-                raise
-            except Exception as e:  # 네트워크 문제여도 이미 색인된 건 보여준다
-                log.warning("telegram sync_latest %s 실패: %s", c, e)
+            st = sync_state(self.sid, c)
+            if not st["newest"]:
+                try:
+                    await self.sync_latest(c)
+                except TgError:
+                    raise
+                except Exception as e:  # 네트워크 문제여도 다른 채널은 보여준다
+                    log.warning("telegram 첫 색인 %s 실패: %s", c, e)
+            elif time.time() - st["latest_at"] >= LATEST_SYNC_SEC:
+                self.background(("latest", c), lambda c=c: self.sync_latest(c))
+                syncing = True
         rows, total = query_videos(self.sid, channels, offset, limit, q, sort)
-        if len(channels) == 1 and not q and sort == "latest":
+        if fill and len(channels) == 1 and not q and sort == "latest":
+            ch = channels[0]
             for _ in range(OLDER_BATCHES_PER_PAGE):
-                if len(rows) >= limit or not await self.sync_older(channels[0]):
+                if len(rows) >= limit or not await self.sync_older(ch):
                     break
                 rows, total = query_videos(self.sid, channels, offset, limit, q, sort)
+            ahead = total - (offset + len(rows))
+            if ahead < limit * 2 and not sync_state(self.sid, ch)["complete"]:
+                self.background(("older", ch), lambda: self.sync_older(ch))
         complete = all(sync_state(self.sid, c)["complete"] for c in channels)
-        return {"items": rows, "total": total, "more": (offset + len(rows) < total) or not complete}
+        return {"items": rows, "total": total, "more": (offset + len(rows) < total) or not complete,
+                "syncing": syncing}
 
     # ----- 파일 -----
-    def _remember_doc(self, channel, msg):
-        doc = getattr(msg, "document", None) or getattr(msg, "video", None)
-        if doc is None:
+    def _remember(self, channel, msg):
+        if (getattr(msg, "document", None) or getattr(msg, "video", None)) is None:
             return
-        self._docs[(channel, int(msg.id))] = doc
-        self._docs.move_to_end((channel, int(msg.id)))
-        while len(self._docs) > DOC_CACHE_SIZE:
-            self._docs.popitem(last=False)
+        key = (channel, int(msg.id))
+        self._msgs[key] = msg
+        self._msgs.move_to_end(key)
+        while len(self._msgs) > MSG_CACHE_SIZE:
+            self._msgs.popitem(last=False)
 
-    async def _message(self, channel, msg):
+    async def _message(self, channel, msg, fresh=False):
+        key = (channel, int(msg))
+        if not fresh and key in self._msgs:
+            self._msgs.move_to_end(key)
+            return self._msgs[key]
         client = await self.authorized_client()
         m = await client.get_messages(await self.peer(channel), ids=int(msg))
         if not m:
             raise TgError("텔레그램에서 이 메시지를 찾을 수 없습니다 (지워졌을 수 있음).")
-        self._remember_doc(channel, m)
+        self._remember(channel, m)
         return m
 
     async def _document(self, channel, msg, fresh=False):
-        key = (channel, int(msg))
-        if fresh or key not in self._docs:
-            await self._message(channel, msg)
-        doc = self._docs.get(key)
+        m = await self._message(channel, msg, fresh=fresh)
+        doc = getattr(m, "document", None) or getattr(m, "video", None)
         if doc is None:
             raise TgError("이 메시지에 동영상 파일이 없습니다.")
         return doc
@@ -496,19 +549,41 @@ class TelegramSource:
                     raise
                 fresh = True
 
+    def _thumb_path(self, channel, msg):
+        return os.path.join(config_store.DATA_DIR, "telegram_thumbs", self.sid, f"{int(channel)}_{int(msg)}.jpg")
+
     async def thumbnail(self, channel, msg):
-        folder = os.path.join(config_store.DATA_DIR, "telegram_thumbs", self.sid)
-        path = os.path.join(folder, f"{int(channel)}_{int(msg)}.jpg")
+        """썸네일 파일 경로. 같은 썸네일을 여러 요청이 동시에 달라고 해도 한 번만 받는다."""
+        path = self._thumb_path(channel, msg)
         if os.path.exists(path):
             return path
-        client = await self.authorized_client()
-        m = await self._message(channel, msg)
-        data = await client.download_media(m, file=bytes, thumb=-1)
-        if not data:
-            raise TgError("미리보기 이미지가 없습니다.")
-        os.makedirs(folder, exist_ok=True)
-        tmp = path + ".tmp"
-        with open(tmp, "wb") as f:
-            f.write(data)
-        os.replace(tmp, path)
-        return path
+        key = (channel, int(msg))
+        fut = self._thumb_inflight.get(key)
+        if fut is None:
+            fut = self._thumb_inflight[key] = asyncio.ensure_future(self._fetch_thumb(channel, msg, path))
+            fut.add_done_callback(lambda _f: self._thumb_inflight.pop(key, None))
+        return await asyncio.shield(fut)
+
+    async def _fetch_thumb(self, channel, msg, path):
+        async with self._thumb_sem:
+            if os.path.exists(path):
+                return path
+            client = await self.authorized_client()
+            m = await self._message(channel, msg)
+            data = await client.download_media(m, file=bytes, thumb=-1)
+            if not data:
+                raise TgError("미리보기 이미지가 없습니다.")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "wb") as f:
+                f.write(data)
+            os.replace(tmp, path)
+            return path
+
+    async def prefetch_thumbs(self, channel, msgs):
+        for mid in msgs:
+            if not os.path.exists(self._thumb_path(channel, mid)):
+                try:
+                    await self.thumbnail(channel, mid)
+                except Exception as e:  # 하나 실패해도 나머지는 계속
+                    log.debug("telegram 썸네일 미리 받기 %s/%s 실패: %s", channel, mid, e)
