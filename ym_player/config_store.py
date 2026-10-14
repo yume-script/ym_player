@@ -4,6 +4,8 @@
     {"id": "abc123", "type": "plex", "name": "우리집 Plex", "enabled": true,
      "url": "http://192.168.0.10:32400", "token": "...", "verify_ssl": true,
      "hidden_libraries": ["3"]}       <- 가져오지 않을 Plex 라이브러리(섹션 key). 새 라이브러리는 기본으로 보임
+    {"id": "tg1", "type": "telegram", "name": "텔레그램", "enabled": true, "api_id": "123456",
+     "api_hash": "...", "phone": "+8210...", "channels": [{"id": 1234567890, "title": "영화 채널"}]}
     {"id": "def456", "type": "iptv", "name": "개인", "enabled": true,
      "m3u": "http://.../playlist.m3u", "epg": "http://.../epg.xml.gz"}
 
@@ -19,8 +21,8 @@ import uuid
 DATA_DIR = os.environ.get("MP_DATA_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
 
-SOURCE_TYPES = ("plex", "iptv")
-_SECRET_FIELDS = ("token",)
+SOURCE_TYPES = ("plex", "iptv", "telegram")
+_SECRET_FIELDS = ("token", "api_hash")
 _lock = threading.Lock()
 
 
@@ -64,6 +66,7 @@ def public_config(cfg):
     for s in cfg.get("sources", []):
         pub = {k: v for k, v in s.items() if k not in _SECRET_FIELDS}
         pub["has_token"] = bool(s.get("token"))
+        pub["has_api_hash"] = bool(s.get("api_hash"))
         out.append(pub)
     return {"client_id": cfg.get("client_id"), "sources": out}
 
@@ -75,7 +78,7 @@ def _clean_source(raw, old):
     src = {
         "id": str(raw.get("id") or secrets.token_hex(4)),
         "type": stype,
-        "name": str(raw.get("name") or ("Plex" if stype == "plex" else "IPTV")).strip(),
+        "name": str(raw.get("name") or {"plex": "Plex", "iptv": "IPTV", "telegram": "Telegram"}[stype]).strip(),
         "enabled": bool(raw.get("enabled", True)),
     }
     if stype == "plex":
@@ -87,6 +90,17 @@ def _clean_source(raw, old):
         src["verify_ssl"] = bool(raw.get("verify_ssl", True))
         hidden = raw.get("hidden_libraries") or []
         src["hidden_libraries"] = sorted({str(k) for k in hidden if str(k).strip()}) if isinstance(hidden, list) else []
+    elif stype == "telegram":
+        # api_hash는 Plex 토큰처럼 브라우저로 안 내보내고, 빈 칸으로 저장하면 기존 값 유지
+        src["api_id"] = str(raw.get("api_id") or "").strip()
+        api_hash = str(raw.get("api_hash") or "").strip()
+        src["api_hash"] = api_hash or (old or {}).get("api_hash", "")
+        src["phone"] = str(raw.get("phone") or "").strip()
+        channels = []
+        for c in raw.get("channels") or []:
+            if isinstance(c, dict) and str(c.get("id", "")).lstrip("-").isdigit():
+                channels.append({"id": int(c["id"]), "title": str(c.get("title") or c["id"])[:200]})
+        src["channels"] = channels
     else:
         src["m3u"] = str(raw.get("m3u") or "").strip()
         src["epg"] = str(raw.get("epg") or "").strip()

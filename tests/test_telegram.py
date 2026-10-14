@@ -1,0 +1,296 @@
+"""텔레그램 소스 - 메시지 판별, Range 해석, 그리고 가짜 Telethon 클라이언트로 HTTP 흐름 전체.
+
+진짜 텔레그램에는 붙지 않는다. TelegramSource.get_client를 가짜 클라이언트로 바꿔서
+로그인(코드 -> 2단계 비밀번호) / 채널 / 색인(오래된 쪽 채우기) / 스트림 Range / 썸네일 / 이어보기를 확인한다.
+"""
+import asyncio
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+
+import pytest
+
+from ym_player import config_store, telegram_src
+
+telethon = pytest.importorskip("telethon")
+
+
+# ----- 가짜 Telethon 객체 (클래스 이름으로 판별하므로 이름을 맞춘다) -----
+class DocumentAttributeVideo:
+    def __init__(self, duration=0, w=1280, h=720, round_message=False):
+        self.duration, self.w, self.h, self.round_message = duration, w, h, round_message
+
+
+class DocumentAttributeFilename:
+    def __init__(self, file_name):
+        self.file_name = file_name
+
+
+class DocumentAttributeAnimated:
+    pass
+
+
+class Channel:
+    def __init__(self, cid, title, broadcast=True):
+        self.id, self.title, self.broadcast, self.access_hash, self.username = cid, title, broadcast, cid * 7, ""
+
+
+def video_msg(mid, size=3000, caption="", name="clip.mp4", thumbs=True, mime="video/mp4", attrs=None):
+    doc = SimpleNamespace(mime_type=mime, size=size, thumbs=[1] if thumbs else [],
+                          attributes=attrs if attrs is not None else [DocumentAttributeVideo(120), DocumentAttributeFilename(name)])
+    return SimpleNamespace(id=mid, document=doc, photo=None, message=caption,
+                           date=datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(minutes=mid))
+
+
+def text_msg(mid):
+    return SimpleNamespace(id=mid, document=None, photo=None, message="글", date=None)
+
+
+def test_message_to_video_filters():
+    v = telegram_src.message_to_video(video_msg(5, caption="첫 줄 제목\n설명"))
+    assert v["title"] == "첫 줄 제목" and v["duration"] == 120 and v["height"] == 720 and v["has_thumb"] == 1
+    assert telegram_src.message_to_video(video_msg(6, caption=""))["title"] == "clip"  # 캡션 없으면 파일명
+    assert telegram_src.message_to_video(text_msg(7)) is None
+    assert telegram_src.message_to_video(video_msg(8, attrs=[DocumentAttributeAnimated(), DocumentAttributeVideo(3)])) is None
+    assert telegram_src.message_to_video(video_msg(9, attrs=[DocumentAttributeVideo(3, round_message=True)])) is None
+    assert telegram_src.message_to_video(video_msg(10, mime="application/octet-stream", attrs=[DocumentAttributeFilename("a.mkv")]))
+    assert telegram_src.message_to_video(video_msg(11, mime="image/gif", attrs=[DocumentAttributeFilename("a.gif")])) is None
+    assert telegram_src.browser_mime("video/x-matroska") == "video/webm"
+
+
+def test_parse_range():
+    assert telegram_src.parse_range(None, 100) == (0, 99, False)
+    assert telegram_src.parse_range("bytes=10-19", 100) == (10, 19, True)
+    assert telegram_src.parse_range("bytes=90-", 100) == (90, 99, True)
+    assert telegram_src.parse_range("bytes=-5", 100) == (95, 99, True)
+    assert telegram_src.parse_range("bytes=50-500", 100) == (50, 99, True)
+    for bad in ("bytes=100-", "bytes=5-1", "bytes=0-1,4-5", "items=0-1", "bytes=-"):
+        with pytest.raises(ValueError):
+            telegram_src.parse_range(bad, 100)
+
+
+class FakeClient:
+    """채널 777: 메시지 1..1000, 3의 배수만 동영상. 파일 내용은 결정적인 바이트열."""
+
+    def __init__(self):
+        self.connected = False
+        self.authorized = False
+        self.needs_password = True
+        self.dialogs = [SimpleNamespace(entity=Channel(777, "영화 채널"), name="영화 채널"),
+                        SimpleNamespace(entity=Channel(888, "수다방", broadcast=False), name="수다방"),
+                        SimpleNamespace(entity=SimpleNamespace(id=1, title="친구"), name="친구")]
+        self.msgs = {i: (video_msg(i, size=4096 * 3 + i, caption=f"영상 {i}") if i % 3 == 0 else text_msg(i)) for i in range(1, 1001)}
+        self.logged_out = False
+        self.scans = []
+
+    def is_connected(self):
+        return self.connected
+
+    async def connect(self):
+        self.connected = True
+
+    async def disconnect(self):
+        self.connected = False
+
+    async def is_user_authorized(self):
+        return self.authorized
+
+    async def get_me(self):
+        return SimpleNamespace(first_name="유메", last_name="", username="yume")
+
+    async def send_code_request(self, phone):
+        self.phone = phone
+        return SimpleNamespace(phone_code_hash="HASH")
+
+    async def sign_in(self, phone=None, code=None, *, password=None, phone_code_hash=None):
+        from telethon.errors import PasswordHashInvalidError, PhoneCodeInvalidError, SessionPasswordNeededError
+        if password is not None:
+            if password != "pw":
+                raise PasswordHashInvalidError(request=None)
+            self.authorized = True
+            return
+        if code != "12345" or phone_code_hash != "HASH":
+            raise PhoneCodeInvalidError(request=None)
+        if self.needs_password:
+            raise SessionPasswordNeededError(request=None)
+        self.authorized = True
+
+    async def log_out(self):
+        self.logged_out = True
+        self.authorized = False
+
+    async def iter_dialogs(self):
+        for d in self.dialogs:
+            yield d
+
+    async def iter_messages(self, peer, min_id=0, offset_id=0, limit=None):
+        assert peer.channel_id == 777 and peer.access_hash == 777 * 7
+        self.scans.append((min_id, offset_id, limit))
+        ids = sorted((i for i in self.msgs if i > min_id and (not offset_id or i < offset_id)), reverse=True)
+        for i in ids[:limit] if limit else ids:
+            yield self.msgs[i]
+
+    async def get_messages(self, peer, ids):
+        return self.msgs.get(ids)
+
+    def iter_download(self, doc, offset=0, request_size=0, chunk_size=0, file_size=None):
+        data = bytes((i * 7) % 256 for i in range(doc.size))
+
+        async def gen():
+            pos = offset
+            while pos < len(data):
+                yield data[pos:pos + 5000]  # 원하는 길이보다 크게도 주는지 서버가 잘라야 한다
+                pos += 5000
+        return gen()
+
+    async def download_media(self, msg, file=bytes, thumb=None):
+        return b"\xff\xd8JPEG" + str(msg.id).encode()
+
+
+@pytest.fixture
+def env(monkeypatch, tmp_path):
+    monkeypatch.setattr(config_store, "CONFIG_FILE", str(tmp_path / "config.json"))
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    fake = FakeClient()
+
+    async def get_client(self):
+        if not self.api_id or not self.api_hash:
+            raise telegram_src.TgError("API 필요")
+        if not fake.connected:
+            await fake.connect()
+        self.client = fake
+        return fake
+
+    monkeypatch.setattr(telegram_src.TelegramSource, "get_client", get_client)
+    cfg = config_store.load()
+    config_store.replace_sources(cfg, [{"id": "tg", "type": "telegram", "name": "텔레", "api_id": "1234",
+                                        "api_hash": "SECRET", "phone": "+82 10-1234-5678",
+                                        "channels": [{"id": 777, "title": "영화 채널"}]}])
+    config_store.save(cfg)
+    return fake
+
+
+def run(coro_fn):
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from ym_player import server
+
+    async def main():
+        client = TestClient(TestServer(server.create_app()))
+        await client.start_server()
+        try:
+            await coro_fn(client)
+        finally:
+            await client.close()
+    asyncio.run(main())
+
+
+def test_login_channels_index_stream_progress(env):
+    async def flow(c):
+        # api_hash는 브라우저로 안 나간다
+        pub = await (await c.get("/api/config")).json()
+        assert "SECRET" not in str(pub) and pub["sources"][0]["has_api_hash"]
+
+        st = await (await c.get("/api/tg/tg/status")).json()
+        assert st["authorized"] is False
+        r = await c.get("/api/tg/tg/channels")
+        assert r.status == 400 and "로그인" in (await r.json())["error"]
+
+        r = await (await c.post("/api/tg/tg/code", json={})).json()
+        assert r["code_sent"] and env.phone == "+821012345678"  # 공백/하이픈 정리
+        r = await c.post("/api/tg/tg/sign-in", json={"code": "999"})
+        assert r.status == 400 and "틀렸" in (await r.json())["error"]
+        r = await (await c.post("/api/tg/tg/sign-in", json={"code": "123 45"})).json()
+        assert r["password_required"] is True
+        r = await c.post("/api/tg/tg/sign-in", json={"password": "nope"})
+        assert r.status == 400
+        r = await (await c.post("/api/tg/tg/sign-in", json={"password": "pw"})).json()
+        assert r["authorized"] and r["name"] == "유메"
+
+        chans = (await (await c.get("/api/tg/tg/channels")).json())["channels"]
+        assert [(x["title"], x["kind"]) for x in chans] == [("수다방", "group"), ("영화 채널", "channel")]  # 개인 대화는 빠짐
+        assert "access_hash" not in chans[0]
+
+        # 첫 페이지: 최신 400개를 훑어 133개 색인, 40개 반환, 더 있음
+        page = await (await c.get("/api/tg/tg/videos?channel=777&limit=40")).json()
+        assert len(page["items"]) == 40 and page["more"]
+        assert page["items"][0]["msg"] == 999 and page["items"][0]["title"] == "영상 999"
+        # 색인 범위(601~1000) 밖까지 넘기면 오래된 쪽을 더 훑는다
+        far = await (await c.get("/api/tg/tg/videos?channel=777&offset=150&limit=40")).json()
+        assert len(far["items"]) == 40 and far["items"][0]["msg"] == 999 - 150 * 3
+        assert any(s[1] for s in env.scans)  # offset_id로 과거 스캔
+        # 끝까지
+        last = await (await c.get("/api/tg/tg/videos?channel=777&offset=320&limit=40")).json()
+        assert len(last["items"]) == 13 and last["more"] is False  # 3,6,...,999 = 333개
+        # 검색
+        found = await (await c.get("/api/tg/tg/videos?q=영상 99")).json()
+        assert {it["msg"] for it in found["items"]} >= {99, 990, 993, 996, 999}
+        # 고르지 않은 채널은 막는다
+        assert (await c.get("/api/tg/tg/video/888/3")).status == 404
+        nothing = await (await c.get("/api/tg/tg/videos?channel=888")).json()
+        assert nothing["items"] == []
+
+        # 스트림: 전체 / Range / 범위 밖
+        size = 4096 * 3 + 999
+        whole = await c.get("/api/tg/tg/stream/777/999")
+        body = await whole.read()
+        assert whole.status == 200 and len(body) == size and whole.headers["Accept-Ranges"] == "bytes"
+        expect = bytes((i * 7) % 256 for i in range(size))
+        assert body == expect
+        part = await c.get("/api/tg/tg/stream/777/999", headers={"Range": "bytes=5000-5099"})
+        assert part.status == 206 and part.headers["Content-Range"] == f"bytes 5000-5099/{size}"
+        assert await part.read() == expect[5000:5100]
+        assert (await c.get("/api/tg/tg/stream/777/999", headers={"Range": f"bytes={size}-"})).status == 416
+
+        # 썸네일 (두 번째는 디스크 캐시)
+        t = await c.get("/api/tg/tg/thumb/777/999")
+        assert t.status == 200 and (await t.read()).startswith(b"\xff\xd8")
+        env.download_media = None
+        assert (await c.get("/api/tg/tg/thumb/777/999")).status == 200
+
+        # 이어보기
+        await c.post("/api/tg/tg/progress", json={"channel": 777, "msg": 999, "position": 60, "duration": 120})
+        home = await (await c.get("/api/tg/tg/home")).json()
+        assert [v["msg"] for v in home["continue"]] == [999] and home["channels"][0]["items"]
+        item = (await (await c.get("/api/tg/tg/video/777/999")).json())["item"]
+        assert item["position"] == 60 and item["watched"] is False
+        await c.post("/api/tg/tg/progress", json={"channel": 777, "msg": 999, "position": 119, "duration": 120})
+        item = (await (await c.get("/api/tg/tg/video/777/999")).json())["item"]
+        assert item["watched"] is True and item["position"] == 0
+        assert (await (await c.get("/api/tg/tg/home")).json())["continue"] == []
+
+        # 로그아웃
+        await c.post("/api/tg/tg/logout")
+        assert env.logged_out and (await (await c.get("/api/tg/tg/status")).json())["authorized"] is False
+
+    run(flow)
+
+
+def test_deleting_source_logs_out_and_forgets_index(env):
+    async def flow(c):
+        env.authorized = True
+        await c.get("/api/tg/tg/videos?channel=777&limit=5")
+        assert telegram_src.query_videos("tg", [777])[1] > 0
+        r = await c.put("/api/config", json={"sources": []})
+        assert r.status == 200
+        for _ in range(20):
+            await asyncio.sleep(0.01)
+            if env.logged_out:
+                break
+        assert env.logged_out
+        assert telegram_src.query_videos("tg", [777])[1] == 0
+
+    run(flow)
+
+
+def test_config_telegram_fields(monkeypatch, tmp_path):
+    monkeypatch.setattr(config_store, "CONFIG_FILE", str(tmp_path / "config.json"))
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    cfg = config_store.load()
+    config_store.replace_sources(cfg, [{"id": "t", "type": "telegram", "api_id": " 99 ", "api_hash": "H",
+                                        "channels": [{"id": "-100", "title": "a"}, {"id": "x"}, "junk", {"id": 5}]}])
+    src = cfg["sources"][0]
+    assert src["api_id"] == "99" and src["name"] == "Telegram"
+    assert src["channels"] == [{"id": -100, "title": "a"}, {"id": 5, "title": "5"}]
+    # 빈 api_hash로 저장하면 기존 값 유지
+    config_store.replace_sources(cfg, [{"id": "t", "type": "telegram", "api_id": "99", "api_hash": ""}])
+    assert cfg["sources"][0]["api_hash"] == "H"

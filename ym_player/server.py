@@ -14,6 +14,7 @@
 - /api/stream?url=        CORS/혼합콘텐츠로 막힌 스트림 중계 (.m3u8 안 주소까지 바꿔줌)
 - /api/plex/{id}/...      Plex 서버 API/이미지/스트림 중계 - 토큰은 서버가 붙인다
 - /api/plex-sub/{id}      Plex 외부 자막(srt/smi/ass/vtt)을 WebVTT로 바꿔 줌
+- /api/tg/{id}/...        텔레그램 로그인/채널/영상 목록/스트림/썸네일/이어보기 (telegram_src.py)
 - /api/plex-auth/...      plex.tv PIN 로그인 (토큰/서버 목록 받아오기)
 """
 import asyncio
@@ -27,7 +28,7 @@ from urllib.parse import urlencode
 from aiohttp import ClientSession, ClientTimeout, web
 from yarl import URL
 
-from . import config_store, iptv, subtitles
+from . import config_store, iptv, subtitles, telegram_src
 
 log = logging.getLogger("ym_player")
 
@@ -49,6 +50,7 @@ _PASS_REQ_HEADERS = ("Range", "Accept", "Accept-Language", "Content-Type", "If-N
 HTTP = web.AppKey("http", ClientSession)
 CHANNEL_CACHE = web.AppKey("channel_cache", dict)
 EPG_CACHE = web.AppKey("epg_cache", dict)
+TELEGRAM = web.AppKey("telegram", dict)  # 소스 id -> telegram_src.TelegramSource (연결을 계속 유지)
 
 
 # ---------------------------------------------------------------------------
@@ -124,10 +126,29 @@ async def put_config(request):
         cfg = config_store.replace_sources(config_store.load(), body.get("sources"))
     except ValueError as e:
         return _json_error(400, str(e))
+    old_ids = {s["id"] for s in config_store.load().get("sources", []) if s.get("type") == "telegram"}
     config_store.save(cfg)
     request.app[CHANNEL_CACHE].clear()
     request.app[EPG_CACHE].clear()
+    # 지운 텔레그램 소스는 로그아웃(텔레그램의 "활성 세션"에서도 빠지게)하고 색인도 지운다
+    new_ids = {s["id"] for s in cfg["sources"] if s.get("type") == "telegram"}
+    for sid in old_ids - new_ids:
+        tg = request.app[TELEGRAM].pop(sid, None) or telegram_src.TelegramSource({"id": sid})
+        asyncio.ensure_future(_forget_telegram(tg))
     return web.json_response(config_store.public_config(cfg))
+
+
+async def _forget_telegram(tg):
+    try:
+        await tg.logout()
+    except Exception as e:
+        log.warning("텔레그램 소스 %s 로그아웃 실패(세션 파일만 지움): %s", tg.sid, e)
+        for suffix in ("", "-journal"):
+            try:
+                os.remove(tg.session_path + suffix)
+            except OSError:
+                pass
+    telegram_src.forget_source(tg.sid)
 
 
 def _source_or_404(source_id, stype):
@@ -355,6 +376,181 @@ async def plex_pin_check(request):
 
 
 # ---------------------------------------------------------------------------
+# Telegram
+# ---------------------------------------------------------------------------
+def _telegram(request):
+    """설정의 텔레그램 소스에 맞는 연결 객체. API ID/Hash가 바뀌었으면 새로 만든다."""
+    src = config_store.get_source(config_store.load(), request.match_info["sid"])
+    if not src or src.get("type") != "telegram":
+        raise web.HTTPNotFound(text="텔레그램 소스를 찾을 수 없습니다.")
+    pool = request.app[TELEGRAM]
+    tg = pool.get(src["id"])
+    if tg is None or not tg.matches(src):
+        if tg is not None:
+            asyncio.ensure_future(tg.close())
+        tg = pool[src["id"]] = telegram_src.TelegramSource(src)
+    tg.channels = [int(c["id"]) for c in src.get("channels") or []]
+    tg.phone = tg.phone if tg._code_hash else str(src.get("phone") or "").strip()
+    return tg
+
+
+def telegram_api(handler):
+    """TgError는 화면에 그대로, FloodWait는 몇 초 기다리라고, 나머지는 502로."""
+    async def wrapped(request):
+        try:
+            return await handler(request, _telegram(request))
+        except web.HTTPException:
+            raise
+        except telegram_src.TgError as e:
+            return _json_error(400, str(e))
+        except Exception as e:
+            if type(e).__name__ == "FloodWaitError":
+                return _json_error(429, f"텔레그램 요청 제한에 걸렸습니다. {getattr(e, 'seconds', '?')}초 뒤에 다시 시도하세요.")
+            log.exception("telegram 요청 실패")
+            return _json_error(502, f"텔레그램 처리 실패: {type(e).__name__}: {e}")
+    return wrapped
+
+
+async def _json_body(request):
+    try:
+        body = await request.json()
+    except ValueError:
+        body = {}
+    return body if isinstance(body, dict) else {}
+
+
+@telegram_api
+async def tg_status(request, tg):
+    return web.json_response({"success": True, **await tg.status()})
+
+
+@telegram_api
+async def tg_code(request, tg):
+    body = await _json_body(request)
+    return web.json_response({"success": True, **await tg.send_code(str(body.get("phone") or ""))})
+
+
+@telegram_api
+async def tg_sign_in(request, tg):
+    body = await _json_body(request)
+    return web.json_response({"success": True, **await tg.sign_in(str(body.get("code") or ""), str(body.get("password") or ""))})
+
+
+@telegram_api
+async def tg_logout(request, tg):
+    await tg.logout()
+    return web.json_response({"success": True, "authorized": False})
+
+
+@telegram_api
+async def tg_channels(request, tg):
+    return web.json_response({"success": True, "channels": await tg.list_channels()})
+
+
+def _int_arg(request, name, default=0, lo=0, hi=10 ** 12):
+    try:
+        return max(lo, min(hi, int(request.query.get(name, default))))
+    except (TypeError, ValueError):
+        return default
+
+
+@telegram_api
+async def tg_videos(request, tg):
+    channel = request.query.get("channel")
+    channels = [int(channel)] if channel and channel.lstrip("-").isdigit() else list(tg.channels)
+    data = await tg.videos(channels, offset=_int_arg(request, "offset"), limit=_int_arg(request, "limit", 40, 1, 200),
+                           q=request.query.get("q", "").strip(), sort=request.query.get("sort", "latest"))
+    return web.json_response({"success": True, **data})
+
+
+@telegram_api
+async def tg_home(request, tg):
+    """홈 줄: 이어보기 + 채널마다 최신 영상 몇 개."""
+    rows = []
+    for ch in tg.channels:
+        try:
+            data = await tg.videos([ch], limit=12)
+        except telegram_src.TgError:
+            raise
+        except Exception as e:
+            log.warning("telegram 홈 %s 실패: %s", ch, e)
+            continue
+        rows.append({"channel": ch, "items": data["items"]})
+    return web.json_response({"success": True, "continue": telegram_src.continue_watching(tg.sid, tg.channels),
+                              "channels": rows})
+
+
+def _ids(request, tg):
+    channel, msg = int(request.match_info["channel"]), int(request.match_info["msg"])
+    if channel not in tg.channels:
+        raise web.HTTPNotFound(text="설정에서 고르지 않은 채널입니다.")
+    return channel, msg
+
+
+@telegram_api
+async def tg_video(request, tg):
+    channel, msg = _ids(request, tg)
+    row = telegram_src.get_video(tg.sid, channel, msg)
+    if not row:
+        return _json_error(404, "색인에 없는 영상입니다.")
+    return web.json_response({"success": True, "item": row})
+
+
+@telegram_api
+async def tg_stream(request, tg):
+    channel, msg = _ids(request, tg)
+    row = telegram_src.get_video(tg.sid, channel, msg)
+    if not row or not row["size"]:
+        return _json_error(404, "색인에 없는 영상입니다.")
+    size = int(row["size"])
+    try:
+        start, end, partial = telegram_src.parse_range(request.headers.get("Range"), size)
+    except ValueError:
+        return web.Response(status=416, headers={"Content-Range": f"bytes */{size}", "Accept-Ranges": "bytes"})
+    await tg.authorized_client()  # 로그인 안 됐으면 응답을 시작하기 전에 JSON 오류로
+    length = end - start + 1
+    headers = {"Content-Type": telegram_src.browser_mime(row["mime"]), "Accept-Ranges": "bytes",
+               "Content-Length": str(length), "Cache-Control": "no-store"}
+    if partial:
+        headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+    resp = web.StreamResponse(status=206 if partial else 200, headers=headers)
+    await resp.prepare(request)
+    try:
+        async for chunk in tg.iter_range(channel, msg, start, length):
+            await resp.write(chunk)
+    except (ConnectionResetError, asyncio.CancelledError):
+        pass  # 브라우저가 탐색하거나 닫으면 연결을 끊는다 - 정상
+    except Exception as e:
+        log.warning("telegram 스트림 %s/%s 중단: %s", channel, msg, e)
+    return resp
+
+
+@telegram_api
+async def tg_thumb(request, tg):
+    channel, msg = _ids(request, tg)
+    try:
+        path = await tg.thumbnail(channel, msg)
+    except telegram_src.TgError as e:
+        return _json_error(404, str(e))
+    return web.FileResponse(path, headers={"Cache-Control": "private, max-age=86400", "Content-Type": "image/jpeg"})
+
+
+@telegram_api
+async def tg_progress(request, tg):
+    body = await _json_body(request)
+    try:
+        channel, msg = int(body.get("channel")), int(body.get("msg"))
+    except (TypeError, ValueError):
+        return _json_error(400, "channel/msg가 없습니다.")
+    if channel not in tg.channels:
+        return _json_error(404, "설정에서 고르지 않은 채널입니다.")
+    watched = body.get("watched")
+    telegram_src.save_progress(tg.sid, channel, msg, body.get("position"), body.get("duration"),
+                               None if watched is None else bool(watched))
+    return web.json_response({"success": True})
+
+
+# ---------------------------------------------------------------------------
 # 앱
 # ---------------------------------------------------------------------------
 async def index(request):
@@ -368,12 +564,18 @@ async def _on_startup(app):
 
 async def _on_cleanup(app):
     await app[HTTP].close()
+    for tg in list(app[TELEGRAM].values()):
+        try:
+            await tg.close()
+        except Exception:
+            pass
 
 
 def create_app():
     app = web.Application(middlewares=[basic_auth_middleware], client_max_size=8 * 1024 * 1024)
     app[CHANNEL_CACHE] = {}
     app[EPG_CACHE] = {}
+    app[TELEGRAM] = {}
     app.on_startup.append(_on_startup)
     app.on_cleanup.append(_on_cleanup)
 
@@ -386,6 +588,17 @@ def create_app():
     app.router.add_post("/api/plex-auth/pin", plex_pin_create)
     app.router.add_get("/api/plex-auth/pin/{pin_id}", plex_pin_check)
     app.router.add_get("/api/plex-sub/{sid}", plex_subtitle)
+    app.router.add_get("/api/tg/{sid}/status", tg_status)
+    app.router.add_post("/api/tg/{sid}/code", tg_code)
+    app.router.add_post("/api/tg/{sid}/sign-in", tg_sign_in)
+    app.router.add_post("/api/tg/{sid}/logout", tg_logout)
+    app.router.add_get("/api/tg/{sid}/channels", tg_channels)
+    app.router.add_get("/api/tg/{sid}/videos", tg_videos)
+    app.router.add_get("/api/tg/{sid}/home", tg_home)
+    app.router.add_get(r"/api/tg/{sid}/video/{channel:-?\d+}/{msg:\d+}", tg_video)
+    app.router.add_get(r"/api/tg/{sid}/stream/{channel:-?\d+}/{msg:\d+}", tg_stream)
+    app.router.add_get(r"/api/tg/{sid}/thumb/{channel:-?\d+}/{msg:\d+}", tg_thumb)
+    app.router.add_post("/api/tg/{sid}/progress", tg_progress)
     app.router.add_route("*", "/api/plex/{sid}/{tail:.*}", plex_proxy)
     app.router.add_static("/static/", WEB_DIR, show_index=False)
     return app
