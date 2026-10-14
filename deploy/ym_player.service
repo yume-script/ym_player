@@ -1,0 +1,36 @@
+# Yume Player systemd 서비스
+#
+# 설치 (저장소가 /mnt/ym_player, venv가 /mnt/ym_player/.venv 인 경우):
+#   sudo cp deploy/ym_player.service /etc/systemd/system/
+#   sudo cp deploy/ym_player.env.example /etc/ym_player.env && sudo chmod 600 /etc/ym_player.env
+#   sudo nano /etc/ym_player.env          # 아이디/비밀번호 바꾸기
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ym_player
+#
+# 다른 경로에 두었다면 아래 WorkingDirectory / ExecStart 두 줄만 고치면 된다.
+
+[Unit]
+Description=Yume Player (Plex/IPTV 웹 플레이어)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/mnt/ym_player
+ExecStart=/mnt/ym_player/.venv/bin/python -m ym_player
+# 포트/주소/로그인 정보는 여기서 읽는다 (파일이 없어도 기동은 된다 - 그땐 127.0.0.1:8899)
+EnvironmentFile=-/etc/ym_player.env
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=5
+
+# 설정(data/config.json)은 저장소 안 ym_player/data/ 에 쓴다. 전용 계정으로 돌리려면
+# User=/Group=을 넣고 그 계정이 저장소 폴더에 쓸 수 있게 chown 해 둘 것.
+#User=ymplayer
+#Group=ymplayer
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
