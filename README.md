@@ -133,6 +133,8 @@ getPlayback(id|채널)  -> {url, kind: 'hls'|'ts'|'direct', live, proxyUrl?, sta
 - **IPTV**: 원래 플러그인과 같은 규칙. `.ts`/`output=ts` → mpegts.js, `.mp4/.webm…` → `<video>`, 나머지 → hls.js.
   원본 주소로 먼저 틀어 보고, 막히면(CORS 등) `/api/stream` 중계로 한 번 더. 그래도 안 되면 그 채널은 "안 나옴"으로
   표시(편성표·서랍에서 흐리게)하고, 망가진 MSE가 다음 채널까지 막지 않게 `<video>`를 새로 만듭니다.
+  **재생 중에 끊겨도** (예: 재생목록은 열리는데 영상 조각만 CORS로 막혀 `fragLoadError`) 직접 연결이었다면 서버 중계로
+  바꿔 이어 보고 그 채널은 다음부터 처음부터 중계로 엽니다. 중계로 보다 끊기면 3번까지 자동으로 다시 붙습니다.
   `#EXTVLCOPT:http-user-agent` / `http-referrer`가 있으면 중계할 때 그대로 실어 보냅니다.
 - **Plex**: 브라우저가 그대로 틀 수 있는 파일(mp4+h264+aac, webm+vp9+opus, 음악 mp3/flac…)은 **원본 그대로(Direct Play)**,
   아니면 Plex 트랜스코더 **HLS**(`/video/:/transcode/universal/start.m3u8`, 자막은 영상에 입힘)로 받습니다.

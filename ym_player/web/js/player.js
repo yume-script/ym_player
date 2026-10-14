@@ -14,12 +14,29 @@ const START_TIMEOUT_MS = 20000;
 const PROGRESS_EVERY_SEC = 10;
 const UI_HIDE_MS = 3000;
 const OSD_MS = 4000;
+// 재생 중 끊겼을 때 자동으로 다시 붙는 횟수 (중계로 바꾸는 것은 따로 1번). 이만큼 잘 돌면 횟수를 되돌린다
+const AUTO_RECOVER_MAX = 3;
+const AUTO_RECOVER_RESET_SEC = 30;
+// 직접 연결로는 끊기고 중계로는 되는 채널 - 다음부터 처음부터 중계로 연다 (이번 탭 동안)
+const PROXY_FIRST_KEY = 'yp_proxy_first';
+
+function proxyFirst() {
+    try { return new Set(JSON.parse(sessionStorage.getItem(PROXY_FIRST_KEY) || '[]')); } catch (e) { return new Set(); }
+}
+function rememberProxyFirst(id) {
+    const set = proxyFirst();
+    set.add(id);
+    try { sessionStorage.setItem(PROXY_FIRST_KEY, JSON.stringify([...set])); } catch (e) { /* 저장 못 해도 이번 재생엔 영향 없음 */ }
+}
 
 class Player {
     constructor() {
         this.pb = null;
         this.token = 0;
         this.attemptSeq = 0;
+        this.recoverCount = 0;
+        this.viaProxy = false;
+        this.playingSince = 0;
         this.hls = null;
         this.mpegts = null;
         this.needsRecreate = false;
@@ -201,7 +218,12 @@ class Player {
     // 시작/종료
     // ------------------------------------------------------------------
     /** provider.getPlayback()이 돌려준 playback으로 재생한다. playlist: 라이브 채널 전환용 [{provider, channel}] */
-    async start(pb, playlist = null) {
+    /**
+     * opts.auto       끊겨서 자동으로 다시 붙는 중 (자동 재시도 횟수를 이어서 센다)
+     * opts.forceProxy 직접 연결은 건너뛰고 서버 중계로 바로
+     */
+    async start(pb, playlist = null, { auto = false, forceProxy = false } = {}) {
+        if (!auto) this.recoverCount = 0;
         if (this.pb && this.pb !== pb) this._finishCurrent();
         if (playlist) pb.playlist = playlist;
         else if (this.pb && this.pb.playlist && pb.live) pb.playlist = this.pb.playlist;
@@ -235,13 +257,23 @@ class Player {
         this._applyTrack(pb.textTrack);
 
         let label;
+        const viaProxyOnly = pb.proxyUrl && (forceProxy || (pb.channel && proxyFirst().has(pb.channel.id)));
+        this.viaProxy = false;
         try {
-            label = await this._attempt(pb.url, pb.kind, token, pb.startTime || 0, !!pb.live);
+            if (viaProxyOnly) {
+                this.viaProxy = true;
+                label = (await this._attempt(pb.proxyUrl, pb.kind, token, pb.startTime || 0, !!pb.live)) + ' · 중계';
+            } else {
+                label = await this._attempt(pb.url, pb.kind, token, pb.startTime || 0, !!pb.live);
+            }
         } catch (e1) {
+            if (token !== this.token) return;
+            if (viaProxyOnly) return this._failed(e1);
             if (token !== this.token) return;
             if (!pb.proxyUrl) return this._failed(e1);
             console.warn('[Player] 직접 재생 실패, 서버 중계로 다시 시도:', e1.message);
             this._showMsg('서버 중계로 다시 연결하는 중...', { spinner: true });
+            this.viaProxy = true;
             try {
                 label = (await this._attempt(pb.proxyUrl, pb.kind, token, pb.startTime || 0, !!pb.live)) + ' · 중계';
             } catch (e2) {
@@ -251,6 +283,7 @@ class Player {
         }
         if (token !== this.token) return;
         this.engineEl.textContent = label;
+        this.playingSince = this.video.currentTime || 0;
         this._hideMsg();
         if (pb.channel) channelHealth.set(pb.channel.id, 'online');
         this._wakeUi();
@@ -325,6 +358,7 @@ class Player {
         const stale = () => token !== this.token || attempt !== this.attemptSeq;
         return new Promise((resolve, reject) => {
             let settled = false;
+            let dead = false;
             const timer = setTimeout(() => fail(new Error('응답 시간 초과')), START_TIMEOUT_MS);
             const ok = (label) => {
                 if (settled) return;
@@ -340,7 +374,9 @@ class Player {
                     clearTimeout(timer);
                     this._destroyEngines(true);
                     reject(err);
-                } else if (engineError) {
+                } else if (engineError && !dead) {
+                    // 같은 엔진이 정리되기 전에 오류를 여러 번 던져도 다시 붙기는 한 번만
+                    dead = true;
                     this._runtimeError(err);
                 }
             };
@@ -365,7 +401,10 @@ class Player {
                 const Hls = window.Hls;
                 const hls = new Hls({
                     enableWorker: true,
-                    lowLatencyMode: live,
+                    // 저지연(LL-HLS)이 아닌 일반 IPTV에 켜면 라이브 끝자락에 너무 붙어서 시작하자마자 버퍼가 바닥나기 쉽다
+                    lowLatencyMode: false,
+                    liveSyncDurationCount: 4,
+                    backBufferLength: live ? 30 : 90,
                     startPosition: startTime > 0 ? startTime : -1,
                     manifestLoadingTimeOut: 20000,
                     fragLoadingTimeOut: 30000,
@@ -406,11 +445,36 @@ class Player {
         });
     }
 
+    /**
+     * 재생이 시작된 뒤에 끊겼을 때 (fragLoadError 등). 예전엔 여기서 그냥 멈췄다.
+     * 1) 직접 연결로 보던 중이면 -> 서버 중계로 바꿔서 다시 (재생목록은 열리는데 영상 조각만 CORS로
+     *    막히는 채널이 흔하다). 그 채널은 다음부터 처음부터 중계로 연다.
+     * 2) 이미 중계였으면 -> 조금씩 기다렸다가 AUTO_RECOVER_MAX번까지 다시 붙는다 (주소 만료, 순간 끊김).
+     * VOD는 보던 위치부터 다시 이어서 받는다.
+     */
     _runtimeError(err) {
-        console.warn('[Player] 재생 중 오류:', err && err.message);
+        const pb = this.pb;
+        console.warn('[Player] 재생 중 오류:', err && err.message, this.viaProxy ? '(중계)' : '(직접)');
         this._destroyEngines(true);
         this.needsRecreate = true;
-        this._showMsg('재생이 끊겼습니다.', { error: true });
+        if (!pb) return;
+        if (!pb.live) pb.startTime = this.video.currentTime || pb.startTime || 0;
+
+        const token = this.token;
+        const again = (opts, delayMs, msg) => {
+            this._showMsg(msg, { spinner: true });
+            setTimeout(() => { if (this.pb === pb && this.token === token) this.start(pb, null, { auto: true, ...opts }); }, delayMs);
+        };
+        if (!this.viaProxy && pb.proxyUrl) {
+            if (pb.channel) rememberProxyFirst(pb.channel.id);
+            return again({ forceProxy: true }, 300, '연결이 끊겨 서버 중계로 다시 연결하는 중...');
+        }
+        if (this.recoverCount < AUTO_RECOVER_MAX) {
+            this.recoverCount += 1;
+            return again({ forceProxy: this.viaProxy }, 1000 * this.recoverCount,
+                `연결이 끊겨 다시 연결하는 중... (${this.recoverCount}/${AUTO_RECOVER_MAX})`);
+        }
+        this._showMsg('재생이 끊겼습니다. 원본 서버가 응답하지 않습니다.', { error: true });
     }
 
     _needsGesture() {
@@ -525,6 +589,7 @@ class Player {
     _onTime() {
         const v = this.video;
         if (!this.pb) return;
+        if (this.recoverCount && v.currentTime - (this.playingSince || 0) > AUTO_RECOVER_RESET_SEC) this.recoverCount = 0;
         if (!this.dragging) {
             const d = this._duration();
             this.curEl.textContent = fmtClock(v.currentTime);
