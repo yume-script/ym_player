@@ -9,11 +9,30 @@ Plex 서버와 IPTV(M3U + XMLTV 편성표)를 **한 화면에서** 보는 독립
 ```bash
 git clone https://github.com/yume-script/ym_player
 cd ym_player
-pip install -r requirements.txt
-python -m ym_player          # http://127.0.0.1:8899
+python3 -m venv .venv                 # Ubuntu/Debian은 시스템 pip 설치를 막아서 venv를 쓴다
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python -m ym_player         # http://127.0.0.1:8899
 ```
 
-테스트: `pip install pytest && python -m pytest -q`
+`python3 -m venv`가 안 되면 먼저 `sudo apt install python3-venv`.
+테스트: `.venv/bin/pip install pytest && .venv/bin/python -m pytest -q`
+
+### 서버가 켜질 때 자동 실행 (systemd)
+
+`deploy/ym_player.service`는 저장소가 `/mnt/ym_player`에 있다고 가정합니다. 다른 곳이면 파일 안의
+`WorkingDirectory`/`ExecStart` 두 줄만 고치세요.
+
+```bash
+sudo cp deploy/ym_player.service /etc/systemd/system/
+sudo cp deploy/ym_player.env.example /etc/ym_player.env
+sudo chmod 600 /etc/ym_player.env
+sudo nano /etc/ym_player.env          # MP_USER / MP_PASSWORD 바꾸기
+sudo systemctl daemon-reload
+sudo systemctl enable --now ym_player
+```
+
+상태와 로그: `systemctl status ym_player`, `journalctl -u ym_player -f`.
+코드를 업데이트한 뒤에는 `git pull && sudo systemctl restart ym_player`.
 
 | 환경변수 | 기본값 | 설명 |
 |---|---|---|
