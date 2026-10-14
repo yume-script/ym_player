@@ -133,6 +133,10 @@ export async function renderSettings(main, _params, _query, ctx) {
             let st;
             try { st = await api(`${base}/status`); } catch (e) { st = { authorized: false, error: e.message }; }
             clear(box);
+            if (st.fast_crypto === false) {
+                box.appendChild(say('서버에 cryptg가 없어 텔레그램 영상이 느립니다. 서버에서 '
+                    + '`.venv/bin/pip install -r requirements.txt` 후 재시작하세요.', 'muted error'));
+            }
             if (st.authorized) {
                 box.appendChild(h('div', { class: 'row-inline' },
                     h('span', { class: 'tg-status ok' }, icon('circle-check'), ` ${st.name || '로그인됨'} (으)로 로그인됨`),
