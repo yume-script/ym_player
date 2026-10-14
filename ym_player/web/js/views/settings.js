@@ -24,10 +24,14 @@ export async function renderSettings(main, _params, _query, ctx) {
                     icon('server'), ' Plex 직접 입력'),
                 h('button', { class: 'btn', on: { click: () => add({ type: 'iptv', name: 'IPTV', m3u: '', epg: '', enabled: true }) } },
                     icon('tower-broadcast'), ' IPTV 추가'),
+                h('button', {
+                    class: 'btn',
+                    on: { click: () => add({ type: 'telegram', name: 'Telegram', api_id: '', api_hash: '', phone: '', channels: [], enabled: true }) },
+                }, icon('paper-plane'), ' 텔레그램 추가'),
                 saveBtn)),
         h('p', { class: 'muted settings-note' },
             'Plex 토큰은 이 서버(data/config.json)에만 저장되고 브라우저로는 내려오지 않습니다. ',
-            '토큰 칸을 비워두고 저장하면 기존 토큰을 그대로 씁니다.'),
+            '토큰 칸을 비워두고 저장하면 기존 토큰을 그대로 씁니다. (텔레그램 API Hash도 같습니다)'),
         list);
     main.appendChild(page);
 
@@ -86,6 +90,102 @@ export async function renderSettings(main, _params, _query, ctx) {
         return wrap;
     }
 
+    /**
+     * 텔레그램 로그인 + 볼 채널 고르기. 서버에 저장된 소스(API ID/Hash가 서버에 있음)만 가능.
+     * 로그인: [인증 코드 받기] -> 텔레그램 앱으로 온 코드 입력 -> (2단계 인증이면) 비밀번호
+     */
+    function telegramLogin(src) {
+        const box = h('div', { class: 'tg-login' });
+        const wrap = h('div', { class: 'field' }, h('span', { class: 'field-label', text: '로그인과 채널' }), box);
+        if (!registry.config.sources.some((x) => x.id === src.id)) {
+            box.appendChild(h('span', { class: 'muted', text: 'API ID/Hash를 넣고 먼저 [저장]하면 여기서 로그인할 수 있습니다.' }));
+            return wrap;
+        }
+        const base = `/api/tg/${encodeURIComponent(src.id)}`;
+        const say = (text, cls = 'muted') => h('span', { class: cls, text });
+
+        const showChannels = async () => {
+            const list = h('div', { class: 'lib-picker' }, say('채널 목록을 불러오는 중...'));
+            box.appendChild(h('div', { class: 'field' },
+                h('span', { class: 'field-label', text: '볼 채널 (체크한 채널이 라이브러리처럼 보입니다)' }), list));
+            try {
+                const { channels } = await api(`${base}/channels`);
+                clear(list);
+                if (!channels.length) { list.appendChild(say('들어가 있는 채널/그룹이 없습니다.')); return; }
+                const chosen = new Map((src.channels || []).map((c) => [String(c.id), c]));
+                channels.forEach((c) => {
+                    const chk = h('input', { type: 'checkbox', checked: chosen.has(String(c.id)) });
+                    chk.addEventListener('change', () => {
+                        if (chk.checked) chosen.set(String(c.id), { id: c.id, title: c.title }); else chosen.delete(String(c.id));
+                        src.channels = [...chosen.values()];
+                        touch();
+                    });
+                    list.appendChild(h('label', { class: 'check lib-check', title: c.username ? `@${c.username}` : '' },
+                        chk, icon(c.kind === 'group' ? 'users' : 'bullhorn'), ` ${c.title}`));
+                });
+            } catch (e) {
+                clear(list).appendChild(say(`채널 목록 실패: ${e.message}`, 'muted error'));
+            }
+        };
+
+        const render = async () => {
+            clear(box).appendChild(say('상태 확인 중...'));
+            let st;
+            try { st = await api(`${base}/status`); } catch (e) { st = { authorized: false, error: e.message }; }
+            clear(box);
+            if (st.authorized) {
+                box.appendChild(h('div', { class: 'row-inline' },
+                    h('span', { class: 'tg-status ok' }, icon('circle-check'), ` ${st.name || '로그인됨'} (으)로 로그인됨`),
+                    h('button', {
+                        class: 'btn btn-sm',
+                        on: { click: async () => {
+                            if (!confirm('이 서버의 텔레그램 로그인을 끊을까요? (텔레그램 "활성 세션"에서도 빠집니다)')) return;
+                            try { await api(`${base}/logout`, { method: 'POST' }); } catch (e) { toast(e.message, 'error'); }
+                            render();
+                        } },
+                    }, icon('right-from-bracket'), ' 로그아웃')));
+                showChannels();
+                return;
+            }
+            if (st.error) box.appendChild(say(st.error, 'muted error'));
+            const phoneIn = h('input', { class: 'input', value: src.phone || st.phone || '', placeholder: '+821012345678' });
+            const codeIn = h('input', { class: 'input', placeholder: '텔레그램 앱으로 온 인증 코드', inputmode: 'numeric', autocomplete: 'one-time-code' });
+            const pwIn = h('input', { class: 'input', type: 'password', placeholder: '2단계 인증 비밀번호', autocomplete: 'current-password' });
+            const codeRow = h('div', { class: 'row-inline hidden' }, codeIn);
+            const pwRow = h('div', { class: 'row-inline hidden' }, pwIn);
+            const run = async (btn, fn) => {
+                btn.disabled = true;
+                try { await fn(); } catch (e) { toast(e.message, 'error', 6000); } finally { btn.disabled = false; }
+            };
+            const sendBtn = h('button', { class: 'btn btn-sm', text: '인증 코드 받기' });
+            sendBtn.addEventListener('click', () => run(sendBtn, async () => {
+                await api(`${base}/code`, { method: 'POST', json: { phone: phoneIn.value.trim() } });
+                codeRow.classList.remove('hidden');
+                codeIn.focus();
+                toast('텔레그램 앱(또는 SMS)으로 인증 코드를 보냈습니다.');
+            }));
+            const signBtn = h('button', { class: 'btn btn-sm btn-accent', text: '로그인' });
+            signBtn.addEventListener('click', () => run(signBtn, async () => {
+                const res = await api(`${base}/sign-in`, { method: 'POST', json: { code: codeIn.value.trim() } });
+                if (res.password_required) { pwRow.classList.remove('hidden'); pwIn.focus(); toast('2단계 인증 비밀번호를 넣어 주세요.'); return; }
+                toast('텔레그램에 로그인했습니다.', 'success');
+                render();
+            }));
+            const pwBtn = h('button', { class: 'btn btn-sm btn-accent', text: '확인' });
+            pwBtn.addEventListener('click', () => run(pwBtn, async () => {
+                await api(`${base}/sign-in`, { method: 'POST', json: { password: pwIn.value } });
+                toast('텔레그램에 로그인했습니다.', 'success');
+                render();
+            }));
+            codeRow.appendChild(signBtn);
+            pwRow.appendChild(pwBtn);
+            box.append(h('div', { class: 'row-inline' }, phoneIn, sendBtn), codeRow, pwRow,
+                say('비밀번호는 이 서버를 거쳐 텔레그램으로 바로 넘어가고 저장되지 않습니다. 로그인 세션만 서버에 남습니다.'));
+        };
+        render();
+        return wrap;
+    }
+
     function draw() {
         clear(list);
         if (!drafts.length) {
@@ -93,7 +193,18 @@ export async function renderSettings(main, _params, _query, ctx) {
         }
         drafts.forEach((src, i) => {
             const isPlex = src.type === 'plex';
-            const fields = isPlex ? [
+            const isTg = src.type === 'telegram';
+            const fields = isTg ? [
+                h('div', { class: 'row-2' },
+                    field('API ID', bindInput(src, 'api_id', h('input', { class: 'input', value: src.api_id || '', placeholder: '숫자', inputmode: 'numeric' }))),
+                    field('API Hash', bindInput(src, 'api_hash', h('input', {
+                        class: 'input', type: 'password', value: src.api_hash || '', autocomplete: 'off',
+                        placeholder: src.has_api_hash ? '저장된 값 사용 중 (바꿀 때만 입력)' : '32자리',
+                    })))),
+                h('span', { class: 'field-hint' }, 'my.telegram.org → API development tools에서 발급합니다. 바꾼 뒤에는 먼저 [저장]하세요.'),
+                field('전화번호', bindInput(src, 'phone', h('input', { class: 'input', value: src.phone || '', placeholder: '+821012345678 (국가번호 포함)' }))),
+                telegramLogin(src),
+            ] : isPlex ? [
                 field('서버 주소', bindInput(src, 'url', h('input', { class: 'input', value: src.url || '', placeholder: 'http://192.168.0.10:32400' }))),
                 field('토큰 (X-Plex-Token)', bindInput(src, 'token', h('input', {
                     class: 'input', type: 'password', value: src.token || '', autocomplete: 'off',
@@ -110,7 +221,8 @@ export async function renderSettings(main, _params, _query, ctx) {
             const move = (d) => { const j = i + d; if (j < 0 || j >= drafts.length) return; [drafts[i], drafts[j]] = [drafts[j], drafts[i]]; touch(); draw(); };
             list.appendChild(h('div', { class: `src-card${src.enabled ? '' : ' disabled'}` },
                 h('div', { class: 'src-head' },
-                    h('span', { class: `src-type ${src.type}` }, icon(isPlex ? 'server' : 'tower-broadcast'), isPlex ? ' Plex' : ' IPTV'),
+                    h('span', { class: `src-type ${src.type}` },
+                        icon(isTg ? 'paper-plane' : isPlex ? 'server' : 'tower-broadcast'), isTg ? ' 텔레그램' : isPlex ? ' Plex' : ' IPTV'),
                     bindInput(src, 'name', h('input', { class: 'input src-name', value: src.name || '', placeholder: '이름' })),
                     h('label', { class: 'check' }, bindInput(src, 'enabled', h('input', { type: 'checkbox', checked: !!src.enabled }), 'checked'), ' 사용'),
                     h('button', { class: 'icon-btn', title: '위로', on: { click: () => move(-1) } }, icon('arrow-up')),

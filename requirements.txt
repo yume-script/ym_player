@@ -1,1 +1,2 @@
 aiohttp>=3.9
+telethon>=1.36

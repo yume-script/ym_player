@@ -3,8 +3,9 @@
 import { api } from '../util.js';
 import { PlexProvider } from './plex.js';
 import { IptvProvider } from './iptv.js';
+import { TelegramProvider } from './telegram.js';
 
-const TYPES = { plex: PlexProvider, iptv: IptvProvider };
+const TYPES = { plex: PlexProvider, iptv: IptvProvider, telegram: TelegramProvider };
 
 export const registry = {
     config: { client_id: '', sources: [] },

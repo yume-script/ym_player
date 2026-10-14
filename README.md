@@ -1,6 +1,6 @@
 # 🎬 Yume Player — Plex 스타일 독립형 동영상 플레이어
 
-Plex 서버와 IPTV(M3U + XMLTV 편성표)를 **한 화면에서** 보는 독립 실행형 웹 플레이어입니다.
+Plex 서버, IPTV(M3U + XMLTV 편성표), **텔레그램 채널 동영상**을 **한 화면에서** 보는 독립 실행형 웹 플레이어입니다.
 북오아시스 `ym_m3u_player` 플러그인의 재생 엔진(hls.js / mpegts.js / 네이티브)과 M3U·EPG 처리를
 그대로 옮겨 오고, 화면은 Plex 웹처럼 다시 만들었습니다. 북오아시스 없이 파이썬 하나로 돕니다.
 
@@ -47,6 +47,9 @@ sudo systemctl enable --now ym_player
 - **Plex 직접 입력**: 서버 주소(`http://192.168.0.10:32400`)와 `X-Plex-Token`.
 - **가져올 라이브러리**: 저장된 Plex 소스에는 라이브러리 체크 목록이 나옵니다. 체크를 끈 라이브러리는 사이드바·홈·검색에서
   빠집니다. 끈 것만 기억하므로 나중에 Plex에 새로 만든 라이브러리는 기본으로 보입니다.
+- **텔레그램 추가**: [my.telegram.org](https://my.telegram.org) → *API development tools*에서 받은 **API ID / API Hash**와
+  전화번호를 넣고 **[저장]** → 같은 카드에서 **[인증 코드 받기]** → 텔레그램 앱으로 온 코드 입력 → (2단계 인증을 쓰면) 비밀번호.
+  로그인되면 들어가 있는 채널/그룹 목록이 나오고, 체크한 채널이 사이드바에 라이브러리처럼 붙습니다(체크 후 다시 [저장]).
 - **IPTV 추가**: M3U 주소 + (선택) XMLTV 편성표 주소. `.xml.gz`도 됩니다.
 
 ## 화면
@@ -80,12 +83,13 @@ sudo systemctl enable --now ym_player
 ```
 ym_player/                       저장소 루트
 ├── requirements.txt
-├── tests/                       test_ym_player.py, test_subtitles.py
+├── tests/                       test_ym_player.py, test_subtitles.py, test_telegram.py
 └── ym_player/                   파이썬 패키지 (python -m ym_player)
     ├── server.py                aiohttp 서버 - 정적 파일 + 아래 API
     ├── iptv.py                  M3U 파싱, XMLTV 파싱(iterparse, gzip), HLS 재생목록 주소 바꾸기 (순수 함수)
     ├── config_store.py          data/config.json 읽기/쓰기, 토큰 숨기기
     ├── subtitles.py             자막 SRT/SMI/ASS/VTT -> WebVTT 변환 (순수 함수)
+    ├── telegram_src.py          텔레그램: Telethon 로그인/채널/색인(SQLite)/Range 스트림/썸네일/이어보기
     └── web/
         ├── index.html
         ├── css/app.css          Plex 다크 테마
@@ -96,6 +100,7 @@ ym_player/                       저장소 루트
             ├── providers/
             │   ├── index.js     소스 종류 등록소
             │   ├── plex.js      Plex 소스
+            │   ├── telegram.js  텔레그램 채널 소스
             │   └── iptv.js      IPTV 소스 (채널, 편성표, 즐겨찾기)
             └── views/           home / library / detail / live / search / settings
 ```
@@ -108,6 +113,9 @@ ym_player/                       저장소 루트
 | `GET /api/iptv/{id}/channels` | M3U를 받아 채널 JSON으로 (10분 캐시, `?refresh=1`) |
 | `GET /api/iptv/{id}/epg` | XMLTV를 받아 **지금 −3시간 ~ +24시간**만 JSON으로 (30분 캐시) |
 | `GET /api/stream?url=&ua=&ref=` | CORS·혼합콘텐츠로 막힌 스트림 중계. `.m3u8`이면 안의 주소(세그먼트·키·하위 목록)도 전부 중계 주소로 바꿈 |
+| `/api/tg/{id}/status · code · sign-in · logout` | 텔레그램 로그인 (코드 → 2단계 비밀번호) |
+| `GET /api/tg/{id}/channels · videos · video/{c}/{m} · home` | 채널 목록, 영상 목록(색인·과거 채우기), 영상 하나, 홈 줄 |
+| `GET /api/tg/{id}/stream/{c}/{m}` · `thumb/{c}/{m}` · `POST progress` | Range 스트림, 썸네일, 재생 위치 저장 (설정에서 고른 채널만) |
 | `GET /api/plex-sub/{id}?path=/library/streams/N&codec=` | Plex 외부 자막 파일을 받아 WebVTT로 바꿔 줌 (자막 스트림 경로만 허용) |
 | `* /api/plex/{id}/...` | Plex API·이미지·스트림 중계. **토큰은 서버가 붙임** (브라우저에 안 보임) |
 | `POST /api/plex-auth/pin`, `GET /api/plex-auth/pin/{id}` | plex.tv PIN 로그인 |
@@ -127,6 +135,23 @@ getLibraryItems(...)  -> {items, total}                     (Plex만)
 getPlayback(id|채널)  -> {url, kind: 'hls'|'ts'|'direct', live, proxyUrl?, startTime,
                           onProgress(state, sec), onStop(sec), getNext()}
 ```
+
+## 텔레그램 채널
+
+북오아시스 `bookoasis_telegram_video` 플러그인에서 **동영상 부분**을 옮겨 왔습니다(PDF/이미지/브라우저 직접 재생은 제외).
+서버가 [Telethon](https://docs.telethon.dev)으로 텔레그램에 계속 붙어 있으면서:
+
+- **색인**: 채널의 동영상 메시지(움짤·스티커·둥근 영상 메시지는 제외)를 `data/telegram.db`에 기록합니다. 화면을 열면
+  새로 올라온 것부터(2분에 한 번), 목록을 끝까지 내리면 더 오래된 메시지를 400개씩 더 훑어서 채웁니다. 그래서 오래된
+  영상이 많은 채널은 처음엔 개수가 "N개+"로 보이다가 내릴수록 늘어납니다. 제목은 캡션 첫 줄 → 파일명 순.
+- **재생**: 브라우저의 Range 요청을 텔레그램 파일의 해당 위치부터 그대로 받아 넘깁니다(탐색 가능, 서버에 파일을 저장하지 않음).
+  mp4(H.264/AAC)는 거의 다 나오고, mkv는 브라우저가 읽을 수 있는 코덱일 때만 나옵니다(변환은 하지 않음).
+- **썸네일**: 메시지의 작은 미리보기를 처음 한 번 받아 `data/telegram_thumbs/`에 저장합니다.
+- **이어보기**: 텔레그램엔 시청 기록이 없어서 재생 위치를 이 서버 DB에 저장합니다. 30초 넘게 보다 만 영상이 홈 "이어보기"에 나오고,
+  95% 넘게 보면 본 것으로 표시됩니다.
+- 로그인 세션은 `data/telegram_<소스id>.session`(권한 600)에 남습니다. **이 파일은 계정 열쇠와 같으니** 남에게 주지 마세요.
+  설정에서 [로그아웃]하거나 소스를 지우면 텔레그램의 "활성 세션"에서도 빠지고 색인도 지워집니다.
+- 큰 파일을 빨리 받으려면 `pip install cryptg`(선택, 빌드 도구 필요)를 같이 깔면 Telethon 암호화가 빨라집니다.
 
 ## 재생 방식
 

@@ -558,3 +558,15 @@ body[data-cue-size="l"] .player video::cue { font-size: 2.2rem; }
 .lib-check { color: var(--text); }
 .lib-check i { color: var(--muted); width: 1rem; text-align: center; }
 .muted.error { color: var(--danger); }
+
+/* 텔레그램 채널: 16:9 카드 격자 */
+.grid-wide { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+.src-type.telegram { color: #2aabee; }
+.tg-login { display: flex; flex-direction: column; gap: 0.6rem; padding: 0.75rem; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
+.tg-login .row-inline { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+.tg-login .row-inline .input { flex: 1; min-width: 160px; }
+.tg-status { display: flex; align-items: center; gap: 0.5rem; }
+.tg-status.ok { color: var(--ok); }
+@media (max-width: 900px) { .grid-wide { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); } }
+.row-2 { display: grid; grid-template-columns: 1fr 2fr; gap: 0.75rem; }
+@media (max-width: 900px) { .row-2 { grid-template-columns: 1fr; } }

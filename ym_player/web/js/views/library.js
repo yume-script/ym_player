@@ -13,7 +13,8 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
     const libs = await p.getLibraries().catch(() => []);
     if (!ctx.alive()) return;
     const lib = libs.find((l) => l.id === libId) || { title: '라이브러리', type: 'movie' };
-    const tab = query.get('tab') || 'library';
+    // 추천 탭은 섹션 허브가 있는 소스(Plex)만
+    const tab = p.getLibraryHubs ? (query.get('tab') || 'library') : 'library';
 
     const tabLink = (id, label) => h('a', {
         class: `tab${tab === id ? ' active' : ''}`, href: `#/library/${pid}/${libId}?tab=${id}`, text: label,
@@ -22,7 +23,7 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
     const page = h('div', { class: 'page library' },
         h('div', { class: 'page-head' },
             h('h1', {}, icon(lib.icon || 'film'), ` ${lib.title}`),
-            h('div', { class: 'tabs' }, tabLink('recommended', '추천'), tabLink('library', '라이브러리'))),
+            p.getLibraryHubs ? h('div', { class: 'tabs' }, tabLink('recommended', '추천'), tabLink('library', '라이브러리')) : null),
         body);
     main.appendChild(page);
 
@@ -47,12 +48,12 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
         p.librarySorts().map(([v, label]) => h('option', { value: v, text: label, selected: v === pref.sort })));
     const unwatchedChk = h('input', { type: 'checkbox', checked: !!pref.unwatched });
     const countEl = h('span', { class: 'muted' });
-    const grid = h('div', { class: `grid${lib.type === 'artist' ? ' grid-square' : ''}` });
+    const grid = h('div', { class: `grid${lib.type === 'artist' ? ' grid-square' : ''}${lib.type === 'telegram' ? ' grid-wide' : ''}` });
     const sentinel = h('div', { class: 'sentinel' });
     body.append(
         h('div', { class: 'toolbar' },
             countEl,
-            h('label', { class: 'check' }, unwatchedChk, ' 안 본 것만'),
+            p.kind === 'plex' ? h('label', { class: 'check' }, unwatchedChk, ' 안 본 것만') : null,
             h('label', { class: 'muted' }, '정렬 ', sortSel)),
         grid, sentinel);
 
@@ -67,7 +68,8 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
             total = res.total;
             start += res.items.length;
             if (!res.items.length) total = start;
-            countEl.textContent = `${total.toLocaleString()}개`;
+            // 텔레그램처럼 오래된 쪽을 아직 다 훑지 않은 소스는 "지금까지 찾은 수+"로
+            countEl.textContent = res.approx ? `${(res.shown || 0).toLocaleString()}개+` : `${total.toLocaleString()}개`;
             res.items.forEach((it) => grid.appendChild(posterCard(it)));
             if (!start) grid.appendChild(emptyState('film', '항목이 없습니다'));
         } catch (e) {
