@@ -2,6 +2,7 @@
 // Plex는 토큰을 직접 넣거나, plex.tv PIN 로그인으로 서버 목록을 받아 고를 수 있다.
 import { h, icon, clear, api, toast, modal } from '../util.js';
 import { registry } from '../providers/index.js';
+import { PlexProvider } from '../providers/plex.js';
 
 function field(label, input, hint) {
     return h('label', { class: 'field' }, h('span', { class: 'field-label', text: label }), input,
@@ -47,6 +48,44 @@ export async function renderSettings(main, _params, _query, ctx) {
         return input;
     }
 
+    /**
+     * 가져올 라이브러리 체크 목록. 서버에 저장된 소스만 목록을 받아올 수 있다(토큰이 서버에 있어서).
+     * 체크를 끈 것만 hidden_libraries에 남기므로 나중에 Plex에 생긴 새 라이브러리는 기본으로 보인다.
+     */
+    function libraryPicker(src) {
+        const box = h('div', { class: 'lib-picker' });
+        // field()는 <label>이라 안에 체크박스 여러 개를 넣으면 제목을 눌러도 첫 체크박스가 바뀐다 -> div로
+        const wrap = h('div', { class: 'field' },
+            h('span', { class: 'field-label', text: '가져올 라이브러리' }), box,
+            h('span', { class: 'field-hint', text: '체크를 끈 라이브러리는 사이드바·홈·검색에 나오지 않습니다.' }));
+        const saved = registry.config.sources.some((s) => s.id === src.id);
+        if (!saved) {
+            box.appendChild(h('span', { class: 'muted', text: '먼저 [저장]하면 이 서버의 라이브러리 목록이 나옵니다.' }));
+            return wrap;
+        }
+        box.appendChild(h('span', { class: 'muted' }, icon('circle-notch', 'fa-spin'), ' 라이브러리 목록을 불러오는 중...'));
+        new PlexProvider(src, registry.config.client_id).getLibraries({ all: true }).then((libs) => {
+            clear(box);
+            if (!libs.length) {
+                box.appendChild(h('span', { class: 'muted', text: '볼 수 있는 라이브러리(영화/TV/음악)가 없습니다.' }));
+                return;
+            }
+            const hidden = new Set((src.hidden_libraries || []).map(String));
+            libs.forEach((lib) => {
+                const chk = h('input', { type: 'checkbox', checked: !hidden.has(lib.id) });
+                chk.addEventListener('change', () => {
+                    if (chk.checked) hidden.delete(lib.id); else hidden.add(lib.id);
+                    src.hidden_libraries = [...hidden];
+                    touch();
+                });
+                box.appendChild(h('label', { class: 'check lib-check' }, chk, icon(lib.icon), ` ${lib.title}`));
+            });
+        }).catch((e) => {
+            clear(box).appendChild(h('span', { class: 'muted error', text: `라이브러리 목록을 못 불러왔습니다: ${e.message}` }));
+        });
+        return wrap;
+    }
+
     function draw() {
         clear(list);
         if (!drafts.length) {
@@ -62,6 +101,7 @@ export async function renderSettings(main, _params, _query, ctx) {
                 }))),
                 h('label', { class: 'check' }, bindInput(src, 'verify_ssl', h('input', { type: 'checkbox', checked: src.verify_ssl !== false }), 'checked'),
                     ' HTTPS 인증서 확인 (자체 서명 인증서면 끄기)'),
+                libraryPicker(src),
             ] : [
                 field('M3U 주소', bindInput(src, 'm3u', h('input', { class: 'input', value: src.m3u || '', placeholder: 'https://iptv-org.github.io/iptv/countries/kr.m3u' }))),
                 field('EPG(XMLTV) 주소', bindInput(src, 'epg', h('input', { class: 'input', value: src.epg || '', placeholder: '선택 - .xml 또는 .xml.gz' })),

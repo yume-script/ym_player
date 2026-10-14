@@ -255,3 +255,21 @@ def test_basic_auth_when_configured(monkeypatch, tmp_path):
             await client.close()
 
     asyncio.run(run())
+
+
+def test_config_hidden_libraries(monkeypatch, tmp_path):
+    monkeypatch.setattr(config_store, "CONFIG_FILE", str(tmp_path / "config.json"))
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    cfg = config_store.load()
+    config_store.replace_sources(cfg, [
+        {"id": "p1", "type": "plex", "name": "집", "url": "http://plex:32400", "token": "T",
+         "hidden_libraries": [3, "1", "1", " "]},
+        {"id": "p2", "type": "plex", "name": "옛 설정", "url": "http://plex2:32400", "token": "T"},
+        {"id": "p3", "type": "plex", "name": "깨진 값", "url": "http://plex3:32400", "token": "T", "hidden_libraries": "3"},
+    ])
+    config_store.save(cfg)
+    pub = {s["id"]: s for s in config_store.public_config(config_store.load())["sources"]}
+    # 숫자/문자 섞여도 문자열 key로, 중복·빈 값 제거
+    assert pub["p1"]["hidden_libraries"] == ["1", "3"]
+    # 예전 설정(키 없음)이나 목록이 아닌 값은 "다 보임"
+    assert pub["p2"]["hidden_libraries"] == [] and pub["p3"]["hidden_libraries"] == []

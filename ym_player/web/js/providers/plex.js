@@ -53,6 +53,8 @@ export class PlexProvider {
         this.id = src.id;
         this.name = src.name;
         this.kind = 'plex';
+        // 설정에서 체크를 끈(가져오지 않을) 라이브러리 섹션 key
+        this.hidden = new Set((src.hidden_libraries || []).map(String));
         this.clientId = clientId;
         this.base = `/api/plex/${encodeURIComponent(src.id)}`;
     }
@@ -117,18 +119,29 @@ export class PlexProvider {
         };
     }
 
-    async getLibraries() {
+    /** all=true면 설정 화면용으로 숨긴 라이브러리까지 전부 */
+    async getLibraries({ all = false } = {}) {
         const mc = await this.req('/library/sections');
         return (mc.Directory || [])
-            .filter((d) => LIB_ICONS[d.type])
+            .filter((d) => LIB_ICONS[d.type] && (all || !this.hidden.has(String(d.key))))
             .map((d) => ({ id: String(d.key), title: d.title, type: d.type, icon: LIB_ICONS[d.type] }));
+    }
+
+    // 숨긴 라이브러리의 항목은 홈 허브/검색 결과에서도 뺀다 (허브 하나가 여러 라이브러리를 섞어 담기도 해서 항목 단위로)
+    visible(m) {
+        return m.librarySectionID === undefined || !this.hidden.has(String(m.librarySectionID));
+    }
+
+    hubsToRows(hubs, suffix = '') {
+        return (hubs || [])
+            .map((hub) => ({ hub, items: (hub.Metadata || []).filter((m) => this.visible(m)) }))
+            .filter(({ items }) => items.length)
+            .map(({ hub, items }) => ({ title: `${hub.title}${suffix}`, source: suffix ? undefined : this.name, items: items.map((m) => this.toItem(m)) }));
     }
 
     async getHomeHubs() {
         const mc = await this.req('/hubs', { count: 18 });
-        return (mc.Hub || [])
-            .filter((hub) => hub.Metadata && hub.Metadata.length)
-            .map((hub) => ({ title: `${hub.title}`, source: this.name, items: hub.Metadata.map((m) => this.toItem(m)) }));
+        return this.hubsToRows(mc.Hub);
     }
 
     async getLibraryHubs(libId) {
@@ -220,9 +233,7 @@ export class PlexProvider {
 
     async search(query) {
         const mc = await this.req('/hubs/search', { query, limit: 20 });
-        return (mc.Hub || [])
-            .filter((hub) => hub.Metadata && hub.Metadata.length)
-            .map((hub) => ({ title: `${hub.title} · ${this.name}`, items: hub.Metadata.map((m) => this.toItem(m)) }));
+        return this.hubsToRows(mc.Hub, ` · ${this.name}`);
     }
 
     async setWatched(id, watched) {

@@ -552,3 +552,9 @@ body[data-cue-size="l"] .player video::cue { font-size: 2.2rem; }
 .nav-group.collapsed .nav-chevron { transform: rotate(-90deg); }
 .nav-group.collapsed .nav-items { display: none; }
 .nav-group.collapsed { margin-top: 0.35rem; }
+
+/* 설정: 가져올 Plex 라이브러리 */
+.lib-picker { display: flex; flex-wrap: wrap; gap: 0.5rem 1.25rem; padding: 0.6rem 0.75rem; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
+.lib-check { color: var(--text); }
+.lib-check i { color: var(--muted); width: 1rem; text-align: center; }
+.muted.error { color: var(--danger); }
