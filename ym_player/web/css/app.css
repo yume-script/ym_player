@@ -540,3 +540,15 @@ body[data-cue-size="l"] .player video::cue { font-size: 2.2rem; }
     body[data-cue-size="l"] .player video::cue { font-size: 1.5rem; }
     body[data-cue-size="s"] .player video::cue { font-size: 0.9rem; }
 }
+
+/* ---------- 사이드바 소스 아코디언 (소스가 둘 이상일 때) ---------- */
+.nav-toggle {
+    display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; width: 100%;
+    border: none; background: none; cursor: pointer; text-align: left; border-radius: var(--radius);
+}
+.nav-toggle span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nav-toggle:hover { color: var(--text); background: var(--bg-elev2); }
+.nav-chevron { font-size: 0.65rem; transition: transform 0.2s; flex-shrink: 0; }
+.nav-group.collapsed .nav-chevron { transform: rotate(-90deg); }
+.nav-group.collapsed .nav-items { display: none; }
+.nav-group.collapsed { margin-top: 0.35rem; }

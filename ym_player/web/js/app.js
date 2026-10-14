@@ -1,5 +1,5 @@
 // 앱 뼈대: 왼쪽 사이드바(홈 / 라이브 TV / Plex 라이브러리 / 설정) + 위쪽 검색창 + 해시 라우터.
-import { h, icon, clear, toast } from './util.js';
+import { h, icon, clear, toast, storeGet, storeSet } from './util.js';
 import { registry } from './providers/index.js';
 import { emptyState } from './cards.js';
 import './player.js';
@@ -64,10 +64,38 @@ async function render() {
 
 function highlightNav() {
     const here = location.hash || '#/home';
+    let activeGroup = null;
     nav.querySelectorAll('a').forEach((a) => {
         const href = a.getAttribute('href');
-        a.classList.toggle('active', here === href || (href !== '#/home' && here.startsWith(href + '?')) || (href.startsWith('#/library') && here.startsWith(href)));
+        const on = here === href || (href !== '#/home' && here.startsWith(href + '?')) || (href.startsWith('#/library') && here.startsWith(href));
+        a.classList.toggle('active', on);
+        if (on && a.closest('.nav-group')) activeGroup = a.closest('.nav-group');
     });
+    // 다른 화면에서 그 소스의 메뉴로 들어오면(홈 카드 클릭 등) 그 소스를 펼쳐 준다
+    if (activeGroup) openGroup(activeGroup.dataset.pid);
+    const pid = currentItemPid(here);
+    if (!activeGroup && pid) openGroup(pid);
+}
+
+// 상세 화면(#/item/{pid}/...)도 어느 소스 것인지 알 수 있다
+function currentItemPid(hash) {
+    const m = hash.match(/^#\/(?:item|library|live)\/([^/?]+)/);
+    return m ? decodeURIComponent(m[1]) : null;
+}
+
+const NAV_OPEN_KEY = 'yp_nav_open';
+
+/** 소스가 둘 이상이면 아코디언: 하나를 펼치면 나머지 소스의 하위 메뉴는 접는다. pid=null이면 모두 접기 */
+function openGroup(pid) {
+    const groups = [...nav.querySelectorAll('.nav-group')];
+    if (groups.length < 2) return;
+    if (pid !== null && !groups.some((g) => g.dataset.pid === pid)) return;
+    groups.forEach((g) => {
+        const open = g.dataset.pid === pid;
+        g.classList.toggle('collapsed', !open);
+        g.querySelector('.nav-head').setAttribute('aria-expanded', String(open));
+    });
+    storeSet(NAV_OPEN_KEY, pid);
 }
 
 function navLink(href, iconName, label) {
@@ -80,23 +108,38 @@ async function buildNav() {
     const iptvs = registry.ofKind('iptv');
     if (iptvs.length) nav.appendChild(navLink('#/live', 'tower-broadcast', '라이브 TV'));
 
+    const accordion = registry.providers.length > 1;
     for (const p of registry.providers) {
-        const group = h('div', { class: 'nav-group' }, h('div', { class: 'nav-head', text: p.name }));
+        const items = h('div', { class: 'nav-items' });
+        const head = accordion
+            ? h('button', {
+                class: 'nav-head nav-toggle', title: `${p.name} 메뉴 펼치기/접기`,
+                on: { click: () => openGroup(group.classList.contains('collapsed') ? p.id : null) },
+            }, h('span', { text: p.name }), icon('chevron-down', 'nav-chevron'))
+            : h('div', { class: 'nav-head', text: p.name });
+        const group = h('div', { class: 'nav-group', dataset: { pid: p.id } }, head, items);
         nav.appendChild(group);
         if (p.kind === 'iptv') {
-            group.appendChild(navLink(`#/live/${p.id}`, 'list', '채널 편성표'));
+            items.appendChild(navLink(`#/live/${p.id}`, 'list', '채널 편성표'));
             continue;
         }
-        group.appendChild(h('div', { class: 'nav-loading' }, icon('circle-notch', 'fa-spin')));
+        const spinner = h('div', { class: 'nav-loading' }, icon('circle-notch', 'fa-spin'));
+        items.appendChild(spinner);
         p.getLibraries().then((libs) => {
-            group.lastChild.remove();
-            if (!libs.length) group.appendChild(h('div', { class: 'nav-note', text: '라이브러리 없음' }));
-            libs.forEach((l) => group.appendChild(navLink(`#/library/${p.id}/${l.id}`, l.icon, l.title)));
+            spinner.remove();
+            if (!libs.length) items.appendChild(h('div', { class: 'nav-note', text: '라이브러리 없음' }));
+            libs.forEach((l) => items.appendChild(navLink(`#/library/${p.id}/${l.id}`, l.icon, l.title)));
             highlightNav();
         }).catch((e) => {
-            group.lastChild.remove();
-            group.appendChild(h('div', { class: 'nav-note error', title: e.message, text: '연결 실패' }));
+            spinner.remove();
+            items.appendChild(h('div', { class: 'nav-note error', title: e.message, text: '연결 실패' }));
         });
+    }
+    if (accordion) {
+        // 처음엔 지난번에 펼쳐 둔 소스, 없으면 첫 소스
+        const saved = storeGet(NAV_OPEN_KEY, undefined);
+        const ids = registry.providers.map((p) => p.id);
+        openGroup(saved === null || ids.includes(saved) ? saved : ids[0]);
     }
     highlightNav();
 }
