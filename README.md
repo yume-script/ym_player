@@ -56,7 +56,7 @@ sudo systemctl enable --now ym_player
 | 상세 | 흐린 배경 그림 + 포스터, 정보, **재생 / 이어보기 / 처음부터 / 봤음 표시**, 시즌·에피소드 목록, 출연진 |
 | 라이브 TV | Plex Live TV식 **편성표 격자**(8시간, 현재 시각 선), 그룹/검색/⭐즐겨찾기/안 나온 채널 숨기기 |
 | 검색 | 모든 소스에 동시에: Plex 검색 + 채널명·지금 방송 제목 |
-| 재생기 | 전체화면 재생, 자동으로 숨는 컨트롤, 탐색 막대, 라이브 OSD, 채널 목록 서랍, **뒤로 가면 미니 플레이어로 접힘** |
+| 재생기 | 전체화면 재생, 자동으로 숨는 컨트롤, 탐색 막대, **자막 메뉴**, 라이브 OSD, 채널 목록 서랍, **뒤로 가면 미니 플레이어로 접힘** |
 
 ### 재생기 단축키
 
@@ -68,6 +68,7 @@ sudo systemctl enable --now ym_player
 | F, 화면 두 번 클릭 | 전체화면 |
 | M | 음소거 |
 | I | 채널 정보(OSD) 다시 보기 |
+| C | 자막 메뉴 (VOD) |
 | Esc | 채널 서랍 닫기 → 미니 플레이어로 접기 |
 | / | 검색창으로 (재생기 밖에서) |
 
@@ -76,11 +77,12 @@ sudo systemctl enable --now ym_player
 ```
 ym_player/                       저장소 루트
 ├── requirements.txt
-├── tests/test_ym_player.py
+├── tests/                       test_ym_player.py, test_subtitles.py
 └── ym_player/                   파이썬 패키지 (python -m ym_player)
     ├── server.py                aiohttp 서버 - 정적 파일 + 아래 API
     ├── iptv.py                  M3U 파싱, XMLTV 파싱(iterparse, gzip), HLS 재생목록 주소 바꾸기 (순수 함수)
     ├── config_store.py          data/config.json 읽기/쓰기, 토큰 숨기기
+    ├── subtitles.py             자막 SRT/SMI/ASS/VTT -> WebVTT 변환 (순수 함수)
     └── web/
         ├── index.html
         ├── css/app.css          Plex 다크 테마
@@ -103,6 +105,7 @@ ym_player/                       저장소 루트
 | `GET /api/iptv/{id}/channels` | M3U를 받아 채널 JSON으로 (10분 캐시, `?refresh=1`) |
 | `GET /api/iptv/{id}/epg` | XMLTV를 받아 **지금 −3시간 ~ +24시간**만 JSON으로 (30분 캐시) |
 | `GET /api/stream?url=&ua=&ref=` | CORS·혼합콘텐츠로 막힌 스트림 중계. `.m3u8`이면 안의 주소(세그먼트·키·하위 목록)도 전부 중계 주소로 바꿈 |
+| `GET /api/plex-sub/{id}?path=/library/streams/N&codec=` | Plex 외부 자막 파일을 받아 WebVTT로 바꿔 줌 (자막 스트림 경로만 허용) |
 | `* /api/plex/{id}/...` | Plex API·이미지·스트림 중계. **토큰은 서버가 붙임** (브라우저에 안 보임) |
 | `POST /api/plex-auth/pin`, `GET /api/plex-auth/pin/{id}` | plex.tv PIN 로그인 |
 
@@ -132,6 +135,13 @@ getPlayback(id|채널)  -> {url, kind: 'hls'|'ts'|'direct', live, proxyUrl?, sta
   아니면 Plex 트랜스코더 **HLS**(`/video/:/transcode/universal/start.m3u8`, 자막은 영상에 입힘)로 받습니다.
   30초 넘게 보다 만 항목은 그 위치부터 이어보고, 10초마다 `/:/timeline`으로 진행 위치를 Plex에 알려서
   Plex 앱의 "이어보기"와 시청 기록이 그대로 맞습니다. 에피소드·곡이 끝나면 다음 화/곡을 이어서 틉니다.
+- **자막 (Plex)**: 재생 화면 오른쪽 아래 **CC** 버튼(또는 `C`)으로 자막을 고르거나 끄고, 글자 크기(작게/보통/크게)를
+  바꿉니다. 고른 자막은 Plex에도 저장돼서 Plex 앱과 같은 자막이 선택되고, 다음에 틀 때도 그대로 나옵니다.
+  - **외부 텍스트 자막 파일** (`.srt`, `.smi`, `.ass/.ssa`, `.vtt`): 서버가 받아서 WebVTT로 바꾼 뒤 브라우저 자막으로
+    띄웁니다. 원본 재생에서도 나오고, 영상을 다시 불러오지 않고 바로 켜고 끕니다. `.smi`는 한국어(KRCC)를 먼저 고르고,
+    UTF-8/UTF-16/CP949(EUC-KR) 인코딩을 알아서 읽습니다.
+  - **파일 안에 든 자막, 이미지 자막** (PGS·VobSub 등): 브라우저가 그릴 수 없어서 Plex가 변환하면서 영상에 입힙니다
+    ("영상에 입힘" 표시). 이걸 고르거나 다시 끄면 그 위치부터 다시 불러옵니다.
 - 편성표 매칭은 원래 플러그인과 같은 순서: `tvg-id` → 채널 표시명(공백·대소문자 무시) → 채널명 그대로.
 
 ## 주의할 점

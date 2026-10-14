@@ -103,6 +103,7 @@ class Player {
                     h('div', { class: 'vol' }, this.muteBtn, this.volRange)),
                 h('div', { class: 'ctrl-group' }, this.engineEl),
                 h('div', { class: 'ctrl-group' },
+                    this.ccBtn = btn('closed-captioning', '자막 (C)', () => this.toggleSubMenu(), 'vod-only'),
                     btn('clone', '화면 속 화면', () => this.togglePip()),
                     this.fsBtn,
                     btn('xmark', '재생 종료', () => this.stop()))));
@@ -112,7 +113,15 @@ class Player {
         this.drawer = h('aside', { class: 'ch-drawer hidden', on: { click: (e) => e.stopPropagation() } },
             h('div', { class: 'drawer-head' }, h('b', { text: '채널' }), this.drawerSearch), this.drawerList);
 
-        this.root = h('div', { class: 'player hidden' }, this.stage, this.top, this.bottom, this.drawer);
+        this.subList = h('div', { class: 'sub-list' });
+        this.subSizes = h('div', { class: 'sub-sizes' },
+            [['s', '작게'], ['m', '보통'], ['l', '크게']].map(([v, label]) =>
+                h('button', { class: 'chip', dataset: { size: v }, text: label, on: { click: () => this.setCueSize(v) } })));
+        this.subMenu = h('div', { class: 'sub-menu hidden', on: { click: (e) => e.stopPropagation() } },
+            h('div', { class: 'sub-menu-head', text: '자막' }), this.subList,
+            h('div', { class: 'sub-menu-head', text: '글자 크기' }), this.subSizes);
+
+        this.root = h('div', { class: 'player hidden' }, this.stage, this.top, this.bottom, this.drawer, this.subMenu);
 
         this.miniSlot = h('div', { class: 'mini-video', on: { click: () => this.expand() } });
         this.miniTitle = h('b');
@@ -127,6 +136,7 @@ class Player {
                 btn('xmark', '닫기', () => this.stop())));
 
         document.body.append(this.root, this.mini);
+        document.body.dataset.cueSize = storeGet('yp_cue_size', 'm');
         const vol = storeGet('yp_volume', 1);
         this.volRange.value = String(vol);
     }
@@ -210,6 +220,9 @@ class Player {
         this.posterEl.classList.toggle('hidden', !pb.audioOnly);
         this.posterEl.style.backgroundImage = pb.audioOnly && pb.poster ? `url("${pb.poster}")` : '';
         this.engineEl.textContent = '';
+        this.subMenu.classList.add('hidden');
+        this.ccBtn.classList.toggle('hidden', !(pb.subtitles && pb.subtitles.length));
+        this._syncCc();
         this._syncFav();
         this._showMsg(`"${pb.title}" 연결 중...`, { spinner: true });
         if (pb.live) this.showOsd();
@@ -219,6 +232,7 @@ class Player {
         this._destroyEngines();
         this.video.removeAttribute('src');
         this.video.load();
+        this._applyTrack(pb.textTrack);
 
         let label;
         try {
@@ -597,7 +611,8 @@ class Player {
         this.root.classList.add('show-ui');
         clearTimeout(this.uiTimer);
         this.uiTimer = setTimeout(() => {
-            if (!this.video.paused && this.drawer.classList.contains('hidden') && !this.dragging) {
+            if (!this.video.paused && this.drawer.classList.contains('hidden')
+                && this.subMenu.classList.contains('hidden') && !this.dragging) {
                 this.root.classList.remove('show-ui');
             }
         }, UI_HIDE_MS);
@@ -629,6 +644,77 @@ class Player {
         const sub = cur ? cur[2] : (pb.channel.group || '');
         this.subEl.textContent = sub;
         this.miniSub.textContent = sub;
+    }
+
+    // ------------------------------------------------------------------
+    // 자막
+    // ------------------------------------------------------------------
+    /** 외부 텍스트 자막을 <track>으로 붙인다 (null이면 떼기). 엔진과 상관없이 같은 <video>에 붙는다. */
+    _applyTrack(track) {
+        const v = this.video;
+        v.querySelectorAll('track').forEach((t) => t.remove());
+        if (!track) return;
+        const el = h('track', { kind: 'subtitles', src: track.src, label: track.label, srclang: track.lang || 'und', default: true });
+        el.addEventListener('load', () => { el.track.mode = 'showing'; });
+        el.addEventListener('error', () => toast('자막 파일을 불러오지 못했습니다.', 'error'));
+        v.appendChild(el);
+        el.track.mode = 'showing';
+    }
+
+    toggleSubMenu() {
+        const pb = this.pb;
+        if (!pb || !pb.subtitles || !pb.subtitles.length) return;
+        const open = this.subMenu.classList.toggle('hidden') === false;
+        if (open) this._renderSubMenu();
+        this._wakeUi();
+    }
+
+    _renderSubMenu() {
+        const pb = this.pb;
+        clear(this.subList);
+        const row = (id, label, note) => h('button', {
+            class: `sub-item${pb.activeSubtitle === id ? ' active' : ''}`,
+            on: { click: () => this.chooseSubtitle(id) },
+        }, icon('check', 'sub-check'), h('span', { class: 'sub-label', text: label }), note ? h('span', { class: 'sub-note', text: note }) : null);
+        this.subList.appendChild(row('0', '끄기'));
+        for (const st of pb.subtitles) {
+            this.subList.appendChild(row(st.id, st.label, st.text ? '' : '영상에 입힘'));
+        }
+        const size = storeGet('yp_cue_size', 'm');
+        this.subSizes.querySelectorAll('.chip').forEach((c) => c.classList.toggle('active', c.dataset.size === size));
+    }
+
+    async chooseSubtitle(id) {
+        const pb = this.pb;
+        this.subMenu.classList.add('hidden');
+        if (!pb || !pb.selectSubtitle || id === pb.activeSubtitle) return;
+        const at = this.video.currentTime || 0;
+        try {
+            const res = await pb.selectSubtitle(id, at);
+            if (this.pb !== pb) return; // 그 사이 다른 걸 틀었으면 무시
+            if (res.reload) {
+                toast('자막을 영상에 입히느라 다시 불러옵니다...');
+                await this.start(res.reload);
+            } else {
+                pb.activeSubtitle = id;
+                pb.textTrack = res.track;
+                this._applyTrack(res.track);
+                this._syncCc();
+            }
+        } catch (e) {
+            toast(`자막 바꾸기 실패: ${e.message}`, 'error');
+        }
+    }
+
+    setCueSize(size) {
+        storeSet('yp_cue_size', size);
+        document.body.dataset.cueSize = size;
+        this._renderSubMenu();
+    }
+
+    _syncCc() {
+        const on = this.pb && this.pb.activeSubtitle && this.pb.activeSubtitle !== '0';
+        this.ccBtn.classList.toggle('on', !!on);
     }
 
     toggleDrawer(force) {
@@ -678,8 +764,10 @@ class Player {
         else if (k === 'f' || k === 'F') this.toggleFullscreen();
         else if (k === 'm' || k === 'M') this.toggleMute();
         else if (k === 'i' || k === 'I') this.showOsd();
+        else if ((k === 'c' || k === 'C') && !live) this.toggleSubMenu();
         else if (k === 'Escape' && !document.fullscreenElement) {
-            if (!this.drawer.classList.contains('hidden')) this.toggleDrawer(false);
+            if (!this.subMenu.classList.contains('hidden')) this.subMenu.classList.add('hidden');
+            else if (!this.drawer.classList.contains('hidden')) this.toggleDrawer(false);
             else this.minimize();
         }
         this._wakeUi();

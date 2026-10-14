@@ -84,6 +84,7 @@ export async function renderDetail(main, [pid, id], _query, ctx) {
     const facts = [];
     if (d.directors.length) facts.push(['감독', d.directors.join(', ')]);
     if (d.genres.length) facts.push(['장르', d.genres.join(', ')]);
+    if (d.subtitles && d.subtitles.length) facts.push(['자막', d.subtitles.join(', ')]);
 
     const hero = h('div', { class: 'detail-hero' },
         poster,
