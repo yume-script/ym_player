@@ -2,7 +2,8 @@
 
 소스 하나는 이렇게 생겼다:
     {"id": "abc123", "type": "plex", "name": "우리집 Plex", "enabled": true,
-     "url": "http://192.168.0.10:32400", "token": "...", "verify_ssl": true}
+     "url": "http://192.168.0.10:32400", "token": "...", "verify_ssl": true,
+     "hidden_libraries": ["3"]}       <- 가져오지 않을 Plex 라이브러리(섹션 key). 새 라이브러리는 기본으로 보임
     {"id": "def456", "type": "iptv", "name": "개인", "enabled": true,
      "m3u": "http://.../playlist.m3u", "epg": "http://.../epg.xml.gz"}
 
@@ -84,6 +85,8 @@ def _clean_source(raw, old):
         token = str(raw.get("token") or "").strip()
         src["token"] = token or (old or {}).get("token", "")
         src["verify_ssl"] = bool(raw.get("verify_ssl", True))
+        hidden = raw.get("hidden_libraries") or []
+        src["hidden_libraries"] = sorted({str(k) for k in hidden if str(k).strip()}) if isinstance(hidden, list) else []
     else:
         src["m3u"] = str(raw.get("m3u") or "").strip()
         src["epg"] = str(raw.get("epg") or "").strip()
