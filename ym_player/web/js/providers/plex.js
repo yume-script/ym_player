@@ -12,6 +12,30 @@ const PRODUCT = 'Yume Player';
 const LIB_ICONS = { movie: 'film', show: 'tv', artist: 'music' };
 const PLAYABLE = new Set(['movie', 'episode', 'track', 'clip']);
 
+// 서버(/api/plex-sub)가 WebVTT로 바꿔 줄 수 있는 외부 자막 형식 (ym_player/subtitles.py TEXT_CODECS와 같게)
+const TEXT_SUB_CODECS = new Set(['srt', 'subrip', 'smi', 'sami', 'ass', 'ssa', 'vtt', 'webvtt']);
+
+/**
+ * Plex 파일(Part)의 자막 목록. streamType 3이 자막이다.
+ * text=true  : 외부 텍스트 자막 파일 -> 브라우저 자막(<track>)으로 띄움, 원본 재생에서도 나옴
+ * text=false : 파일 안에 든 자막이나 이미지 자막(PGS/VobSub) -> Plex 변환으로 영상에 입혀야 함
+ */
+export function subtitleStreams(part) {
+    return ((part && part.Stream) || []).filter((st) => st.streamType === 3).map((st) => {
+        const codec = String(st.codec || st.format || '').toLowerCase();
+        return {
+            id: String(st.id),
+            label: st.extendedDisplayTitle || st.displayTitle || st.title || st.language || '자막',
+            lang: st.languageCode || '',
+            codec,
+            key: st.key || '',
+            text: !!st.key && TEXT_SUB_CODECS.has(codec),
+            selected: !!st.selected,
+            forced: !!st.forced,
+        };
+    });
+}
+
 // 브라우저 <video>로 그대로 틀 수 있는 조합이면 트랜스코딩 없이 원본 파일을 바로 준다
 function canDirectPlay(media, audioOnly) {
     if (!media) return false;
@@ -164,6 +188,7 @@ export class PlexProvider {
             playable: PLAYABLE.has(m.type),
             viewOffset: m.viewOffset || 0,
             duration: m.duration || 0,
+            subtitles: subtitleStreams(((media.Part || [])[0])).map((st) => st.label),
             parent: null,
             children: [],
             onDeck: null,
@@ -204,7 +229,25 @@ export class PlexProvider {
         await this.ping(watched ? '/:/scrobble' : '/:/unscrobble', { identifier: 'com.plexapp.plugins.library', key: id });
     }
 
-    async getPlayback(id, { fromStart = false } = {}) {
+    // Plex에 이 파일의 자막 선택을 저장한다 (Plex 앱의 선택과 같아지게). '0'이면 끄기
+    setSubtitle(partId, streamId) {
+        return fetch(this.url(`/library/parts/${partId}`, { subtitleStreamID: streamId, allParts: 1 }), {
+            method: 'PUT', headers: { Accept: 'application/json' },
+        }).then((r) => { if (!r.ok) throw new Error(`자막 선택 저장 실패 (HTTP ${r.status})`); });
+    }
+
+    subtitleTrack(id, st) {
+        if (!st || !st.text) return null;
+        const p = new URLSearchParams({ path: st.key, codec: st.codec });
+        return { id: st.id, src: `/api/plex-sub/${encodeURIComponent(this.id)}?${p}`, lang: st.lang, label: st.label };
+    }
+
+    /**
+     * opts.fromStart  처음부터
+     * opts.startAt    이 위치(초)부터 - 자막을 바꾸느라 다시 불러올 때
+     * opts.subtitleId 이 자막으로 ('0'=끄기). 없으면 Plex에 저장된 선택을 따른다
+     */
+    async getPlayback(id, { fromStart = false, startAt = null, subtitleId } = {}) {
         const mc = await this.req(`/library/metadata/${id}`);
         const m = (mc.Metadata || [])[0];
         const media = m && (m.Media || [])[0];
@@ -212,13 +255,23 @@ export class PlexProvider {
         if (!part) throw new Error('재생할 파일이 없습니다.');
 
         const audioOnly = m.type === 'track';
+        let subs = audioOnly ? [] : subtitleStreams(part);
+        const plexChoice = subs.find((st) => st.selected);
+        if (subtitleId !== undefined && subtitleId !== (plexChoice ? plexChoice.id : '0')) {
+            await this.setSubtitle(part.id, subtitleId);
+            subs = subs.map((st) => ({ ...st, selected: st.id === subtitleId }));
+        }
+        const chosen = subs.find((st) => st.selected) || null;
+        // 브라우저가 못 그리는 자막(내장/이미지)을 골랐으면 원본 재생 대신 Plex가 영상에 입혀서 보내게 한다
+        const burn = !!chosen && !chosen.text;
+
         const session = uuid();
         // 상세 화면의 [이어보기] 버튼과 같은 기준: 30초 넘게 봤고 거의 끝까지 보진 않았을 때만 이어서
         const vo = m.viewOffset || 0;
         const resumable = vo > 30000 && (!m.duration || vo < m.duration * 0.95);
-        const startTime = !fromStart && resumable ? vo / 1000 : 0;
+        const startTime = startAt != null ? startAt : (!fromStart && resumable ? vo / 1000 : 0);
         let url, kind;
-        if (canDirectPlay(media, audioOnly)) {
+        if (canDirectPlay(media, audioOnly) && !burn) {
             url = this.base + part.key;
             kind = 'direct';
         } else {
@@ -238,7 +291,8 @@ export class PlexProvider {
                 maxVideoBitrate: 20000,
                 subtitleSize: 100,
                 audioBoost: 100,
-                subtitles: 'burn',
+                // 텍스트 자막은 브라우저가 따로 띄우므로 입히지 않는다
+                subtitles: burn ? 'burn' : 'none',
                 location: 'lan',
                 session,
                 'X-Plex-Session-Identifier': session,
@@ -264,6 +318,24 @@ export class PlexProvider {
             url, kind, live: false, startTime, title, subtitle, audioOnly,
             poster: this.img(audioOnly ? (m.parentThumb || m.thumb) : (m.art || m.grandparentArt), 1280, audioOnly ? 1280 : 720),
             durationHint: (m.duration || 0) / 1000,
+            subtitles: subs,
+            activeSubtitle: chosen ? chosen.id : '0',
+            subtitleBurned: burn,
+            textTrack: this.subtitleTrack(id, chosen),
+            /**
+             * 재생 중 자막 바꾸기. Plex에도 선택을 저장한다.
+             * 텍스트 자막끼리/끄기는 그 자리에서 <track>만 바꾸고 ({track}),
+             * 영상에 입혀야 하는 자막으로 가거나 입힌 자막을 떼야 하면 그 위치부터 다시 불러온다 ({reload}).
+             */
+            selectSubtitle: async (subId, atSec) => {
+                const st = subs.find((x) => x.id === subId) || null;
+                const needsBurn = !!st && !st.text;
+                if (needsBurn || burn) {
+                    return { reload: await this.getPlayback(id, { startAt: atSec, subtitleId: subId }) };
+                }
+                await this.setSubtitle(part.id, subId);
+                return { track: this.subtitleTrack(id, st) };
+            },
             onProgress: (state, sec) => timeline(state, sec),
             onStop: (sec) => {
                 timeline('stopped', sec);

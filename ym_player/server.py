@@ -13,6 +13,7 @@
 - /api/iptv/{id}/epg      XMLTV(.gz 포함)를 받아 지금-3시간 ~ +24시간 편성표 JSON으로
 - /api/stream?url=        CORS/혼합콘텐츠로 막힌 스트림 중계 (.m3u8 안 주소까지 바꿔줌)
 - /api/plex/{id}/...      Plex 서버 API/이미지/스트림 중계 - 토큰은 서버가 붙인다
+- /api/plex-sub/{id}      Plex 외부 자막(srt/smi/ass/vtt)을 WebVTT로 바꿔 줌
 - /api/plex-auth/...      plex.tv PIN 로그인 (토큰/서버 목록 받아오기)
 """
 import asyncio
@@ -26,7 +27,7 @@ from urllib.parse import urlencode
 from aiohttp import ClientSession, ClientTimeout, web
 from yarl import URL
 
-from . import config_store, iptv
+from . import config_store, iptv, subtitles
 
 log = logging.getLogger("ym_player")
 
@@ -279,6 +280,34 @@ async def plex_proxy(request):
         upstream.release()
 
 
+async def plex_subtitle(request):
+    """Plex 외부 자막 파일(/library/streams/{id})을 받아 WebVTT로 바꿔 준다 (<track>용).
+
+    ?path=/library/streams/123&codec=srt  - codec은 Plex가 알려준 형식(없으면 내용으로 판단)
+    """
+    cfg = config_store.load()
+    src = config_store.get_source(cfg, request.match_info["sid"])
+    if not src or src.get("type") != "plex":
+        return _json_error(404, "Plex 소스를 찾을 수 없습니다.")
+    path = request.query.get("path", "")
+    # 아무 Plex 경로나 받아오는 통로가 되지 않게 자막 스트림 경로만 허용
+    if not path.startswith("/library/streams/") or ".." in path:
+        return _json_error(400, "자막 스트림 경로가 아닙니다.")
+    try:
+        async with request.app[HTTP].get(
+                f"{src['url']}{path}", headers=plex_headers(cfg, src.get("token")),
+                ssl=None if src.get("verify_ssl", True) else False,
+                timeout=ClientTimeout(total=30)) as r:
+            if r.status >= 400:
+                return _json_error(502, f"Plex 자막 받기 실패 (HTTP {r.status})")
+            data = await r.content.read(20 * 1024 * 1024)
+    except Exception as e:
+        return _json_error(502, f"Plex 서버 연결 실패: {type(e).__name__}: {e}")
+    vtt = subtitles.to_vtt(data, request.query.get("codec", ""))
+    return web.Response(text=vtt, content_type="text/vtt", charset="utf-8",
+                        headers={"Cache-Control": "private, max-age=3600"})
+
+
 async def plex_pin_create(request):
     cfg = config_store.load()
     async with request.app[HTTP].post("https://plex.tv/api/v2/pins?strong=true",
@@ -356,6 +385,7 @@ def create_app():
     app.router.add_get("/api/stream", stream_proxy)
     app.router.add_post("/api/plex-auth/pin", plex_pin_create)
     app.router.add_get("/api/plex-auth/pin/{pin_id}", plex_pin_check)
+    app.router.add_get("/api/plex-sub/{sid}", plex_subtitle)
     app.router.add_route("*", "/api/plex/{sid}/{tail:.*}", plex_proxy)
     app.router.add_static("/static/", WEB_DIR, show_index=False)
     return app
