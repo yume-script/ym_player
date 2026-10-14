@@ -1,0 +1,10 @@
+# 설정 (Plex 토큰이 들어 있음)
+ym_player/data/
+
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+.pytest_cache/
+.DS_Store
+.vscode/
