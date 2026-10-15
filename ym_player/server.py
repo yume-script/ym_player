@@ -873,6 +873,7 @@ async def tg_video(request, tg):
     row = telegram_src.get_video(tg.sid, channel, msg, user=username(request))
     if not row:
         return _json_error(404, "색인에 없는 영상입니다.")
+    row = {**row, "parts": telegram_src.video_parts(tg.sid, channel, msg, user=username(request))}
     if request.query.get("probe"):
         await tg.authorized_client()
         row = {**row, "play": await _tg_decision(request, tg, channel, msg)}

@@ -335,6 +335,54 @@ def query_videos(sid, channels, offset=0, limit=40, q="", sort="latest", user=""
     return [_row(r, prog) for r in rows], total
 
 
+# 큰 영상을 여러 파일로 나눠 올린 경우: "이름_0000", "이름_0001" / "이름.001" / "이름 part2" / "이름 CD2"
+# (연도 "Movie.2026"과 헷갈리지 않게 숫자만 있는 꼬리는 0으로 시작하는 3~4자리만 본다)
+_PART_RE = re.compile(r"^(.*?)[\s._-]*(?:(?:part|pt|cd|disc|disk)[\s._-]*0*(\d{1,3})|[._-](0\d{2,3}))$", re.I)
+_VIDEO_EXT = {".mp4", ".mkv", ".avi", ".ts", ".m2ts", ".mov", ".wmv", ".webm", ".m4v", ".flv", ".mpg", ".mpeg"}
+
+
+def split_part(name):
+    """"Hope.2026.1080p-KyoGo_0001.mkv" -> ("hope.2026.1080p-kyogo", 1). 조각 이름이 아니면 None."""
+    stem = (name or "").strip()
+    root, ext = os.path.splitext(stem)
+    if ext.lower() in _VIDEO_EXT:
+        stem = root
+    m = _PART_RE.match(stem)
+    if not m or len(m.group(1)) < 3:
+        return None
+    return m.group(1).casefold(), int(m.group(2) or m.group(3))
+
+
+def _part_key(r):
+    return split_part(r["file_name"]) or split_part(r["title"])
+
+
+def video_parts(sid, channel, msg, user=""):
+    """같은 채널에서 이 영상과 한 묶음인 조각들 (번호순). 조각이 아니거나 하나뿐이면 []."""
+    with db() as conn:
+        r = conn.execute("SELECT * FROM videos WHERE source=? AND channel=? AND msg=?", (sid, channel, msg)).fetchone()
+        key = r and _part_key(r)
+        if not key:
+            return []
+        like = key[0].replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        rows = conn.execute(
+            "SELECT * FROM videos WHERE source=? AND channel=? AND (file_name LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\') "
+            "ORDER BY msg LIMIT 300", (sid, channel, like, like)).fetchall()
+        rows = [x for x in rows if (_part_key(x) or ("",))[0] == key[0]]
+        prog = _progress_map(conn, sid, rows, user)
+    best = {}
+    for x in rows:  # 같은 번호가 두 번 올라왔으면 나중 것
+        best[_part_key(x)[1]] = x
+    if len(best) < 2:
+        return []
+    out = []
+    for i, num in enumerate(sorted(best)):
+        d = _row(best[num], prog)
+        out.append({"msg": d["msg"], "part": i + 1, "title": d["title"], "duration": d["duration"],
+                    "position": d["position"], "watched": d["watched"]})
+    return out
+
+
 def get_video(sid, channel, msg, user=""):
     with db() as conn:
         r = conn.execute("SELECT * FROM videos WHERE source=? AND channel=? AND msg=?", (sid, channel, msg)).fetchone()
