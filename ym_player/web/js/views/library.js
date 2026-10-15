@@ -43,10 +43,13 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
 
     // 정렬/필터는 라이브러리마다 기억해둔다
     const prefKey = `yp_lib_${pid}_${libId}`;
-    const pref = storeGet(prefKey, { sort: 'titleSort', unwatched: false });
+    const pref = storeGet(prefKey, { sort: 'titleSort', unwatched: false, kind: '' });
     const sortSel = h('select', { class: 'select' },
         p.librarySorts().map(([v, label]) => h('option', { value: v, text: label, selected: v === pref.sort })));
     const unwatchedChk = h('input', { type: 'checkbox', checked: !!pref.unwatched });
+    // 텔레그램: 영상/사진 골라 보기
+    const kindSel = p.libraryKinds ? h('select', { class: 'select' },
+        p.libraryKinds().map(([v, label]) => h('option', { value: v, text: label, selected: v === (pref.kind || '') }))) : null;
     const countEl = h('span', { class: 'muted' });
     const grid = h('div', { class: `grid${lib.type === 'artist' ? ' grid-square' : ''}${lib.type === 'telegram' ? ' grid-wide' : ''}` });
     const sentinel = h('div', { class: 'sentinel' });
@@ -54,6 +57,7 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
         h('div', { class: 'toolbar' },
             countEl,
             p.kind === 'plex' ? h('label', { class: 'check' }, unwatchedChk, ' 안 본 것만') : null,
+            kindSel ? h('label', { class: 'muted' }, '보기 ', kindSel) : null,
             h('label', { class: 'muted' }, '정렬 ', sortSel)),
         grid, sentinel);
 
@@ -63,7 +67,9 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
         busy = true;
         const myGen = gen;
         try {
-            const res = await p.getLibraryItems(libId, { start, size: PAGE, sort: sortSel.value, unwatched: unwatchedChk.checked });
+            const res = await p.getLibraryItems(libId, {
+                start, size: PAGE, sort: sortSel.value, unwatched: unwatchedChk.checked, kind: kindSel ? kindSel.value : '',
+            });
             if (myGen !== gen || !ctx.alive()) return;
             total = res.total;
             start += res.items.length;
@@ -82,13 +88,14 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
         if (myGen === gen && sentinel.getBoundingClientRect().top < window.innerHeight + 400) loadMore();
     };
     const reset = () => {
-        storeSet(prefKey, { sort: sortSel.value, unwatched: unwatchedChk.checked });
+        storeSet(prefKey, { sort: sortSel.value, unwatched: unwatchedChk.checked, kind: kindSel ? kindSel.value : '' });
         gen++; start = 0; total = Infinity; busy = false;
         clear(grid);
         loadMore();
     };
     sortSel.addEventListener('change', reset);
     unwatchedChk.addEventListener('change', reset);
+    if (kindSel) kindSel.addEventListener('change', reset);
 
     const io = new IntersectionObserver((entries) => {
         if (!ctx.alive()) return io.disconnect();
