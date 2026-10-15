@@ -34,9 +34,10 @@ export async function renderSettings(main, _params, _query, ctx) {
             list),
         users: h('div', { class: 'settings-pane' }, usersBox()),
         status: h('div', { class: 'settings-pane' }),
+        cache: h('div', { class: 'settings-pane' }),
         backup: h('div', { class: 'settings-pane' }),
     };
-    const TABS = [['sources', 'layer-group', '소스'], ['users', 'users', '사용자'], ['status', 'heart-pulse', '상태'], ['backup', 'box-archive', '백업']];
+    const TABS = [['sources', 'layer-group', '소스'], ['users', 'users', '사용자'], ['status', 'heart-pulse', '상태'], ['cache', 'hard-drive', '캐시'], ['backup', 'box-archive', '백업']];
     const tabBar = h('div', { class: 'tabs', role: 'tablist' });
     const showTab = (key) => {
         if (!panes[key]) key = 'sources';
@@ -44,6 +45,7 @@ export async function renderSettings(main, _params, _query, ctx) {
         tabBar.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === key));
         Object.entries(panes).forEach(([k, el]) => el.classList.toggle('hidden', k !== key));
         if (key === 'status') renderStatus(panes.status);
+        if (key === 'cache') renderCache(panes.cache);
         if (key === 'backup' && !panes.backup.firstChild) renderBackup(panes.backup);
     };
     TABS.forEach(([key, ic, label]) => tabBar.appendChild(h('button', {
@@ -483,6 +485,7 @@ async function renderStatus(pane) {
         ['Python', sv.python],
         ['사용자', `${sv.users}명 (관리자 ${sv.admins})`],
         ['텔레그램', sv.telethon ? (sv.cryptg ? 'Telethon + cryptg (빠름)' : 'Telethon (cryptg 없음 - 느림)') : 'Telethon 없음'],
+        ['동영상 캐시', sv.cache ? (sv.cache.enabled ? `${fmtBytes(sv.cache.bytes)} / ${fmtBytes(sv.cache.max_bytes)} · 영상 ${sv.cache.files}개` : '꺼 둠') : '-'],
         ['서버 변환 (ffmpeg)', sv.ffmpeg ? `있음 · 지금 ${sv.transcoding}개 변환 중` : '없음 - 텔레그램의 mkv·HEVC·AC-3 영상이 안 나올 수 있음 (sudo apt install ffmpeg)'],
         ['데이터 폴더', sv.data_dir],
     ];
@@ -497,6 +500,55 @@ async function renderStatus(pane) {
                 h('span', { class: 'warn-time', text: new Date(w.time * 1000).toLocaleString() }),
                 h('span', { class: 'warn-msg', text: w.message, title: w.logger })))
             : h('p', { class: 'muted', text: '서버를 켠 뒤로 경고가 없습니다.' }))));
+}
+
+function fmtBytes(n) {
+    if (!n) return '0';
+    const gb = n / 1024 ** 3;
+    return gb >= 1 ? `${gb.toFixed(gb >= 100 ? 0 : 1)}GB` : `${Math.max(1, Math.round(n / 1024 ** 2))}MB`;
+}
+
+/** 동영상 캐시: 텔레그램/Plex 원본 재생 파일의 본 조각을 디스크에 남기고, 재생 중 앞쪽을 미리 받는다 */
+async function renderCache(pane) {
+    clear(pane).appendChild(h('div', { class: 'loading' }, icon('circle-notch', 'fa-spin'), h('span', { text: '불러오는 중...' })));
+    let data;
+    try { data = await api('/api/admin/cache'); } catch (e) { clear(pane).appendChild(h('p', { class: 'muted error', text: e.message })); return; }
+    const { settings: st, stats } = data;
+    const enabledIn = h('input', { type: 'checkbox', checked: st.enabled });
+    const dirIn = h('input', { class: 'input', value: st.dir || '', placeholder: `${stats.dir} (기본)` });
+    const maxIn = h('input', { class: 'input', type: 'number', min: '0.5', step: '0.5', value: String(st.max_gb) });
+    const aheadIn = h('input', { class: 'input', type: 'number', min: '0', max: '30', step: '1', value: String(st.ahead_min) });
+    const pct = stats.max_bytes ? Math.min(100, (stats.bytes / stats.max_bytes) * 100) : 0;
+    const save = h('button', { class: 'btn btn-accent' }, icon('check'), ' 저장');
+    const wipe = h('button', { class: 'btn' }, icon('trash'), ' 캐시 비우기');
+    save.addEventListener('click', async () => {
+        save.disabled = true;
+        try {
+            await api('/api/admin/cache', { method: 'PUT', json: { enabled: enabledIn.checked, dir: dirIn.value.trim(), max_gb: Number(maxIn.value), ahead_min: Number(aheadIn.value) } });
+            toast('캐시 설정을 저장했습니다.', 'success');
+            renderCache(pane);
+        } catch (e) { toast(e.message, 'error', 6000); } finally { save.disabled = false; }
+    });
+    wipe.addEventListener('click', async () => {
+        if (!confirm('캐시에 저장된 동영상 조각을 모두 지울까요? (보던 영상은 다시 받아옵니다)')) return;
+        try { await api('/api/admin/cache', { method: 'DELETE' }); toast('캐시를 비웠습니다.', 'success'); } catch (e) { toast(e.message, 'error'); }
+        renderCache(pane);
+    });
+    clear(pane).append(
+        h('div', { class: 'src-card cache-card' },
+            h('h3', { class: 'pane-title' }, icon('hard-drive'), ' 사용량'),
+            h('div', { class: 'cache-bar' }, h('div', { style: { width: `${pct}%` } })),
+            h('p', { class: 'muted', text: `${fmtBytes(stats.bytes)} / ${fmtBytes(stats.max_bytes)} 사용 · 영상 ${stats.files}개 · ${stats.dir}` }),
+            wipe),
+        h('div', { class: 'src-card cache-card' },
+            h('h3', { class: 'pane-title' }, icon('sliders'), ' 설정'),
+            h('label', { class: 'check' }, enabledIn, ' 본 부분을 디스크에 남기기'),
+            field('캐시 폴더', dirIn, '비워 두면 데이터 폴더 안 cache. 큰 디스크로 옮기려면 그 경로를 넣으세요 (서버가 쓸 수 있어야 함).'),
+            h('div', { class: 'row-2' },
+                field('최대 용량 (GB)', maxIn, '넘치면 가장 오래 안 본 영상부터 지웁니다.'),
+                field('미리 받기 (분)', aheadIn, '재생 중 지금 위치보다 이만큼 앞까지 미리 받습니다. 0이면 끔.')),
+            h('p', { class: 'field-hint', text: '텔레그램 영상과 Plex 원본 재생(변환 없이 보는 파일)에 쓰입니다. Plex 변환(HLS) 재생과 IPTV 라이브는 캐시하지 않습니다. 캐시를 꺼도 텔레그램은 앞쪽 미리 받기를 메모리로 합니다.' }),
+            save));
 }
 
 /** 백업 내려받기 / 백업 파일로 되돌리기 */

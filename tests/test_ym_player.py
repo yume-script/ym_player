@@ -259,3 +259,65 @@ def test_rewrite_mpd_makes_base_absolute():
     assert iptv.looks_like_mpd("application/dash+xml", "http://x/a", b"")
     assert iptv.looks_like_mpd("", "http://x/a.mpd?x=1", b"")
     assert not iptv.looks_like_mpd("video/mp2t", "http://x/a.ts", b"G@")
+
+
+def test_plex_part_goes_through_block_cache(monkeypatch, tmp_path):
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from ym_player import media_cache, server
+
+    monkeypatch.setattr(config_store, "CONFIG_FILE", str(tmp_path / "config.json"))
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    B = media_cache.BLOCK
+    movie = tmp_path / "movie.mkv"
+    data = bytes((i * 13) % 251 for i in range(B * 3 + 777))
+    movie.write_bytes(data)
+    hits = []
+
+    async def part(request):
+        hits.append(request.headers.get("Range"))
+        assert request.headers.get("X-Plex-Token") == "TOK"
+        return web.FileResponse(movie)
+
+    async def run():
+        origin = web.Application()
+        origin.router.add_get("/library/parts/5/1700000000/movie.mkv", part)
+        osrv = TestServer(origin)
+        await osrv.start_server()
+        cfg = config_store.load()
+        config_store.replace_sources(cfg, [{"id": "px", "type": "plex", "name": "집",
+                                            "url": str(osrv.make_url("")).rstrip("/"), "token": "TOK"}])
+        cfg["cache"] = {"enabled": True, "ahead_min": 0}
+        config_store.save(cfg)
+        client = TestClient(TestServer(server.create_app(require_auth=False)))
+        await client.start_server()
+        try:
+            url = "/api/plex/px/library/parts/5/1700000000/movie.mkv"
+            r = await client.get(url, headers={"Range": f"bytes={B - 5}-{B + 9}"})
+            assert r.status == 206 and r.headers["Content-Range"] == f"bytes {B - 5}-{B + 9}/{len(data)}"
+            assert await r.read() == data[B - 5:B + 10]
+            r = await client.get(url)
+            assert r.status == 200 and await r.read() == data
+            n = len(hits)  # 크기 확인 1번 + 조각 4개 (조각마다 한 번)
+            assert n == 5
+            media_cache.STORE.ram.clear()
+            r = await client.get(url, headers={"Range": "bytes=0-99"})
+            assert await r.read() == data[:100] and len(hits) == n   # 디스크 캐시에서
+            st = await (await client.get("/api/admin/cache")).json()
+            assert st["stats"]["bytes"] == len(data) and st["settings"]["ahead_min"] == 0
+            r = await client.put("/api/admin/cache", json={"enabled": True, "max_gb": 5, "ahead_min": 2})
+            assert (await r.json())["settings"]["max_gb"] == 5.0
+            assert config_store.load()["cache"]["ahead_min"] == 2
+            r = await client.delete("/api/admin/cache")
+            assert (await r.json())["stats"]["bytes"] == 0
+            # 캐시를 끄면 예전처럼 그냥 중계
+            await client.put("/api/admin/cache", json={"enabled": False})
+            before = len(hits)
+            r = await client.get(url, headers={"Range": "bytes=0-9"})
+            assert await r.read() == data[:10] and len(hits) == before + 1
+        finally:
+            await client.close()
+            await osrv.close()
+
+    asyncio.run(run())
