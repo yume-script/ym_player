@@ -1,6 +1,7 @@
-"""사용자마다 따로 두는 작은 설정 (data/prefs.json) - 지금은 IPTV 즐겨찾기 채널.
+"""사용자마다 따로 두는 작은 설정 (data/prefs.json) - IPTV 즐겨찾기 채널, 화면 테마.
 
-{"사용자명(소문자)": {"fav_channels": ["채널id", ...]}}
+{"사용자명(소문자)": {"fav_channels": ["채널id", ...], "theme": "light", "accent": "blue"}}
+theme/accent가 ""(또는 없음)이면 관리자가 정한 기본값을 따른다.
 브라우저(localStorage)에만 두면 기기마다 달라서, 로그인한 사람 기준으로 서버에 둔다.
 """
 import json
@@ -25,8 +26,22 @@ def _str_list(value):
     return out
 
 
+# 화면 테마와 강조색 (web/css/app.css의 :root[data-theme=...] / [data-accent=...]와 같은 이름)
+THEMES = ("dark", "light", "black", "navy", "auto")
+ACCENTS = ("amber", "blue", "green", "purple", "red", "pink", "teal")
+
+
+def _choice(options):
+    def check(value):
+        value = str(value or "")
+        if value and value not in options:
+            raise ValueError(f"알 수 없는 값: {value}")
+        return value
+    return check
+
+
 # 받아 주는 키와 검사 함수
-KEYS = {"fav_channels": _str_list}
+KEYS = {"fav_channels": _str_list, "theme": _choice(THEMES), "accent": _choice(ACCENTS)}
 
 
 def _path():
@@ -87,6 +102,12 @@ def replace_all(data):
     out = {}
     for user, items in (data or {}).items():
         if isinstance(items, dict):
-            out[str(user).lower()] = {k: KEYS[k](v) for k, v in items.items() if k in KEYS}
+            mine = out[str(user).lower()] = {}
+            for k, v in items.items():
+                try:
+                    if k in KEYS:
+                        mine[k] = KEYS[k](v)
+                except ValueError:
+                    pass  # 다른 버전에서 만든 값 등은 버린다
     with _lock:
         _save_all(out)

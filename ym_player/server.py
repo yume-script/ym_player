@@ -1434,7 +1434,26 @@ def branding_info():
     b = config_store.load().get("branding") or {}
     icon = _brand_icon_path()
     version = int(os.path.getmtime(icon)) if icon else 0
-    return {"title": b.get("title") or DEFAULT_TITLE, "icon_url": f"/brand/icon?v={version}" if icon else None}
+    return {"title": b.get("title") or DEFAULT_TITLE, "icon_url": f"/brand/icon?v={version}" if icon else None,
+            "theme": b.get("theme") if b.get("theme") in prefs.THEMES else "dark",
+            "accent": b.get("accent") if b.get("accent") in prefs.ACCENTS else "amber"}
+
+
+def _clean_branding(raw, old=None):
+    """branding 설정 검사. 보낸 항목만 바꾸고 나머지는 old 그대로. 잘못된 값은 ValueError."""
+    out = dict(old or {})
+    if "title" in raw:
+        title = str(raw.get("title") or "").strip()
+        if len(title) > 40:
+            raise ValueError("이름은 40자까지 쓸 수 있습니다.")
+        out["title"] = title
+    for key, options in (("theme", prefs.THEMES), ("accent", prefs.ACCENTS)):
+        if key in raw:
+            value = str(raw.get(key) or "")
+            if value and value not in options:
+                raise ValueError(f"알 수 없는 {key}: {value}")
+            out[key] = value
+    return out
 
 
 async def branding_get(request):
@@ -1454,11 +1473,11 @@ async def brand_icon(request):
 @admin_only
 async def branding_put(request):
     body = await _json_body(request)
-    title = str(body.get("title") or "").strip()
-    if len(title) > 40:
-        return _json_error(400, "이름은 40자까지 쓸 수 있습니다.")
     cfg = config_store.load()
-    cfg["branding"] = {"title": title}
+    try:
+        cfg["branding"] = _clean_branding(body, cfg.get("branding"))
+    except ValueError as e:
+        return _json_error(400, str(e))
     config_store.save(cfg)
     return web.json_response({"success": True, **branding_info()})
 
@@ -1519,7 +1538,9 @@ async def admin_restore(request):
         if "cache" in raw_cfg:
             cfg["cache"] = media_cache.clean_settings(raw_cfg.get("cache"))
         if isinstance(raw_cfg.get("branding"), dict):
-            cfg["branding"] = {"title": str(raw_cfg["branding"].get("title") or "")[:40]}
+            raw_b = raw_cfg["branding"]
+            cfg["branding"] = _clean_branding({"title": str(raw_b.get("title") or "")[:40],
+                                               **{k: raw_b[k] for k in ("theme", "accent") if k in raw_b}})
         users = auth.clean_backup_users(body.get("users"))
         icon = base64.b64decode(body["brand_icon"], validate=True) if body.get("brand_icon") else None
         if icon is not None and (len(icon) > BRAND_ICON_MAX or not _icon_kind(icon)):
@@ -1574,7 +1595,8 @@ def _render_page(name):
     b = branding_info()
     page = (page.replace("__BRAND_TITLE__", html.escape(b["title"]))
                 .replace("__BRAND_FAVICON__", html.escape(b["icon_url"] or DEFAULT_FAVICON))
-                .replace("__BRAND_MARK__", brand_mark_html(b["icon_url"])))
+                .replace("__BRAND_MARK__", brand_mark_html(b["icon_url"]))
+                .replace("__THEME__", b["theme"]).replace("__ACCENT__", b["accent"]))
     return web.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-cache"})
 
 

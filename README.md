@@ -46,8 +46,11 @@ sudo systemctl enable --now ym_player
 - 처음 접속하면 **관리자 계정 만들기** 화면이 나옵니다. 이후로는 로그인 화면에서 아이디/비밀번호로 들어옵니다
   ("로그인 유지"를 켜면 30일, 끄면 브라우저를 닫을 때까지).
 - **관리자**: 사이드바 맨 아래 ⚙️ **설정**에서 탭으로 관리합니다 — **소스** / **사용자**(추가·삭제, 권한, 비밀번호, 볼 수 있는 범위) /
-  **상태**(소스마다 실제 연결 점검, 서버 정보, 최근 경고) / **캐시** / **화면**(왼쪽 위 이름과 아이콘 - 로그인 화면과 브라우저 탭에도 쓰임) /
+  **상태**(소스마다 실제 연결 점검, 서버 정보, 최근 경고) / **캐시** / **화면**(왼쪽 위 이름과 아이콘 - 로그인 화면과 브라우저 탭에도 쓰임, 모든 사용자의 **기본 테마**) /
   **백업**(설정·사용자·즐겨찾기·아이콘을 JSON으로 받기, 그 파일로 복원).
+- **테마**: 다크(기본) / 라이트 / 블랙(OLED) / 네이비 / 시스템 따라(기기 설정에 맞춰 다크↔라이트) 중에서 고르고,
+  강조색(주황·파랑·초록·보라·빨강·분홍·청록)을 따로 고릅니다. 관리자가 설정 > 화면에서 기본값을 정하고, 각 사용자는
+  사이드바 아래 팔레트 버튼으로 자기 테마를 고릅니다(서버에 사람마다 저장되어 어느 기기에서나 같음). 재생 화면은 늘 어둡게 둡니다.
 - **사용자**: 보기만 합니다. 설정 메뉴가 안 보이고 주소로 들어가도 막힙니다. 서버도 설정 저장/사용자 관리/Plex 로그인/텔레그램 로그인을
   관리자만 하게 막고, 사용자에게는 M3U 주소·Plex 서버 주소·API ID 같은 값을 내려주지 않습니다. Plex 중계도 읽기와 재생기의
   자막 선택 저장만 허용합니다.
@@ -149,7 +152,7 @@ ym_player/                       저장소 루트
 | `GET/PUT /api/me/prefs` | 내 즐겨찾기 채널 |
 | `GET /api/admin/status` · `GET /api/admin/backup` · `POST /api/admin/restore` | 상태 점검, 백업 내려받기, 백업 복원 (관리자만) |
 | `GET/PUT/DELETE /api/admin/cache` | 동영상 캐시 설정·사용량 / 저장 / 비우기 (관리자만) |
-| `GET /api/branding`, `GET /brand/icon` · `PUT /api/admin/branding` · `PUT/DELETE /api/admin/branding/icon` | 화면 이름과 아이콘 (보기는 로그인 없이, 바꾸기는 관리자만. 아이콘은 PNG/JPG/GIF/WebP/ICO 512KB까지) |
+| `GET /api/branding`, `GET /brand/icon` · `PUT /api/admin/branding` · `PUT/DELETE /api/admin/branding/icon` | 화면 이름·아이콘·기본 테마(theme/accent) (보기는 로그인 없이, 바꾸기는 관리자만. 아이콘은 PNG/JPG/GIF/WebP/ICO 512KB까지) |
 | `/api/tg/{id}/status · code · sign-in · logout` | 텔레그램 로그인 (코드 → 2단계 비밀번호) |
 | `GET /api/tg/{id}/channels · videos · video/{c}/{m} · home` | 채널 목록, 영상 목록(색인·과거 채우기), 영상 하나, 홈 줄 |
 | `GET /api/tg/{id}/stream/{c}/{m}` · `thumb/{c}/{m}` · `POST progress` | Range 스트림, 썸네일, 재생 위치 저장 (설정에서 고른 채널만) |
