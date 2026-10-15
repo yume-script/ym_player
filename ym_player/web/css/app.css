@@ -615,7 +615,44 @@ body.login-body { overflow: auto; min-height: 100vh; display: flex; align-items:
 .user-row:last-child { border-bottom: none; }
 .user-row .uname { flex: 1; min-width: 120px; font-weight: 500; }
 .user-row .me { font-size: 0.72rem; color: var(--accent); margin-left: 0.4rem; }
+.acc-dialog { display: flex; flex-direction: column; gap: 0.6rem; min-width: min(460px, 80vw); }
+.acc-list { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.6rem 0.75rem; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); max-height: 50vh; overflow: auto; }
+.acc-list.disabled { opacity: 0.4; pointer-events: none; }
+.acc-libs { display: flex; flex-direction: column; gap: 0.35rem; margin: 0.35rem 0 0.25rem 1.6rem; }
+.acc-lib-items { display: flex; flex-wrap: wrap; gap: 0.35rem 1rem; }
 .user-add { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.75rem; }
 .user-add .input { flex: 1; min-width: 140px; }
 .section-title { font-size: 1.1rem; margin: 0 0 0.75rem; display: flex; align-items: center; gap: 0.5rem; }
 .section-title i { color: var(--accent); }
+
+/* ---------- 설정 탭 / 상태 / 백업 ---------- */
+.tabs { display: flex; gap: 0.25rem; border-bottom: 1px solid var(--border); margin-bottom: 1.25rem; overflow-x: auto; }
+.tab { background: none; border: none; border-bottom: 2px solid transparent; padding: 0.6rem 1rem; color: var(--muted); cursor: pointer; font-weight: 500; white-space: nowrap; }
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.settings-pane { max-width: 900px; }
+.pane-toolbar { margin-bottom: 1rem; }
+.pane-title { font-size: 1rem; margin: 1.25rem 0 0.6rem; display: flex; align-items: center; gap: 0.5rem; }
+.backup-card .pane-title { margin-top: 0; }
+.backup-card { margin-bottom: 1rem; display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem; }
+.backup-card p { margin: 0; }
+.status-list, .warn-list { padding: 0.25rem 0; }
+.status-row { display: flex; align-items: center; gap: 0.75rem; padding: 0.6rem 0.9rem; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.status-row:last-child, .warn-row:last-child { border-bottom: none; }
+.status-icon { font-size: 1.1rem; }
+.status-row.ok .status-icon { color: #3fb950; }
+.status-row.bad .status-icon { color: #f85149; }
+.status-row.off { opacity: 0.6; }
+.status-name { font-weight: 500; min-width: 140px; }
+.status-name i { color: var(--muted); }
+.status-detail { flex: 1; min-width: 200px; color: var(--muted); word-break: break-word; }
+.status-row.bad .status-detail { color: #f85149; }
+.status-ms { font-size: 0.75rem; color: var(--muted); }
+.facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 0.75rem; }
+.fact { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
+.fact span { font-size: 0.75rem; color: var(--muted); }
+.fact b { font-weight: 500; word-break: break-all; }
+.warn-row { display: flex; gap: 0.75rem; padding: 0.45rem 0.9rem; border-bottom: 1px solid var(--border); font-size: 0.85rem; }
+.warn-time { color: var(--muted); white-space: nowrap; }
+.warn-msg { word-break: break-word; }
+.warn-row.error .warn-msg, .warn-row.critical .warn-msg { color: #f85149; }

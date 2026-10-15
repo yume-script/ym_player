@@ -121,6 +121,7 @@ class Player {
                 h('div', { class: 'ctrl-group' }, this.engineEl),
                 h('div', { class: 'ctrl-group' },
                     this.ccBtn = btn('closed-captioning', '자막 (C)', () => this.toggleSubMenu(), 'vod-only'),
+                    this.optBtn = btn('sliders', '음성·화질', () => this.toggleOptMenu(), 'vod-only'),
                     btn('clone', '화면 속 화면', () => this.togglePip()),
                     this.fsBtn,
                     btn('xmark', '재생 종료', () => this.stop()))));
@@ -138,7 +139,10 @@ class Player {
             h('div', { class: 'sub-menu-head', text: '자막' }), this.subList,
             h('div', { class: 'sub-menu-head', text: '글자 크기' }), this.subSizes);
 
-        this.root = h('div', { class: 'player hidden' }, this.stage, this.top, this.bottom, this.drawer, this.subMenu);
+        // 음성 트랙 / 화질 (Plex만)
+        this.optMenu = h('div', { class: 'sub-menu hidden', on: { click: (e) => e.stopPropagation() } });
+
+        this.root = h('div', { class: 'player hidden' }, this.stage, this.top, this.bottom, this.drawer, this.subMenu, this.optMenu);
 
         this.miniSlot = h('div', { class: 'mini-video', on: { click: () => this.expand() } });
         this.miniTitle = h('b');
@@ -243,7 +247,9 @@ class Player {
         this.posterEl.style.backgroundImage = pb.audioOnly && pb.poster ? `url("${pb.poster}")` : '';
         this.engineEl.textContent = '';
         this.subMenu.classList.add('hidden');
+        this.optMenu.classList.add('hidden');
         this.ccBtn.classList.toggle('hidden', !(pb.subtitles && pb.subtitles.length));
+        this.optBtn.classList.toggle('hidden', !((pb.audios && pb.audios.length > 1) || (pb.qualities && pb.qualities.length)));
         this._syncCc();
         this._syncFav();
         this._showMsg(`"${pb.title}" 연결 중...`, { spinner: true });
@@ -677,7 +683,7 @@ class Player {
         clearTimeout(this.uiTimer);
         this.uiTimer = setTimeout(() => {
             if (!this.video.paused && this.drawer.classList.contains('hidden')
-                && this.subMenu.classList.contains('hidden') && !this.dragging) {
+                && this.subMenu.classList.contains('hidden') && this.optMenu.classList.contains('hidden') && !this.dragging) {
                 this.root.classList.remove('show-ui');
             }
         }, UI_HIDE_MS);
@@ -729,6 +735,7 @@ class Player {
     toggleSubMenu() {
         const pb = this.pb;
         if (!pb || !pb.subtitles || !pb.subtitles.length) return;
+        this.optMenu.classList.add('hidden');
         const open = this.subMenu.classList.toggle('hidden') === false;
         if (open) this._renderSubMenu();
         this._wakeUi();
@@ -768,6 +775,49 @@ class Player {
             }
         } catch (e) {
             toast(`자막 바꾸기 실패: ${e.message}`, 'error');
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 음성 트랙 / 화질 (Plex)
+    // ------------------------------------------------------------------
+    toggleOptMenu() {
+        if (!this.pb) return;
+        this.subMenu.classList.add('hidden');
+        const open = this.optMenu.classList.toggle('hidden') === false;
+        if (open) this._renderOptMenu();
+        this._wakeUi();
+    }
+
+    _renderOptMenu() {
+        const pb = this.pb;
+        clear(this.optMenu);
+        const row = (active, label, note, fn) => h('button', { class: `sub-item${active ? ' active' : ''}`, on: { click: fn } },
+            icon('check', 'sub-check'), h('span', { class: 'sub-label', text: label }), note ? h('span', { class: 'sub-note', text: note }) : null);
+        if (pb.audios && pb.audios.length > 1) {
+            this.optMenu.appendChild(h('div', { class: 'sub-menu-head', text: '음성' }));
+            this.optMenu.appendChild(h('div', { class: 'sub-list' }, pb.audios.map((a) =>
+                row(a.id === pb.activeAudio, a.label, a.def ? '' : '변환 재생', () => this._reloadWith('selectAudio', a.id, a.id === pb.activeAudio)))));
+        }
+        if (pb.qualities && pb.qualities.length) {
+            this.optMenu.appendChild(h('div', { class: 'sub-menu-head', text: `화질${pb.transcoding ? ' (Plex 변환 중)' : ' (원본 재생 중)'}` }));
+            this.optMenu.appendChild(h('div', { class: 'sub-list' }, pb.qualities.map((q) =>
+                row(q.id === pb.activeQuality, q.label, q.note || '', () => this._reloadWith('selectQuality', q.id, q.id === pb.activeQuality)))));
+        }
+    }
+
+    async _reloadWith(method, value, same) {
+        const pb = this.pb;
+        this.optMenu.classList.add('hidden');
+        if (!pb || !pb[method] || same) return;
+        const at = this.video.currentTime || 0;
+        try {
+            const next = (await pb[method](value, at)).reload;
+            if (this.pb !== pb) return;
+            toast(method === 'selectAudio' ? '음성을 바꿔 다시 불러옵니다...' : '화질을 바꿔 다시 불러옵니다...');
+            await this.start(next);
+        } catch (e) {
+            toast(`바꾸기 실패: ${e.message}`, 'error');
         }
     }
 
@@ -832,6 +882,7 @@ class Player {
         else if ((k === 'c' || k === 'C') && !live) this.toggleSubMenu();
         else if (k === 'Escape' && !document.fullscreenElement) {
             if (!this.subMenu.classList.contains('hidden')) this.subMenu.classList.add('hidden');
+            else if (!this.optMenu.classList.contains('hidden')) this.optMenu.classList.add('hidden');
             else if (!this.drawer.classList.contains('hidden')) this.toggleDrawer(false);
             else this.minimize();
         }

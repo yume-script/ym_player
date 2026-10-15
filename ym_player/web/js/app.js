@@ -3,6 +3,7 @@ import { h, icon, clear, toast, storeGet, storeSet, api, modal } from './util.js
 import { registry } from './providers/index.js';
 import { emptyState } from './cards.js';
 import './player.js';
+import { loadFavorites } from './providers/iptv.js';
 import { renderHome } from './views/home.js';
 import { renderLibrary } from './views/library.js';
 import { renderDetail } from './views/detail.js';
@@ -208,7 +209,7 @@ async function boot() {
     });
     try {
         registry.user = (await api('/api/auth/me')).user;
-        await registry.load();
+        await Promise.all([registry.load(), loadFavorites()]);
     } catch (e) {
         toast(`설정을 불러오지 못했습니다: ${e.message}`, 'error', 8000);
     }

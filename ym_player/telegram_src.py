@@ -38,6 +38,12 @@ def fast_crypto():
     import importlib.util
     return importlib.util.find_spec("cryptg") is not None
 
+
+def available():
+    """Telethon이 설치돼 있는지."""
+    import importlib.util
+    return importlib.util.find_spec("telethon") is not None
+
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".mpeg", ".mpg", ".ts"}
 # 브라우저 <video>에 넘길 Content-Type. mkv는 Chrome의 webm(Matroska) 파서가 대개 읽어서 webm으로 알린다
 MIME_FOR_BROWSER = {"video/x-matroska": "video/webm", "video/quicktime": "video/mp4", "video/x-m4v": "video/mp4"}
@@ -241,7 +247,7 @@ def continue_watching(sid, channels, limit=20, user=""):
     marks = ",".join("?" * len(channels))
     with db() as conn:
         rows = conn.execute(
-            f"""SELECT v.*, p.position, p.watched FROM user_progress p JOIN videos v
+            f"""SELECT v.*, p.position, p.watched, p.updated FROM user_progress p JOIN videos v
                 ON v.source=p.source AND v.channel=p.channel AND v.msg=p.msg
                 WHERE p.source=? AND p.user=? AND p.channel IN ({marks}) AND p.watched=0 AND p.position > 30
                 ORDER BY p.updated DESC LIMIT ?""", [sid, user, *channels, limit]).fetchall()
@@ -258,6 +264,13 @@ def save_progress(sid, channel, msg, position, duration, watched=None, user=""):
                ON CONFLICT(source,user,channel,msg) DO UPDATE SET position=excluded.position, duration=excluded.duration,
                  watched=excluded.watched, updated=excluded.updated""",
             (sid, user, channel, msg, 0 if watched else position, duration, int(bool(watched)), time.time()))
+
+
+def index_counts(sid):
+    """채널마다 색인한 영상 수 (상태 화면용)."""
+    with db() as conn:
+        rows = conn.execute("SELECT channel, COUNT(*) FROM videos WHERE source=? GROUP BY channel", (sid,)).fetchall()
+    return {int(r[0]): int(r[1]) for r in rows}
 
 
 def forget_source(sid):

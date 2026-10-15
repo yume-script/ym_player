@@ -1,6 +1,6 @@
 // 설정: 소스(Plex 서버, IPTV 재생목록) 추가/수정/삭제. 저장하면 서버의 data/config.json에 들어간다.
 // Plex는 토큰을 직접 넣거나, plex.tv PIN 로그인으로 서버 목록을 받아 고를 수 있다.
-import { h, icon, clear, api, toast, modal } from '../util.js';
+import { h, icon, clear, api, toast, modal, storeGet, storeSet } from '../util.js';
 import { registry } from '../providers/index.js';
 import { PlexProvider } from '../providers/plex.js';
 
@@ -15,10 +15,9 @@ export async function renderSettings(main, _params, _query, ctx) {
 
     const list = h('div', { class: 'src-list' });
     const saveBtn = h('button', { class: 'btn btn-accent', on: { click: save } }, icon('check'), ' 저장');
-    const page = h('div', { class: 'page settings' },
-        h('div', { class: 'page-head' },
-            h('h1', {}, icon('gear'), ' 설정'),
-            h('div', { class: 'toolbar' },
+    const panes = {
+        sources: h('div', { class: 'settings-pane' },
+            h('div', { class: 'toolbar pane-toolbar' },
                 h('button', { class: 'btn', on: { click: plexLogin } }, icon('right-to-bracket'), ' Plex 계정으로 추가'),
                 h('button', { class: 'btn', on: { click: () => add({ type: 'plex', name: 'Plex', url: '', enabled: true, verify_ssl: true }) } },
                     icon('server'), ' Plex 직접 입력'),
@@ -28,13 +27,31 @@ export async function renderSettings(main, _params, _query, ctx) {
                     class: 'btn',
                     on: { click: () => add({ type: 'telegram', name: 'Telegram', api_id: '', api_hash: '', phone: '', channels: [], enabled: true }) },
                 }, icon('paper-plane'), ' 텔레그램 추가'),
-                saveBtn)),
-        h('p', { class: 'muted settings-note' },
-            'Plex 토큰은 이 서버(data/config.json)에만 저장되고 브라우저로는 내려오지 않습니다. ',
-            '토큰 칸을 비워두고 저장하면 기존 토큰을 그대로 씁니다. (텔레그램 API Hash도 같습니다)'),
-        usersBox(),
-        h('h2', { class: 'section-title' }, icon('layer-group'), ' 소스'),
-        list);
+                saveBtn),
+            h('p', { class: 'muted settings-note' },
+                'Plex 토큰은 이 서버(data/config.json)에만 저장되고 브라우저로는 내려오지 않습니다. ',
+                '토큰 칸을 비워두고 저장하면 기존 토큰을 그대로 씁니다. (텔레그램 API Hash도 같습니다)'),
+            list),
+        users: h('div', { class: 'settings-pane' }, usersBox()),
+        status: h('div', { class: 'settings-pane' }),
+        backup: h('div', { class: 'settings-pane' }),
+    };
+    const TABS = [['sources', 'layer-group', '소스'], ['users', 'users', '사용자'], ['status', 'heart-pulse', '상태'], ['backup', 'box-archive', '백업']];
+    const tabBar = h('div', { class: 'tabs', role: 'tablist' });
+    const showTab = (key) => {
+        if (!panes[key]) key = 'sources';
+        storeSet('yp_settings_tab', key);
+        tabBar.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === key));
+        Object.entries(panes).forEach(([k, el]) => el.classList.toggle('hidden', k !== key));
+        if (key === 'status') renderStatus(panes.status);
+        if (key === 'backup' && !panes.backup.firstChild) renderBackup(panes.backup);
+    };
+    TABS.forEach(([key, ic, label]) => tabBar.appendChild(h('button', {
+        class: 'tab', role: 'tab', dataset: { tab: key }, on: { click: () => showTab(key) },
+    }, icon(ic), ` ${label}`)));
+    const page = h('div', { class: 'page settings' },
+        h('div', { class: 'page-head' }, h('h1', {}, icon('gear'), ' 설정')),
+        tabBar, Object.values(panes));
     main.appendChild(page);
 
     window.onbeforeunload = () => (dirty ? true : undefined);
@@ -44,7 +61,7 @@ export async function renderSettings(main, _params, _query, ctx) {
     function usersBox() {
         const box = h('div', { class: 'src-card users-box' });
         const draw = async () => {
-            clear(box).appendChild(h('h2', {}, icon('users'), ' 사용자'));
+            clear(box);
             let users = [];
             try { users = (await api('/api/users')).users; } catch (e) { box.appendChild(h('p', { class: 'muted error', text: e.message })); return; }
             const me = registry.user.username;
@@ -68,6 +85,11 @@ export async function renderSettings(main, _params, _query, ctx) {
                         toast('비밀번호를 바꿨습니다. 그 사용자의 기존 로그인은 끊깁니다.', 'success');
                     } catch (e) { toast(e.message, 'error'); }
                 });
+                const accBtn = h('button', {
+                    class: 'btn btn-sm', disabled: u.role === 'admin',
+                    title: u.role === 'admin' ? '관리자는 항상 전부 봅니다' : '이 사용자가 볼 수 있는 소스와 라이브러리',
+                }, icon('eye'), u.role === 'admin' || !u.access ? ' 전부 보기' : ` ${u.access.sources.length}개 소스만`);
+                accBtn.addEventListener('click', () => accessDialog(u, draw));
                 const delBtn = h('button', { class: 'icon-btn danger', title: '삭제', disabled: u.username === me }, icon('trash'));
                 delBtn.addEventListener('click', async () => {
                     if (!confirm(`사용자 "${u.username}"를 지울까요?`)) return;
@@ -77,7 +99,7 @@ export async function renderSettings(main, _params, _query, ctx) {
                 box.appendChild(h('div', { class: 'user-row' },
                     h('span', { class: 'uname' }, icon(u.role === 'admin' ? 'user-shield' : 'user'), ` ${u.username}`,
                         u.username === me ? h('span', { class: 'me', text: '나' }) : null),
-                    roleSel, pwBtn, delBtn));
+                    roleSel, accBtn, pwBtn, delBtn));
             }
             const nameIn = h('input', { class: 'input', placeholder: '새 아이디', autocomplete: 'off' });
             const pwIn = h('input', { class: 'input', type: 'password', placeholder: '비밀번호 (6자 이상)', autocomplete: 'new-password' });
@@ -91,10 +113,81 @@ export async function renderSettings(main, _params, _query, ctx) {
                 } catch (e) { toast(e.message, 'error'); }
             });
             box.append(h('div', { class: 'user-add' }, nameIn, pwIn, roleIn, addBtn),
-                h('p', { class: 'field-hint', text: '사용자는 보기만 할 수 있고 이 설정 화면에는 들어올 수 없습니다. 이어보기(텔레그램)는 사람마다 따로 기록됩니다.' }));
+                h('p', { class: 'field-hint', text: '사용자는 보기만 할 수 있고 이 설정 화면에는 들어올 수 없습니다. [전부 보기]를 눌러 볼 수 있는 소스·라이브러리를 줄일 수 있습니다 (예: 아이 계정).' }));
         };
         draw();
         return box;
+    }
+
+    /**
+     * 사용자가 볼 수 있는 범위. 서버가 지키므로 고르지 않은 소스/라이브러리는 주소를 알아도 열리지 않는다.
+     * access = null(전부) | { sources: [id], libraries: { plexId: [섹션key] } } (libraries에 없는 Plex 소스는 라이브러리 전부)
+     */
+    function accessDialog(u, done) {
+        const sources = registry.config.sources;
+        const acc = u.access || { sources: sources.map((s) => s.id), libraries: {} };
+        const chosen = new Set(acc.sources);
+        const libs = Object.fromEntries(Object.entries(acc.libraries || {}).map(([k, v]) => [k, new Set(v)]));
+        const allIn = h('input', { type: 'radio', name: 'acc-mode', checked: !u.access });
+        const someIn = h('input', { type: 'radio', name: 'acc-mode', checked: !!u.access });
+        const listBox = h('div', { class: 'acc-list' });
+        const sync = () => listBox.classList.toggle('disabled', allIn.checked);
+        allIn.addEventListener('change', sync);
+        someIn.addEventListener('change', sync);
+
+        sources.forEach((src) => {
+            const chk = h('input', { type: 'checkbox', checked: chosen.has(src.id) });
+            const sub = h('div', { class: 'acc-libs' });
+            chk.addEventListener('change', () => { if (chk.checked) chosen.add(src.id); else chosen.delete(src.id); sub.classList.toggle('hidden', !chk.checked); });
+            sub.classList.toggle('hidden', !chk.checked);
+            listBox.appendChild(h('div', { class: 'acc-src' },
+                h('label', { class: 'check' }, chk, icon(src.type === 'plex' ? 'server' : src.type === 'telegram' ? 'paper-plane' : 'tower-broadcast'), ` ${src.name}`),
+                src.type === 'plex' ? sub : null));
+            if (src.type !== 'plex') return;
+            sub.appendChild(h('span', { class: 'muted' }, icon('circle-notch', 'fa-spin'), ' 라이브러리 불러오는 중...'));
+            new PlexProvider(src, registry.config.client_id).getLibraries({ all: true }).then((items) => {
+                clear(sub);
+                const everyIn = h('input', { type: 'checkbox', checked: !libs[src.id] });
+                const box = h('div', { class: 'acc-lib-items' });
+                const paint = () => box.classList.toggle('hidden', everyIn.checked);
+                everyIn.addEventListener('change', () => {
+                    if (everyIn.checked) delete libs[src.id]; else libs[src.id] = new Set();
+                    box.querySelectorAll('input').forEach((x) => { x.checked = false; });
+                    paint();
+                });
+                items.forEach((lib) => {
+                    const c = h('input', { type: 'checkbox', checked: !!(libs[src.id] && libs[src.id].has(lib.id)) });
+                    c.addEventListener('change', () => {
+                        libs[src.id] = libs[src.id] || new Set();
+                        if (c.checked) libs[src.id].add(lib.id); else libs[src.id].delete(lib.id);
+                    });
+                    box.appendChild(h('label', { class: 'check lib-check' }, c, icon(lib.icon), ` ${lib.title}`));
+                });
+                sub.append(h('label', { class: 'check' }, everyIn, ' 모든 라이브러리 (새로 생기는 것 포함)'), box);
+                paint();
+            }).catch((e) => { clear(sub).appendChild(h('span', { class: 'muted error', text: `라이브러리 목록 실패: ${e.message}` })); });
+        });
+        sync();
+
+        const saveAcc = h('button', { class: 'btn btn-accent' }, icon('check'), ' 저장');
+        const m = modal(`${u.username} - 볼 수 있는 범위`, h('div', { class: 'acc-dialog' },
+            h('label', { class: 'check' }, allIn, ' 전부 (나중에 추가하는 소스도)'),
+            h('label', { class: 'check' }, someIn, ' 고른 것만'),
+            listBox,
+            h('p', { class: 'field-hint', text: '고르지 않은 소스와 라이브러리는 이 사용자의 사이드바·홈·검색에 안 나오고, 서버도 열어 주지 않습니다.' })),
+        [saveAcc]);
+        saveAcc.addEventListener('click', async () => {
+            const access = allIn.checked ? null : {
+                sources: [...chosen],
+                libraries: Object.fromEntries(Object.entries(libs).filter(([k]) => chosen.has(k)).map(([k, v]) => [k, [...v]])),
+            };
+            try {
+                await api(`/api/users/${encodeURIComponent(u.username)}`, { method: 'PUT', json: { access } });
+                toast(`${u.username}: 볼 수 있는 범위를 저장했습니다.`, 'success');
+                m.close();
+                done();
+            } catch (e) { toast(e.message, 'error'); }
+        });
     }
 
     function touch() { dirty = true; saveBtn.classList.add('pulse'); }
@@ -359,4 +452,83 @@ export async function renderSettings(main, _params, _query, ctx) {
     }
 
     draw();
+    showTab(storeGet('yp_settings_tab', 'sources'));
+}
+
+const TYPE_ICON = { plex: 'server', iptv: 'tower-broadcast', telegram: 'paper-plane' };
+
+function fmtUptime(sec) {
+    const d = Math.floor(sec / 86400), hh = Math.floor((sec % 86400) / 3600), mm = Math.floor((sec % 3600) / 60);
+    return d ? `${d}일 ${hh}시간` : hh ? `${hh}시간 ${mm}분` : `${mm}분`;
+}
+
+/** 상태 점검: 소스마다 실제로 연결해 보고 결과, 서버 정보, 최근 경고 */
+async function renderStatus(pane) {
+    const refresh = h('button', { class: 'btn btn-sm', on: { click: () => renderStatus(pane) } }, icon('rotate'), ' 다시 점검');
+    clear(pane).append(h('div', { class: 'toolbar pane-toolbar' }, refresh),
+        h('div', { class: 'loading' }, icon('circle-notch', 'fa-spin'), h('span', { text: '소스마다 연결해 보는 중...' })));
+    let st;
+    try { st = await api('/api/admin/status'); } catch (e) {
+        pane.lastChild.replaceWith(h('p', { class: 'muted error', text: e.message }));
+        return;
+    }
+    const sv = st.server;
+    const rows = st.sources.map((s) => h('div', { class: `status-row ${s.ok === true ? 'ok' : s.ok === false ? 'bad' : 'off'}` },
+        icon(s.ok === true ? 'circle-check' : s.ok === false ? 'circle-xmark' : 'circle-minus', 'status-icon'),
+        h('span', { class: 'status-name' }, icon(TYPE_ICON[s.type] || 'circle'), ` ${s.name}`),
+        h('span', { class: 'status-detail', text: s.detail }),
+        s.ms ? h('span', { class: 'status-ms', text: `${s.ms}ms` }) : null));
+    const facts = [
+        ['가동 시간', fmtUptime(sv.uptime)],
+        ['Python', sv.python],
+        ['사용자', `${sv.users}명 (관리자 ${sv.admins})`],
+        ['텔레그램', sv.telethon ? (sv.cryptg ? 'Telethon + cryptg (빠름)' : 'Telethon (cryptg 없음 - 느림)') : 'Telethon 없음'],
+        ['데이터 폴더', sv.data_dir],
+    ];
+    pane.lastChild.replaceWith(h('div', {},
+        h('h3', { class: 'pane-title', text: '소스' }),
+        h('div', { class: 'src-card status-list' }, rows.length ? rows : h('p', { class: 'muted', text: '소스가 없습니다.' })),
+        h('h3', { class: 'pane-title', text: '서버' }),
+        h('div', { class: 'src-card facts' }, facts.map(([k, v]) => h('div', { class: 'fact' }, h('span', { text: k }), h('b', { text: v })))),
+        h('h3', { class: 'pane-title', text: `최근 경고 (${st.warnings.length})` }),
+        h('div', { class: 'src-card warn-list' }, st.warnings.length
+            ? st.warnings.map((w) => h('div', { class: `warn-row ${w.level.toLowerCase()}` },
+                h('span', { class: 'warn-time', text: new Date(w.time * 1000).toLocaleString() }),
+                h('span', { class: 'warn-msg', text: w.message, title: w.logger })))
+            : h('p', { class: 'muted', text: '서버를 켠 뒤로 경고가 없습니다.' }))));
+}
+
+/** 백업 내려받기 / 백업 파일로 되돌리기 */
+function renderBackup(pane) {
+    const fileIn = h('input', { type: 'file', accept: '.json,application/json', class: 'hidden' });
+    const restoreBtn = h('button', { class: 'btn', on: { click: () => fileIn.click() } }, icon('upload'), ' 백업 파일로 복원');
+    fileIn.addEventListener('change', async () => {
+        const f = fileIn.files[0];
+        fileIn.value = '';
+        if (!f) return;
+        let data;
+        try { data = JSON.parse(await f.text()); } catch (e) { return toast('JSON 파일이 아닙니다.', 'error'); }
+        const when = data.created ? new Date(data.created * 1000).toLocaleString() : '?';
+        const n = (data.config && data.config.sources || []).length, u = (data.users || []).length;
+        if (!confirm(`${when}에 만든 백업(소스 ${n}개, 사용자 ${u}명)으로 지금 설정과 사용자를 모두 바꿀까요?`)) return;
+        restoreBtn.disabled = true;
+        try {
+            const res = await api('/api/admin/restore', { method: 'POST', json: data });
+            toast(`복원했습니다 (소스 ${res.sources}개, 사용자 ${res.users}명). 다시 불러옵니다...`, 'success');
+            setTimeout(() => { location.href = res.still_logged_in ? '/' : '/login'; }, 1200);
+        } catch (e) {
+            toast(`복원 실패: ${e.message}`, 'error', 7000);
+        } finally {
+            restoreBtn.disabled = false;
+        }
+    });
+    pane.append(h('div', { class: 'src-card backup-card' },
+        h('h3', { class: 'pane-title' }, icon('download'), ' 백업 내려받기'),
+        h('p', { text: '소스 설정(Plex 토큰, 텔레그램 API Hash 포함), 사용자 계정(비밀번호는 해시), 사용자별 즐겨찾기를 JSON 파일 하나로 받습니다.' }),
+        h('p', { class: 'muted error', text: '토큰이 들어 있으니 안전한 곳에 보관하세요. 텔레그램 로그인 세션과 영상 색인/이어보기는 들어가지 않습니다 (다른 서버로 옮기면 텔레그램은 다시 로그인).' }),
+        h('a', { class: 'btn btn-accent', href: '/api/admin/backup', download: '' }, icon('download'), ' 백업 파일 받기')),
+    h('div', { class: 'src-card backup-card' },
+        h('h3', { class: 'pane-title' }, icon('upload'), ' 복원'),
+        h('p', { text: '백업 파일의 내용으로 지금 설정과 사용자 목록을 통째로 바꿉니다. 내 계정이 백업에 없거나 관리자가 아니면 로그인 화면으로 갑니다.' }),
+        restoreBtn, fileIn));
 }

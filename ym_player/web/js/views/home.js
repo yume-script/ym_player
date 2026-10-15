@@ -1,4 +1,4 @@
-// 홈: 소스마다 허브(이어보기, 최근 추가, 지금 방송 중...)를 가로 줄로 쌓는다.
+// 홈: 맨 위에 모든 소스를 합친 이어보기, 그 아래 소스마다 허브(최근 추가, 지금 방송 중...)를 가로 줄로 쌓는다.
 import { h, icon, clear } from '../util.js';
 import { registry } from '../providers/index.js';
 import { hubRow, emptyState, loading } from '../cards.js';
@@ -15,6 +15,17 @@ export async function renderHome(main, _params, _query, ctx) {
     const page = h('div', { class: 'page home' });
     main.appendChild(page);
 
+    // 맨 위: 모든 소스의 이어보기를 최근에 본 순서로 한 줄에 (각 소스의 이어보기 줄은 따로 안 그린다)
+    const contSlot = h('div', { class: 'home-slot' });
+    page.appendChild(contSlot);
+    const contItems = [];
+    const addContinue = (items) => {
+        const seen = new Set(contItems.map((it) => `${it.pid}/${it.id}`));
+        items.forEach((it) => { if (!seen.has(`${it.pid}/${it.id}`)) { seen.add(`${it.pid}/${it.id}`); contItems.push(it); } });
+        contItems.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+        clear(contSlot).appendChild(hubRow({ title: '이어보기', items: contItems.slice(0, 40), wide: true }));
+    };
+
     // 소스마다 자리를 먼저 잡아두고, 응답이 오는 대로 채운다 (느린 소스가 다른 소스를 막지 않게)
     const slots = providers.map((p) => {
         const slot = h('div', { class: 'home-slot' }, loading(`${p.name} 불러오는 중...`));
@@ -30,7 +41,10 @@ export async function renderHome(main, _params, _query, ctx) {
             if (!hubs.length) {
                 slot.appendChild(h('div', { class: 'home-note', text: `${p.name}: 보여줄 항목이 없습니다.` }));
             }
-            hubs.forEach((hub) => slot.appendChild(hubRow(hub)));
+            hubs.filter((hub) => hub.continue).forEach((hub) => addContinue(hub.items));
+            const rest = hubs.filter((hub) => !hub.continue);
+            if (!rest.length && hubs.length) slot.remove();
+            rest.forEach((hub) => slot.appendChild(hubRow(hub)));
         } catch (e) {
             if (!ctx.alive()) return;
             clear(slot).appendChild(h('div', { class: 'home-note error' },
