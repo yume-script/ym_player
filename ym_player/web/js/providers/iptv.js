@@ -48,7 +48,7 @@ export function detectKind(raw) {
     const { path, params } = urlPath(raw);
     if (params && (params.get('output') || '').toLowerCase() === 'ts') return 'ts';
     if (path.endsWith('.ts')) return 'ts';
-    if (path.endsWith('.mpd')) return 'dash';   // MPEG-DASH - 아직 재생 엔진이 없다
+    if (path.endsWith('.mpd') || (params && /^(mpd|dash)$/i.test(params.get('type') || params.get('format') || ''))) return 'dash';
     if (/\.(mp4|m4v|webm|mov|mkv|ogg|mp3|aac)$/.test(path)) return 'direct';
     return 'hls';
 }
@@ -159,8 +159,7 @@ export class IptvProvider {
         const { cur } = this.nowNext(ch);
         return {
             url: ch.url,
-            // DASH는 중계해도 못 트므로 다시 시도하지 않는다
-            proxyUrl: detectKind(ch.url) === 'dash' ? null : streamProxyUrl(ch.url, ch.ua, ch.referer),
+            proxyUrl: streamProxyUrl(ch.url, ch.ua, ch.referer),
             kind: detectKind(ch.url),
             live: true,
             title: ch.name,

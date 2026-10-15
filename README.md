@@ -204,6 +204,8 @@ getPlayback(id|채널)  -> {url, kind: 'hls'|'ts'|'direct', live, proxyUrl?, sta
 ## 재생 방식
 
 - **IPTV**: 원래 플러그인과 같은 규칙. `.ts`/`output=ts` → mpegts.js, `.mp4/.webm…` → `<video>`, 나머지 → hls.js.
+  `.mpd`(MPEG-DASH)는 dash.js로 틉니다(처음 DASH 채널을 열 때만 불러옴). 중계로 받을 때는 서버가 MPD의 기준 주소(BaseURL)를
+  원본 절대 주소로 바꾸고 재생기가 조각 요청을 다시 중계로 감쌉니다. **DRM(암호화)이 걸린 DASH는 재생하지 않고** 그 이유를 보여줍니다.
   원본 주소로 먼저 틀어 보고, 막히면(CORS 등) `/api/stream` 중계로 한 번 더. 그래도 안 되면 그 채널은 "안 나옴"으로
   표시(편성표·서랍에서 흐리게)하고, 망가진 MSE가 다음 채널까지 막지 않게 `<video>`를 새로 만듭니다.
   **재생 중에 끊겨도** (예: 재생목록은 열리는데 영상 조각만 CORS로 막혀 `fragLoadError`) 직접 연결이었다면 서버 중계로

@@ -172,6 +172,11 @@ def test_server_proxies_m3u_epg_streams_and_plex(monkeypatch, tmp_path):
         origin.router.add_get("/epg.xml.gz", origin_epg)
         origin.router.add_get("/live/index.m3u8", origin_hls)
         origin.router.add_get("/live/seg1.ts", origin_seg)
+        async def origin_mpd(request):
+            return web.Response(
+                text='<MPD type="static"><Period><AdaptationSet><SegmentTemplate media="v-$Number$.m4s"/></AdaptationSet></Period></MPD>',
+                content_type="application/dash+xml")
+        origin.router.add_get("/dash/manifest.mpd", origin_mpd)
         origin.router.add_route("*", "/{tail:.*}", origin_plex)
         origin_srv = TestServer(origin)
         await origin_srv.start_server()
@@ -208,6 +213,11 @@ def test_server_proxies_m3u_epg_streams_and_plex(monkeypatch, tmp_path):
             r = await client.get(seg_line)
             assert (await r.read()) == b"\x47" * 1000
 
+            # DASH: 중계로 받은 MPD는 원본 기준 절대 BaseURL이 들어간다
+            r = await client.get("/api/stream", params={"url": f"{base}/dash/manifest.mpd"})
+            assert r.content_type == "application/dash+xml"
+            assert f"<BaseURL>{base}/dash/manifest.mpd</BaseURL><Period>" in await r.text()
+
             r = await client.get("/api/stream", params={"url": "file:///etc/passwd"})
             assert r.status == 400
 
@@ -235,3 +245,17 @@ def test_parse_m3u_drops_bogus_logos():
             '#EXTINF:-1 tvg-logo=" https://cdn/c.png ",C\nhttp://x/c.mpd\n')
     logos = [c["logo"] for c in iptv.parse_m3u(text)]
     assert logos == ["", "", "https://cdn/c.png"]
+
+
+def test_rewrite_mpd_makes_base_absolute():
+    base = "https://cdn.example/live/ch1/manifest.mpd?token=a&b=1"
+    mpd = '<?xml version="1.0"?>\n<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="dynamic"><Period id="1"><BaseURL>v/</BaseURL></Period></MPD>'
+    out = iptv.rewrite_mpd(mpd, base)
+    assert '<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="dynamic"><BaseURL>https://cdn.example/live/ch1/manifest.mpd?token=a&amp;b=1</BaseURL><Period' in out
+    assert "<BaseURL>v/</BaseURL>" in out  # 아래 단계 상대 주소는 그대로 (위 BaseURL 기준으로 풀림)
+    top = '<MPD><BaseURL>../seg/</BaseURL><Period/></MPD>'
+    assert iptv.rewrite_mpd(top, base) == '<MPD><BaseURL>https://cdn.example/live/seg/</BaseURL><Period/></MPD>'
+    assert iptv.rewrite_mpd("not xml", base) == "not xml"
+    assert iptv.looks_like_mpd("application/dash+xml", "http://x/a", b"")
+    assert iptv.looks_like_mpd("", "http://x/a.mpd?x=1", b"")
+    assert not iptv.looks_like_mpd("video/mp2t", "http://x/a.ts", b"G@")
