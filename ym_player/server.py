@@ -11,6 +11,7 @@
 - /                       web/index.html (단일 페이지 앱) - 로그인해야 열림, 아니면 /login
 - /login, /api/auth/...   로그인 화면, 로그인/로그아웃/첫 관리자 만들기/비밀번호 변경
 - /api/users              사용자 관리 (관리자만)
+- /api/me/prefs           내 즐겨찾기 채널 등 사용자별 작은 설정 (prefs.py)
 - /api/config             소스 목록 조회/저장 (Plex 토큰은 브라우저로 안 내보냄)
 - /api/iptv/{id}/channels M3U를 받아 채널 목록 JSON으로
 - /api/iptv/{id}/epg      XMLTV(.gz 포함)를 받아 지금-3시간 ~ +24시간 편성표 JSON으로
@@ -31,7 +32,7 @@ from urllib.parse import urlencode
 from aiohttp import ClientSession, ClientTimeout, web
 from yarl import URL
 
-from . import auth, config_store, iptv, subtitles, telegram_src
+from . import auth, config_store, iptv, prefs, subtitles, telegram_src
 
 log = logging.getLogger("ym_player")
 
@@ -885,6 +886,18 @@ async def auth_password(request):
     return _set_session(request, web.json_response({"success": True}), auth.find_user(name), True)
 
 
+async def prefs_get(request):
+    return web.json_response({"success": True, "prefs": prefs.get(username(request))})
+
+
+async def prefs_put(request):
+    try:
+        mine = prefs.update(username(request), await _json_body(request))
+    except ValueError as e:
+        return _json_error(400, str(e))
+    return web.json_response({"success": True, "prefs": mine})
+
+
 @admin_only
 async def users_list(request):
     return web.json_response({"success": True, "users": [auth.public_user(u) for u in auth.load_users()]})
@@ -919,6 +932,7 @@ async def users_delete(request):
         auth.delete_user(request.match_info["name"], acting=username(request))
     except auth.AuthError as e:
         return _json_error(400, str(e))
+    prefs.forget(request.match_info["name"])
     return web.json_response({"success": True})
 
 
@@ -968,6 +982,8 @@ def create_app(require_auth=True):
     app.router.add_post("/api/auth/logout", auth_logout)
     app.router.add_get("/api/auth/me", auth_me)
     app.router.add_post("/api/auth/password", auth_password)
+    app.router.add_get("/api/me/prefs", prefs_get)
+    app.router.add_put("/api/me/prefs", prefs_put)
     app.router.add_get("/api/users", users_list)
     app.router.add_post("/api/users", users_create)
     app.router.add_put("/api/users/{name}", users_update)

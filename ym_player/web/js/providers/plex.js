@@ -11,6 +11,7 @@ import { fmtDuration, uuid } from '../util.js';
 const PRODUCT = 'Yume Player';
 const LIB_ICONS = { movie: 'film', show: 'tv', artist: 'music' };
 const PLAYABLE = new Set(['movie', 'episode', 'track', 'clip']);
+const CONTINUE_HUBS = new Set(['home.continue', 'home.ondeck']);
 
 // 서버(/api/plex-sub)가 WebVTT로 바꿔 줄 수 있는 외부 자막 형식 (ym_player/subtitles.py TEXT_CODECS와 같게)
 const TEXT_SUB_CODECS = new Set(['srt', 'subrip', 'smi', 'sami', 'ass', 'ssa', 'vtt', 'webvtt']);
@@ -109,12 +110,14 @@ export class PlexProvider {
             title,
             subtitle,
             thumb: this.img(thumb, square ? 300 : 240, square ? 300 : 360),
-            wideThumb: this.img(m.thumb || m.art, 400, 225),
+            wideThumb: this.img(t === 'episode' ? (m.thumb || m.art) : (m.art || m.grandparentArt || m.thumb), 400, 225),
             shape: square ? 'square' : 'poster',
             progress: m.viewOffset && m.duration ? m.viewOffset / m.duration : 0,
             watched: PLAYABLE.has(t) && m.viewCount > 0,
             unwatched: m.leafCount ? Math.max(0, m.leafCount - (m.viewedLeafCount || 0)) : 0,
             route: `#/item/${this.id}/${m.ratingKey}`,
+            // 홈의 통합 이어보기 줄 정렬용 (마지막으로 본 시각, 초)
+            ts: m.lastViewedAt || 0,
             raw: m,
         };
     }
@@ -136,7 +139,11 @@ export class PlexProvider {
         return (hubs || [])
             .map((hub) => ({ hub, items: (hub.Metadata || []).filter((m) => this.visible(m)) }))
             .filter(({ items }) => items.length)
-            .map(({ hub, items }) => ({ title: `${hub.title}${suffix}`, source: suffix ? undefined : this.name, items: items.map((m) => this.toItem(m)) }));
+            .map(({ hub, items }) => ({
+                title: `${hub.title}${suffix}`, source: suffix ? undefined : this.name, items: items.map((m) => this.toItem(m)),
+                // 이어보기/다음 볼 에피소드는 홈 맨 위의 통합 "이어보기" 줄로 모은다
+                continue: !suffix && CONTINUE_HUBS.has(hub.hubIdentifier),
+            }));
     }
 
     async getHomeHubs() {

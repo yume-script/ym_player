@@ -39,6 +39,7 @@ export class TelegramProvider {
             progress: v.duration && v.position ? v.position / v.duration : 0,
             watched: !!v.watched,
             route: `#/item/${this.id}/${id}`,
+            ts: v.updated || 0,
             raw: v,
         };
     }
@@ -51,7 +52,7 @@ export class TelegramProvider {
         const data = await api(`${this.base}/home`);
         const hubs = [];
         if (data.continue && data.continue.length) {
-            hubs.push({ title: '이어보기', source: this.name, items: data.continue.map((v) => this.toItem(v)) });
+            hubs.push({ title: '이어보기', source: this.name, continue: true, items: data.continue.map((v) => this.toItem(v)) });
         }
         for (const row of data.channels || []) {
             if (!row.items.length) continue;

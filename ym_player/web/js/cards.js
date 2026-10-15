@@ -67,18 +67,18 @@ export function channelCard(item, playlist) {
     h('div', { class: 'card-sub', text: item.subtitle || ' ' }));
 }
 
-export function cardFor(item, playlist) {
-    return item.type === 'channel' ? channelCard(item, playlist) : posterCard(item);
+export function cardFor(item, playlist, wide = false) {
+    return item.type === 'channel' ? channelCard(item, playlist) : posterCard(item, { wide });
 }
 
 export function playlistOf(items) {
     return items.filter((i) => i.type === 'channel').map((i) => ({ provider: registry.byId(i.pid), channel: i.channel }));
 }
 
-/** 제목 + 좌우로 넘기는 카드 줄 */
+/** 제목 + 좌우로 넘기는 카드 줄. hub.wide면 모든 카드를 16:9로 (여러 소스를 섞은 이어보기 줄) */
 export function hubRow(hub) {
     const playlist = hub.live ? playlistOf(hub.items) : null;
-    const track = h('div', { class: 'row-track' }, hub.items.map((it) => cardFor(it, playlist)));
+    const track = h('div', { class: 'row-track' }, hub.items.map((it) => cardFor(it, playlist, !!hub.wide)));
     const scroll = (dir) => track.scrollBy({ left: dir * track.clientWidth * 0.85, behavior: 'smooth' });
     return h('section', { class: 'row' },
         h('div', { class: 'row-head' },

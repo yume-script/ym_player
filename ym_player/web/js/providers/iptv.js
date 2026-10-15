@@ -1,16 +1,36 @@
 // IPTV(M3U + XMLTV) 소스. 재생목록/편성표는 서버가 받아서 JSON으로 풀어준다.
 // 재생은 브라우저가 원본 주소로 먼저 시도하고, 막히면(CORS 등) /api/stream 중계로 다시 시도한다.
-import { api, normalizeName, storeGet, storeSet } from '../util.js';
+import { api, normalizeName, storeGet, storeSet, toast } from '../util.js';
 
+// 즐겨찾기는 사용자마다 서버(/api/me/prefs)에 둔다. 예전 브라우저 저장분(yp_fav_channels)은 처음 한 번 옮긴다
 const FAV_KEY = 'yp_fav_channels';
-const favorites = new Set(storeGet(FAV_KEY, []));
+const favorites = new Set();
+
+export async function loadFavorites() {
+    let list;
+    try { list = (await api('/api/me/prefs')).prefs.fav_channels; } catch (e) { return; }
+    const local = storeGet(FAV_KEY, null);
+    if (list === undefined && Array.isArray(local) && local.length) {
+        list = local;
+        saveFavorites(list);
+    }
+    if (local !== null) storeSet(FAV_KEY, null);
+    favorites.clear();
+    (list || []).forEach((id) => favorites.add(id));
+}
+
+function saveFavorites(list) {
+    api('/api/me/prefs', { method: 'PUT', json: { fav_channels: list } })
+        .catch((e) => toast(`즐겨찾기 저장 실패: ${e.message}`, 'error'));
+}
+
 // 재생해보고 안 된 채널 (이번 탭 동안만 기억)
 export const channelHealth = new Map();
 
 export function isFavorite(ch) { return favorites.has(ch.id); }
 export function toggleFavorite(ch) {
     if (favorites.has(ch.id)) favorites.delete(ch.id); else favorites.add(ch.id);
-    storeSet(FAV_KEY, [...favorites]);
+    saveFavorites([...favorites]);
     return favorites.has(ch.id);
 }
 

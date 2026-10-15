@@ -291,3 +291,25 @@ def test_user_access_limits_sources_and_plex_libraries(data):
             await origin.close()
 
     run(flow)
+
+
+def test_prefs_are_per_user(data):
+    async def flow(c, app):
+        await c.post("/api/auth/setup", json={"username": "admin", "password": "adminpw"})
+        await c.post("/api/users", json={"username": "kim", "password": "kimpass"})
+        assert (await (await c.get("/api/me/prefs")).json())["prefs"] == {}
+        r = await c.put("/api/me/prefs", json={"fav_channels": ["tv:1", "tv:2", "tv:1"]})
+        assert (await r.json())["prefs"] == {"fav_channels": ["tv:1", "tv:2"]}
+        assert (await c.put("/api/me/prefs", json={"evil": 1})).status == 400
+        assert (await c.put("/api/me/prefs", json={"fav_channels": "x"})).status == 400
+
+        await c.post("/api/auth/logout")
+        c.session.cookie_jar.clear()
+        await c.post("/api/auth/login", json={"username": "kim", "password": "kimpass"})
+        assert (await (await c.get("/api/me/prefs")).json())["prefs"] == {}  # 남의 즐겨찾기는 안 보임
+        await c.put("/api/me/prefs", json={"fav_channels": ["tv:9"]})
+        from ym_player import prefs
+        assert prefs.get("ADMIN")["fav_channels"] == ["tv:1", "tv:2"]
+        assert prefs.get("kim")["fav_channels"] == ["tv:9"]
+
+    run(flow)

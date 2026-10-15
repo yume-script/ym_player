@@ -241,7 +241,7 @@ def continue_watching(sid, channels, limit=20, user=""):
     marks = ",".join("?" * len(channels))
     with db() as conn:
         rows = conn.execute(
-            f"""SELECT v.*, p.position, p.watched FROM user_progress p JOIN videos v
+            f"""SELECT v.*, p.position, p.watched, p.updated FROM user_progress p JOIN videos v
                 ON v.source=p.source AND v.channel=p.channel AND v.msg=p.msg
                 WHERE p.source=? AND p.user=? AND p.channel IN ({marks}) AND p.watched=0 AND p.position > 30
                 ORDER BY p.updated DESC LIMIT ?""", [sid, user, *channels, limit]).fetchall()
