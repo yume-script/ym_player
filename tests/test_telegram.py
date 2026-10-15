@@ -613,3 +613,35 @@ def test_user_channel_access(env):
             await client.close()
 
     asyncio.run(main())
+
+
+def test_fix_text_repairs_broken_titles():
+    import unicodedata
+    t = "영화 제목 1080p"
+    b = t.encode("utf-8")
+    browser_cp1252 = "".join(bytes([x]).decode("cp1252", "ignore") or chr(x) for x in b)
+    for broken in (b.decode("latin-1"), browser_cp1252, t.encode("cp949").decode("latin-1"),
+                   "%EC%98%81%ED%99%94%20%EC%A0%9C%EB%AA%A9%201080p", unicodedata.normalize("NFD", t)):
+        assert telegram_src.fix_text(broken) == t, repr(broken)
+    for fine in ("Café Amélie (2001)", "🎬 영화 ✨", "100% 진짜 50% 할인", "“Hello” – it’s ok", ""):
+        assert telegram_src.fix_text(fine) == fine
+    # 색인할 때 파일명/캡션에 적용
+    v = telegram_src.message_to_video(video_msg(12, caption="", name=b.decode("latin-1") + ".mp4"))
+    assert v["title"] == t and v["file_name"] == t + ".mp4"
+
+
+def test_existing_index_titles_are_repaired_once(monkeypatch, tmp_path):
+    import sqlite3
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    broken = "영화".encode("utf-8").decode("latin-1")
+    conn = sqlite3.connect(str(tmp_path / "telegram.db"))
+    conn.executescript(telegram_src._SCHEMA)
+    conn.execute("INSERT INTO videos(source,channel,msg,title,caption,file_name,mime,duration,size,width,height,date,has_thumb)"
+                 " VALUES('tg',1,2,?,?,?,'video/mp4',1,1,1,1,'',0)", (broken, broken, broken + ".mkv"))
+    conn.commit()
+    conn.close()
+    telegram_src._migrated.discard(str(tmp_path))
+    row = telegram_src.get_video("tg", 1, 2)
+    assert row["title"] == "영화" and row["file_name"] == "영화.mkv"
+    with telegram_src.db() as c:
+        assert c.execute("PRAGMA user_version").fetchone()[0] == 1

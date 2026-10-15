@@ -19,7 +19,9 @@ import os
 import re
 import sqlite3
 import time
+import unicodedata
 from collections import OrderedDict
+from urllib.parse import unquote
 
 from . import config_store, media_cache
 
@@ -83,6 +85,43 @@ def _attr_name(attr):
     return attr.__class__.__name__
 
 
+_PCT_RE = re.compile(r"%[0-9A-Fa-f]{2}")
+_HANGUL_RE = re.compile(r"[\uac00-\ud7a3]")
+# cp1252가 0x80~0x9F 자리에 넣는 글자들 (깨진 글자 안에 섞여 있어도 원래 바이트로 되돌릴 수 있다)
+_CP1252_EXTRA = set(bytes(range(0x80, 0xA0)).decode("cp1252", errors="ignore"))
+
+
+def fix_text(value):
+    """텔레그램 제목/파일명을 사람이 읽을 수 있는 UTF-8 글자로.
+
+    - "%EC%98%81%ED%99%94" 같은 주소 인코딩 -> 풀기
+    - UTF-8/CP949(EUC-KR) 바이트를 Latin-1로 잘못 읽어 깨진 글자("ì˜í™”", "¿µÈ­") -> 원래대로
+    - macOS에서 올린 파일명의 풀어 쓴 한글(NFD, ㅇㅕㅇㅎㅘ처럼 보임) -> 모아 쓴 한글(NFC)
+    """
+    s = str(value or "")
+    if not s:
+        return s
+    if len(_PCT_RE.findall(s)) >= 2:
+        try:
+            s = unquote(s, errors="strict")
+        except UnicodeDecodeError:
+            pass
+    if any(0x80 <= ord(c) <= 0xFF or c in _CP1252_EXTRA for c in s) and all(ord(c) < 0x100 or c in _CP1252_EXTRA for c in s):
+        # 글자 하나씩 원래 바이트로: cp1252 특수 글자(˜ ™ …)는 그 바이트, 나머지는 Latin-1 그대로
+        raw = bytes(c.encode("cp1252")[0] if c in _CP1252_EXTRA else ord(c) for c in s)
+        if raw:
+            try:
+                s = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                try:
+                    fixed = raw.decode("cp949")
+                    if _HANGUL_RE.search(fixed):  # 진짜 한글이 나올 때만 (é 같은 라틴 글자는 그대로)
+                        s = fixed
+                except UnicodeDecodeError:
+                    pass
+    return unicodedata.normalize("NFC", s)
+
+
 def message_to_video(msg):
     """동영상 메시지면 색인용 dict, 아니면 None. (움짤/스티커/둥근 영상 메시지는 뺀다)"""
     doc = getattr(msg, "document", None) or getattr(msg, "video", None)
@@ -101,13 +140,13 @@ def message_to_video(msg):
             duration = max(duration, int(getattr(attr, "duration", 0) or 0))
             width, height = int(getattr(attr, "w", 0) or 0), int(getattr(attr, "h", 0) or 0)
         if getattr(attr, "file_name", None):
-            file_name = str(attr.file_name)
+            file_name = fix_text(attr.file_name)
     ext = os.path.splitext(file_name.lower())[1]
     if mime == "image/gif" or ext == ".gif":
         return None
     if not (is_video or mime.startswith("video/") or ext in VIDEO_EXTS):
         return None
-    caption = str(getattr(msg, "message", "") or "").strip()
+    caption = fix_text(getattr(msg, "message", "") or "").strip()
     first_line = caption.splitlines()[0].strip() if caption else ""
     date = getattr(msg, "date", None)
     return {
@@ -168,7 +207,24 @@ def db():
                 conn.execute("""INSERT OR IGNORE INTO user_progress(source,user,channel,msg,position,duration,watched,updated)
                                 SELECT source,?,channel,msg,position,duration,watched,updated FROM progress""",
                              (MIGRATE_USER,))
+        if conn.execute("PRAGMA user_version").fetchone()[0] < 1:
+            _fix_indexed_text(conn)
+            conn.execute("PRAGMA user_version = 1")
     return conn
+
+
+def _fix_indexed_text(conn):
+    """예전에 깨진 채로 색인된 제목/설명/파일명을 한 번 고친다 (fix_text가 생기기 전 색인)."""
+    rows = conn.execute("SELECT source, channel, msg, title, caption, file_name FROM videos").fetchall()
+    changes = []
+    for r in rows:
+        new = (fix_text(r["title"]), fix_text(r["caption"]), fix_text(r["file_name"]))
+        if new != (r["title"], r["caption"], r["file_name"]):
+            changes.append((*new, r["source"], r["channel"], r["msg"]))
+    if changes:
+        with conn:
+            conn.executemany("UPDATE videos SET title=?, caption=?, file_name=? WHERE source=? AND channel=? AND msg=?", changes)
+        log.info("텔레그램 색인의 깨진 제목 %d개를 고쳤습니다", len(changes))
 
 
 def upsert_videos(sid, channel, items):
@@ -424,7 +480,7 @@ class TelegramSource:
             ent = dialog.entity
             if _attr_name(ent) != "Channel":
                 continue
-            items.append({"id": int(ent.id), "title": str(getattr(ent, "title", "") or dialog.name),
+            items.append({"id": int(ent.id), "title": fix_text(getattr(ent, "title", "") or dialog.name),
                           "username": str(getattr(ent, "username", "") or ""),
                           "kind": "channel" if getattr(ent, "broadcast", False) else "group",
                           "access_hash": str(getattr(ent, "access_hash", 0) or 0)})
