@@ -348,6 +348,10 @@ export class PlexProvider {
                 directPlay: 0,
                 directStream: 1,
                 directStreamAudio: 1,
+                // 원본 시각을 그대로 유지 (Plex 웹 플레이어와 같은 값). 없으면 영상은 복사(앞 키프레임부터)하고
+                // 음성만 변환할 때 두 트랙의 시작 시각이 어긋나, hls.js가 그 틈을 무음으로 채워
+                // 재생 첫 몇 초 동안 소리가 안 나왔다.
+                copyts: 1,
                 videoQuality: 100,
                 videoResolution: q.res || '1920x1080',
                 maxVideoBitrate: q.res ? Number(q.id) : 20000,
