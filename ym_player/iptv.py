@@ -93,6 +93,50 @@ def parse_m3u(text, source_name="IPTV", source_id=""):
     return channels
 
 
+def merge_channels(lists):
+    """여러 M3U에서 읽은 채널 목록을 하나로. 앞 목록이 우선이다.
+
+    뒤 목록의 채널이 앞 목록에 이미 있으면(같은 tvg-id, 공백·대소문자 빼고 같은 이름, 또는 같은 스트림 주소)
+    따로 늘어놓지 않고 그 주소를 alts(예비 주소)로 붙여, 첫 주소가 안 나오면 재생기가 차례로 시도하게 한다.
+    한 목록 안의 채널끼리는 합치지 않는다 (목록 하나만 넣으면 예전과 똑같이 보이게).
+    """
+    merged, by_url, by_tvg, by_name = [], {}, {}, {}
+    for channels in lists:
+        added = []
+        for ch in channels:
+            url = ch.get("url", "")
+            tvg = ch.get("tvg_id", "").strip().lower()
+            name = normalize_name(ch.get("name"))
+            hit = (tvg and by_tvg.get(tvg)) or (name and by_name.get(name)) or by_url.get(url)
+            if hit is None:
+                hit = dict(ch, alts=[])
+                merged.append(hit)
+                added.append(hit)
+                continue
+            if url != hit["url"] and all(url != a["url"] for a in hit["alts"]):
+                hit["alts"].append({k: ch[k] for k in ("url", "ua", "referer") if ch.get(k)})
+            if not hit.get("logo") and ch.get("logo"):
+                hit["logo"] = ch["logo"]
+            if not hit.get("tvg_id") and ch.get("tvg_id"):
+                hit["tvg_id"] = ch["tvg_id"]  # 편성표 매칭용 (id는 그대로 둔다 - 즐겨찾기가 안 깨지게)
+        for hit in added:  # 다음 목록부터 찾을 수 있게
+            by_url.setdefault(hit["url"], hit)
+            if hit["tvg_id"]:
+                by_tvg.setdefault(hit["tvg_id"].strip().lower(), hit)
+            by_name.setdefault(normalize_name(hit["name"]), hit)
+    return merged
+
+
+def merge_epg(parsed_list):
+    """parse_xmltv 결과 여러 개를 하나로. 같은 채널이 여러 편성표에 있으면 앞 편성표 것을 쓴다."""
+    out = {"names": {}, "icons": {}, "programmes": {}}
+    for parsed in parsed_list:
+        for key in ("names", "icons", "programmes"):
+            for k, v in (parsed.get(key) or {}).items():
+                out[key].setdefault(k, v)
+    return out
+
+
 def parse_xmltv_date(value):
     """'20261014093000 +0900' -> 유닉스 초. 오프셋이 없으면 KST로 본다. 못 읽으면 None."""
     m = _XMLTV_DATE_RE.match(str(value or "").strip())

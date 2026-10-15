@@ -8,6 +8,7 @@
      "api_hash": "...", "phone": "+8210...", "channels": [{"id": 1234567890, "title": "영화 채널"}]}
     {"id": "def456", "type": "iptv", "name": "개인", "enabled": true,
      "m3u": "http://.../playlist.m3u", "epg": "http://.../epg.xml.gz"}
+        m3u/epg에는 주소를 한 줄에 하나씩 여러 개 넣을 수 있다 (합쳐서 한 채널 목록/편성표로 보여 줌)
 
 Plex 토큰은 브라우저로 내보내지 않는다(public_config가 has_token만 알려준다). 화면에서
 저장할 때 토큰 칸을 비워 보내면 기존 토큰을 그대로 둔다.
@@ -102,11 +103,22 @@ def _clean_source(raw, old):
                 channels.append({"id": int(c["id"]), "title": str(c.get("title") or c["id"])[:200]})
         src["channels"] = channels
     else:
-        src["m3u"] = str(raw.get("m3u") or "").strip()
-        src["epg"] = str(raw.get("epg") or "").strip()
+        src["m3u"] = "\n".join(url_list(raw.get("m3u")))
+        src["epg"] = "\n".join(url_list(raw.get("epg")))
         if not src["m3u"]:
             raise ValueError(f"[{src['name']}] M3U 주소가 비어 있습니다.")
     return src
+
+
+def url_list(value):
+    """M3U/EPG 칸 값 -> 주소 목록. 한 줄에 하나(목록으로 와도 됨), 빈 줄과 '#' 메모 줄과 같은 주소는 뺀다."""
+    lines = value if isinstance(value, list) else str(value or "").splitlines()
+    out = []
+    for line in lines:
+        line = str(line or "").strip()
+        if line and not line.startswith("#") and line not in out:
+            out.append(line)
+    return out
 
 
 def replace_sources(cfg, raw_sources):

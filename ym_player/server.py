@@ -249,6 +249,47 @@ def _source_or_404(source_id, stype, request=None):
 # ---------------------------------------------------------------------------
 # IPTV
 # ---------------------------------------------------------------------------
+async def _fetch_all(request, urls, timeout):
+    """주소 여러 개를 동시에 받는다. 반환 [(주소, bytes 또는 예외)] (순서 유지)."""
+    async def one(url):
+        try:
+            return url, await _fetch_bytes(request.app[HTTP], url, timeout=timeout)
+        except Exception as e:  # 네트워크 오류 종류가 많아서 넓게 잡는다
+            return url, e
+    return await asyncio.gather(*(one(u) for u in urls))
+
+
+def _fetch_error(e):
+    if isinstance(e, web.HTTPException):
+        return e.text or e.reason
+    return f"{type(e).__name__}: {e}"
+
+
+def _short_url(url):
+    """오류 메시지에 쓸 주소 (apikey 같은 쿼리는 빼고)."""
+    return url.split("?", 1)[0][-80:]
+
+
+async def _load_m3u(request, src, timeout=20):
+    """소스의 M3U 주소들을 받아 합친 채널 목록과 목록별 결과. 하나도 못 받으면 RuntimeError."""
+    urls = config_store.url_list(src["m3u"])
+    lists, report = [], []
+    for url, got in await _fetch_all(request, urls, timeout):
+        if isinstance(got, Exception):
+            report.append({"url": _short_url(url), "ok": False, "error": _fetch_error(got)})
+            continue
+        text = iptv.decode_text(got)
+        chans = iptv.parse_m3u(text, src["name"], src["id"])
+        note = ""
+        if not chans and text.lstrip()[:80].lower().startswith(("<!doctype", "<html")):
+            note = "로그인 화면(HTML)이 온 것 같습니다. apikey를 확인하세요"
+        lists.append(chans)
+        report.append({"url": _short_url(url), "ok": bool(chans), "count": len(chans), "error": note or ("" if chans else "채널 0개")})
+    if not lists:
+        raise RuntimeError(" / ".join(r["error"] for r in report) or "M3U 주소가 없습니다")
+    return iptv.merge_channels(lists), report
+
+
 async def iptv_channels(request):
     src = _source_or_404(request.match_info["sid"], "iptv", request)
     cache = request.app[CHANNEL_CACHE]
@@ -257,37 +298,40 @@ async def iptv_channels(request):
     if hit and time.time() - hit[0] < CHANNEL_CACHE_SEC and not request.query.get("refresh"):
         return web.json_response(hit[1])
     try:
-        raw = await _fetch_bytes(request.app[HTTP], src["m3u"], timeout=20)
-    except web.HTTPException as e:
-        return _json_error(502, f"M3U 받기 실패: {e.text or e.reason}")
-    except Exception as e:  # 네트워크 오류 종류가 많아서 넓게 잡는다
-        return _json_error(502, f"M3U 받기 실패: {type(e).__name__}: {e}")
-    channels = iptv.parse_m3u(iptv.decode_text(raw), src["name"], src["id"])
-    data = {"success": True, "channels": channels, "has_epg": bool(src.get("epg"))}
+        channels, report = await _load_m3u(request, src)
+    except RuntimeError as e:
+        return _json_error(502, f"M3U 받기 실패: {e}")
+    errors = [f"{r['url']}: {r['error']}" for r in report if not r["ok"]]
+    data = {"success": True, "channels": channels, "has_epg": bool(src.get("epg")), "lists": report, "errors": errors}
     cache[key] = (time.time(), data)
     return web.json_response(data)
 
 
 async def iptv_epg(request):
     src = _source_or_404(request.match_info["sid"], "iptv", request)
-    if not src.get("epg"):
+    urls = config_store.url_list(src.get("epg"))
+    if not urls:
         return web.json_response({"success": True, "names": {}, "icons": {}, "programmes": {}})
     cache = request.app[EPG_CACHE]
     key = (src["id"], src["epg"])
     hit = cache.get(key)
     if hit and time.time() - hit[0] < EPG_CACHE_SEC and not request.query.get("refresh"):
         return web.json_response(hit[1])
-    try:
-        raw = await _fetch_bytes(request.app[HTTP], src["epg"], timeout=60)
-        now = int(time.time())
-        # 큰 XML 파싱은 CPU를 오래 잡으니 이벤트 루프 밖에서
-        parsed = await asyncio.get_running_loop().run_in_executor(
-            None, iptv.parse_xmltv, raw, now - EPG_PAST_SEC, now + EPG_FUTURE_SEC)
-    except web.HTTPException as e:
-        return _json_error(502, f"EPG 받기 실패: {e.text or e.reason}")
-    except Exception as e:
-        return _json_error(502, f"EPG 처리 실패: {type(e).__name__}: {e}")
-    data = {"success": True, **parsed}
+    now = int(time.time())
+    parsed, errors = [], []
+    for url, got in await _fetch_all(request, urls, 60):
+        if isinstance(got, Exception):
+            errors.append(f"{_short_url(url)}: {_fetch_error(got)}")
+            continue
+        try:
+            # 큰 XML 파싱은 CPU를 오래 잡으니 이벤트 루프 밖에서
+            parsed.append(await asyncio.get_running_loop().run_in_executor(
+                None, iptv.parse_xmltv, got, now - EPG_PAST_SEC, now + EPG_FUTURE_SEC))
+        except Exception as e:
+            errors.append(f"{_short_url(url)}: {type(e).__name__}: {e}")
+    if not parsed:
+        return _json_error(502, f"EPG 받기 실패: {' / '.join(errors)}")
+    data = {"success": True, **iptv.merge_epg(parsed), "errors": errors}
     cache[key] = (time.time(), data)
     return web.json_response(data)
 
@@ -1257,14 +1301,20 @@ async def _check_plex(request, cfg, src):
 
 
 async def _check_iptv(request, src):
-    raw = await _fetch_bytes(request.app[HTTP], src["m3u"], timeout=15)
-    text = iptv.decode_text(raw)
-    channels = iptv.parse_m3u(text, src["name"], src["id"])
+    try:
+        channels, report = await _load_m3u(request, src, timeout=15)
+    except RuntimeError as e:
+        return False, str(e)
     if not channels:
-        head = text.lstrip()[:80].lower()
-        hint = " - 로그인 화면(HTML)이 온 것 같습니다. apikey를 확인하세요" if head.startswith(("<!doctype", "<html")) else ""
-        return False, f"채널이 0개입니다{hint}"
-    return True, f"채널 {len(channels)}개" + (" · EPG 있음" if src.get("epg") else "")
+        return False, "채널이 0개입니다" + "".join(f" - {r['error']}" for r in report if r["error"])
+    note = f"채널 {len(channels)}개" + (" · EPG 있음" if src.get("epg") else "")
+    if len(report) > 1:
+        ok = sum(r["ok"] for r in report)
+        note += f" · M3U {ok}/{len(report)}개 받음"
+        bad = [f"{r['url']}: {r['error']}" for r in report if not r["ok"]]
+        if bad:
+            note += " (" + "; ".join(bad) + ")"
+    return True, note
 
 
 async def _check_telegram(request, src):

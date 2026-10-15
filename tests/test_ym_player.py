@@ -321,3 +321,75 @@ def test_plex_part_goes_through_block_cache(monkeypatch, tmp_path):
             await osrv.close()
 
     asyncio.run(run())
+
+
+def test_merge_channels_dedupes_and_keeps_alternates():
+    a = iptv.parse_m3u('#EXTM3U\n#EXTINF:-1 tvg-id="kbs1",KBS1\nhttp://a/kbs1.m3u8\n'
+                       '#EXTINF:-1,YTN\nhttp://a/ytn.m3u8\n', "TV", "s")
+    b = iptv.parse_m3u('#EXTM3U\n#EXTINF:-1 tvg-logo="http://b/logo.png",kbs 1\n#EXTVLCOPT:http-referrer=http://b/\nhttp://b/kbs1.m3u8\n'
+                       '#EXTINF:-1,YTN 사본\nhttp://a/ytn.m3u8\n'          # 같은 주소 -> 버림
+                       '#EXTINF:-1 tvg-id="KBS1",KBS1 HD\nhttp://c/kbs1.m3u8\n'  # 같은 tvg-id -> 예비 주소
+                       '#EXTINF:-1,MBC\nhttp://b/mbc.m3u8\n', "TV", "s")
+    merged = iptv.merge_channels([a, b])
+    assert [c["name"] for c in merged] == ["KBS1", "YTN", "MBC"]
+    # 한 목록 안에서는 합치지 않는다
+    same = iptv.parse_m3u('#EXTINF:-1,A\nhttp://x/1\n#EXTINF:-1,B\nhttp://x/1\n', "TV", "s")
+    assert len(iptv.merge_channels([same])) == 2
+    kbs = merged[0]
+    assert kbs["url"] == "http://a/kbs1.m3u8" and kbs["id"] == "s:kbs1"
+    assert kbs["alts"] == [{"url": "http://b/kbs1.m3u8", "referer": "http://b/"}, {"url": "http://c/kbs1.m3u8"}]
+    assert kbs["logo"] == "http://b/logo.png"     # 앞 목록에 로고가 없으면 뒤 목록 것
+    assert merged[1]["alts"] == [] and len({c["id"] for c in merged}) == 3
+
+
+def test_merge_epg_and_url_list():
+    one = {"names": {"kbs1": "K"}, "icons": {}, "programmes": {"K": [[1, 2, "a", "", ""]]}}
+    two = {"names": {"kbs1": "X", "mbc": "M"}, "icons": {"M": "i"}, "programmes": {"K": [[9, 9, "b", "", ""]], "M": []}}
+    out = iptv.merge_epg([one, two])
+    assert out["names"] == {"kbs1": "K", "mbc": "M"} and out["programmes"]["K"][0][2] == "a" and "M" in out["programmes"]
+    assert config_store.url_list(" http://a \n\n# 메모\nhttp://b\nhttp://a\n") == ["http://a", "http://b"]
+    assert config_store.url_list(["http://a", " "]) == ["http://a"]
+
+
+def test_server_merges_several_m3u(monkeypatch, tmp_path):
+    pytest.importorskip("aiohttp")
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from ym_player import server
+
+    monkeypatch.setattr(config_store, "CONFIG_FILE", str(tmp_path / "config.json"))
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+
+    def text(body):
+        async def handler(request):
+            return web.Response(text=body)
+        return handler
+
+    async def run():
+        origin = web.Application()
+        origin.router.add_get("/a.m3u", text("#EXTM3U\n#EXTINF:-1,KBS1\nhttp://a/1.m3u8\n"))
+        origin.router.add_get("/b.m3u", text("#EXTM3U\n#EXTINF:-1,KBS1\nhttp://b/1.m3u8\n#EXTINF:-1,MBC\nhttp://b/2.m3u8\n"))
+        origin.router.add_get("/epg1.xml", text(XMLTV))
+        origin_srv = TestServer(origin)
+        await origin_srv.start_server()
+        base = str(origin_srv.make_url("")).rstrip("/")
+        cfg = config_store.load()
+        config_store.replace_sources(cfg, [{"id": "tv", "type": "iptv", "name": "합침",
+                                            "m3u": f"{base}/a.m3u\n{base}/dead.m3u\n{base}/b.m3u",
+                                            "epg": f"{base}/epg1.xml\n{base}/dead.xml"}])
+        config_store.save(cfg)
+        client = TestClient(TestServer(server.create_app(require_auth=False)))
+        await client.start_server()
+        try:
+            body = await (await client.get("/api/iptv/tv/channels")).json()
+            assert [c["name"] for c in body["channels"]] == ["KBS1", "MBC"]
+            assert body["channels"][0]["alts"] == [{"url": "http://b/1.m3u8"}]
+            assert len(body["errors"]) == 1 and "dead.m3u" in body["errors"][0]
+            epg = await (await client.get("/api/iptv/tv/epg")).json()
+            assert epg["success"] and epg["names"]["ytn뉴스"] == "ytn.news" and len(epg["errors"]) == 1
+        finally:
+            await client.close()
+            await origin_srv.close()
+
+    asyncio.run(run())
