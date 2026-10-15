@@ -451,3 +451,22 @@ def test_theme_default_and_per_user(data):
         assert "theme" not in (await (await c.get("/api/me/prefs")).json())["prefs"]
 
     run(flow)
+
+
+def test_version_badge(data):
+    from ym_player import __version__
+
+    async def flow(c, app):
+        short = ".".join(__version__.split(".")[:2])
+        page = await (await c.get("/login")).text()
+        assert f'<span class="brand-ver">{short}</span>' in page and 'class="logo"' in page
+        b = await (await c.get("/api/branding")).json()
+        assert b["version"] == __version__ and b["show_version"] is True
+        await c.post("/api/auth/setup", json={"username": "admin", "password": "adminpw"})
+        b = await (await c.put("/api/admin/branding", json={"show_version": False})).json()
+        assert b["show_version"] is False and b["title"] == "Yume Player"
+        assert "brand-ver" not in await (await c.get("/")).text()
+        status = await (await c.get("/api/admin/status")).json()
+        assert status["server"]["version"] == __version__
+
+    run(flow)

@@ -41,7 +41,7 @@ from urllib.parse import urlencode
 from aiohttp import ClientSession, ClientTimeout, web
 from yarl import URL
 
-from . import auth, config_store, iptv, media_cache, prefs, subtitles, telegram_src, transcode
+from . import __version__, auth, config_store, iptv, media_cache, prefs, subtitles, telegram_src, transcode
 
 log = logging.getLogger("ym_player")
 
@@ -1355,7 +1355,7 @@ async def admin_status(request):
     sources = await asyncio.gather(*(one(s) for s in cfg["sources"]))
     users = auth.load_users()
     return web.json_response({"success": True, "server": {
-        "python": platform.python_version(), "uptime": int(time.time() - STARTED),
+        "version": __version__, "python": platform.python_version(), "uptime": int(time.time() - STARTED),
         "data_dir": config_store.DATA_DIR, "users": len(users),
         "admins": sum(u["role"] == "admin" for u in users),
         "cryptg": telegram_src.fast_crypto(), "telethon": telegram_src.available(),
@@ -1436,7 +1436,8 @@ def branding_info():
     version = int(os.path.getmtime(icon)) if icon else 0
     return {"title": b.get("title") or DEFAULT_TITLE, "icon_url": f"/brand/icon?v={version}" if icon else None,
             "theme": b.get("theme") if b.get("theme") in prefs.THEMES else "dark",
-            "accent": b.get("accent") if b.get("accent") in prefs.ACCENTS else "amber"}
+            "accent": b.get("accent") if b.get("accent") in prefs.ACCENTS else "amber",
+            "show_version": b.get("show_version", True) is not False, "version": __version__}
 
 
 def _clean_branding(raw, old=None):
@@ -1447,6 +1448,8 @@ def _clean_branding(raw, old=None):
         if len(title) > 40:
             raise ValueError("이름은 40자까지 쓸 수 있습니다.")
         out["title"] = title
+    if "show_version" in raw:
+        out["show_version"] = bool(raw.get("show_version"))
     for key, options in (("theme", prefs.THEMES), ("accent", prefs.ACCENTS)):
         if key in raw:
             value = str(raw.get(key) or "")
@@ -1540,7 +1543,7 @@ async def admin_restore(request):
         if isinstance(raw_cfg.get("branding"), dict):
             raw_b = raw_cfg["branding"]
             cfg["branding"] = _clean_branding({"title": str(raw_b.get("title") or "")[:40],
-                                               **{k: raw_b[k] for k in ("theme", "accent") if k in raw_b}})
+                                               **{k: raw_b[k] for k in ("theme", "accent", "show_version") if k in raw_b}})
         users = auth.clean_backup_users(body.get("users"))
         icon = base64.b64decode(body["brand_icon"], validate=True) if body.get("brand_icon") else None
         if icon is not None and (len(icon) > BRAND_ICON_MAX or not _icon_kind(icon)):
@@ -1578,14 +1581,28 @@ async def index(request):
     return _render_page("index.html")
 
 
-DEFAULT_FAVICON = ("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' "
-                   "height='32' rx='7' fill='%23e5a00d'/%3E%3Cpath d='M12 9l11 7-11 7z' fill='%23141517'/%3E%3C/svg%3E")
+# 기본 아이콘 (초승달 + 재생). 화면 안에서는 색을 강조색 변수로 칠해 테마를 따르고, 브라우저 탭은 주황 고정
+DEFAULT_FAVICON = ("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E"
+                   "%3Crect width='64' height='64' rx='15' fill='%23e5a00d'/%3E"
+                   "%3Ccircle cx='27' cy='33' r='19' fill='%23141517'/%3E"
+                   "%3Ccircle cx='37' cy='26' r='15.5' fill='%23e5a00d'/%3E"
+                   "%3Cpath d='M33 19.5v15l12.5-7.5z' fill='%23141517'/%3E%3C/svg%3E")
+LOGO_SVG = ('<svg class="logo" viewBox="0 0 64 64" aria-hidden="true">'
+            '<rect class="logo-bg" width="64" height="64" rx="15"/>'
+            '<circle class="logo-ink" cx="27" cy="33" r="19"/>'
+            '<circle class="logo-bg" cx="37" cy="26" r="15.5"/>'
+            '<path class="logo-ink" d="M33 19.5v15l12.5-7.5z"/></svg>')
 
 
-def brand_mark_html(icon_url):
-    if icon_url:
-        return f'<span class="brand-mark has-img"><img src="{html.escape(icon_url)}" alt=""></span>'
-    return '<span class="brand-mark"><i class="fa-solid fa-play"></i></span>'
+def version_short(version=__version__):
+    """배지에 쓸 앞 두 자리 ("1.0.3" -> "1.0")."""
+    return ".".join(version.split(".")[:2])
+
+
+def brand_mark_html(icon_url, show_version=True):
+    inner = f'<img src="{html.escape(icon_url)}" alt="">' if icon_url else LOGO_SVG
+    badge = f'<span class="brand-ver">{html.escape(version_short())}</span>' if show_version else ""
+    return f'<span class="brand-mark{" has-img" if icon_url else ""}">{inner}{badge}</span>'
 
 
 def _render_page(name):
@@ -1595,7 +1612,7 @@ def _render_page(name):
     b = branding_info()
     page = (page.replace("__BRAND_TITLE__", html.escape(b["title"]))
                 .replace("__BRAND_FAVICON__", html.escape(b["icon_url"] or DEFAULT_FAVICON))
-                .replace("__BRAND_MARK__", brand_mark_html(b["icon_url"]))
+                .replace("__BRAND_MARK__", brand_mark_html(b["icon_url"], b["show_version"]))
                 .replace("__THEME__", b["theme"]).replace("__ACCENT__", b["accent"]))
     return web.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-cache"})
 
@@ -1701,7 +1718,7 @@ def main():
             os.environ.get("MP_USER") and os.environ.get("MP_PASSWORD")):
         log.warning("MP_HOST=%s 로 열었고 아직 사용자가 없습니다 - 가장 먼저 접속한 사람이 관리자 계정을 만들게 됩니다. "
                     "바로 접속해서 관리자를 만들거나 MP_USER/MP_PASSWORD를 넣고 시작하세요.", host)
-    web.run_app(create_app(), host=host, port=port, print=lambda *_: log.info("Yume Player: http://%s:%d", host, port))
+    web.run_app(create_app(), host=host, port=port, print=lambda *_: log.info("Yume Player %s: http://%s:%d", __version__, host, port))
 
 
 if __name__ == "__main__":
