@@ -957,13 +957,25 @@ async def _range_response(request, size, content_type, open_range, label):
     await resp.prepare(request)
     if request.method == "HEAD":
         return resp
+    # Safari(아이폰/아이패드)는 Chrome과 달리 작은 구간을 여러 번 나눠 요청한다. 그쪽 재생 문제를 볼 수 있게
+    # Safari 요청만 구간/첫 바이트까지 걸린 시간/보낸 양을 남긴다.
+    ua = request.headers.get("User-Agent", "")
+    trace = "Safari" in ua and "Chrome" not in ua and "CriOS" not in ua
+    t0, ttfb, sent = time.monotonic(), None, 0
     try:
         async for chunk in open_range(start, length):
+            if ttfb is None:
+                ttfb = time.monotonic() - t0
             await resp.write(chunk)
+            sent += len(chunk)
     except (ConnectionError, asyncio.CancelledError):
         pass  # 브라우저가 탐색하거나 닫으면 연결을 끊는다 - 정상
     except Exception as e:
         log.warning("%s 중단: %s", label, e)
+    finally:
+        if trace:
+            log.info("Safari %s: %s-%s/%s 첫 바이트 %.2f초, %d/%d바이트 %.2f초", label, start, end, size,
+                     ttfb if ttfb is not None else -1, sent, length, time.monotonic() - t0)
     return resp
 
 
@@ -1029,8 +1041,9 @@ async def _tg_probe(app, tg, channel, msg, token, url):
         return {"mode": "direct", "available": True, "reason": f"형식을 알아내지 못했습니다: {e}"}
     finally:
         app[TG_INTERNAL].pop(token, None)
-    log.info("telegram %s/%s 형식 확인 %.1f초: %s (%s/%s/%s)", channel, msg, time.monotonic() - t0,
-             result["mode"], result.get("container"), result.get("video"), result.get("audio"))
+    log.info("telegram %s/%s 형식 확인 %.1f초: %s (%s/%s/%s, 음성 트랙 %s개, 음성 시작 차이 %+.3f초)", channel, msg,
+             time.monotonic() - t0, result["mode"], result.get("container"), result.get("video"), result.get("audio"),
+             result.get("audio_tracks", "?"), result.get("av_offset", 0.0))
     telegram_src.save_probe(tg.sid, channel, msg, result)
     return result
 
