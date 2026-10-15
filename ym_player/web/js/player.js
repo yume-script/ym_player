@@ -9,6 +9,7 @@
 import { h, icon, clear, fmtClock, fmtHM, storeGet, storeSet, toast } from './util.js';
 import { channelHealth, isFavorite, toggleFavorite } from './providers/iptv.js';
 import { registry } from './providers/index.js';
+import { Visualizer } from './visualizer.js';
 
 const START_TIMEOUT_MS = 20000;
 const PROGRESS_EVERY_SEC = 10;
@@ -107,8 +108,12 @@ class Player {
                 h('div', { class: 'osd-track' }, this.osd.fill),
                 this.osd.next));
 
+        // 라디오 시각화 (visualizer.js). 누르면 다음 모양
+        this.vizCanvas = h('canvas', { class: 'viz-canvas hidden', title: '눌러서 시각화 바꾸기',
+            on: { click: (e) => { e.stopPropagation(); this.cycleViz(); } } });
+        this.viz = new Visualizer(this.vizCanvas);
         this.stage = h('div', { class: 'player-stage', on: { click: () => this.togglePlay(), dblclick: () => this.toggleFullscreen() } },
-            this.video, this.posterEl, this.msgEl, this.osdEl);
+            this.video, this.posterEl, this.vizCanvas, this.msgEl, this.osdEl);
 
         this.titleEl = h('h2');
         this.subEl = h('p');
@@ -148,6 +153,8 @@ class Player {
                 h('div', { class: 'ctrl-group' },
                     this.ccBtn = btn('closed-captioning', '자막 (C)', () => this.toggleSubMenu(), 'vod-only'),
                     this.optBtn = btn('sliders', '음성·화질', () => this.toggleOptMenu(), 'vod-only'),
+                    this.vizBtn = btn('wave-square', '시각화 바꾸기', () => this.cycleViz(), 'radio-only'),
+                    this.lpBtn = btn('record-vinyl', 'LP 잡음', () => this.toggleLp(), 'radio-only'),
                     btn('clone', '화면 속 화면', () => this.togglePip()),
                     this.fsBtn,
                     btn('xmark', '재생 종료', () => this.stop()))));
@@ -167,8 +174,17 @@ class Player {
 
         // 음성 트랙 / 화질 (Plex만)
         this.optMenu = h('div', { class: 'sub-menu hidden', on: { click: (e) => e.stopPropagation() } });
+        // LP 잡음 강도 (켜면 잠깐 보이고, 만지지 않으면 숨는다)
+        this.lpRange = h('input', { type: 'range', min: '0', max: '100', step: '5', class: 'lp-range', value: String(this.viz.lp.level) });
+        this.lpVal = h('span', { class: 'lp-val' });
+        this.lpMenu = h('div', { class: 'lp-menu hidden', on: { click: (e) => e.stopPropagation() } },
+            h('span', { text: 'LP 잡음' }), this.lpRange, this.lpVal);
+        this.lpRange.addEventListener('input', () => {
+            this.viz.setNoise(true, this.lpRange.value);
+            this._syncLp(true);
+        });
 
-        this.root = h('div', { class: 'player hidden' }, this.stage, this.top, this.bottom, this.drawer, this.subMenu, this.optMenu);
+        this.root = h('div', { class: 'player hidden' }, this.stage, this.top, this.bottom, this.drawer, this.subMenu, this.optMenu, this.lpMenu);
 
         this.miniSlot = h('div', { class: 'mini-video', on: { click: () => this.expand() } },
             h('div', { class: 'mini-pip-note' }, icon('clone'), h('span', { text: '화면 속 화면에서 재생 중' })));
@@ -285,11 +301,18 @@ class Player {
         if (pb.live) this.showOsd();
         if (!this.drawer.classList.contains('hidden')) this._renderDrawer();
 
+        // 라디오에서 AudioContext로 끌어간 <video>는 다른 걸 틀 때 새로 만들어 원래대로
+        if (!pb.visualizer && this.viz.isRouted(this.video) && !this.inPip) this.needsRecreate = true;
         if (this.needsRecreate) { this.needsRecreate = false; this._recreateVideo(); }
         this._destroyEngines();
         this.video.removeAttribute('src');
         this.video.load();
         this._applyTrack(pb.textTrack);
+        this.root.classList.toggle('is-radio', !!pb.visualizer);
+        if (pb.visualizer) this.viz.attach(this.video);
+        this.viz.show(!!pb.visualizer);
+        this.viz.setVisible(!this.minimized);
+        this._syncLp(false);
 
         let label;
         const viaProxyOnly = pb.proxyUrl && (forceProxy || (pb.channel && proxyFirst().has(pb.channel.id)));
@@ -394,6 +417,8 @@ class Player {
         this.mini.classList.remove('pip');
         if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
         if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+        this.viz.show(false);
+        this.viz.setPlaying(false);
         this.pb = null;
         this.root.classList.add('hidden');
         this.mini.classList.add('hidden');
@@ -408,6 +433,7 @@ class Player {
         if (!this.inPip) this.miniSlot.appendChild(this.video);
         this.root.classList.add('hidden');
         this.mini.classList.remove('hidden');
+        this.viz.setVisible(false);
         document.body.classList.remove('player-open');
     }
 
@@ -423,6 +449,7 @@ class Player {
         this.mini.classList.add('hidden');
         this.root.classList.remove('hidden');
         document.body.classList.add('player-open');
+        this.viz.setVisible(true);
         this._wakeUi();
     }
 
@@ -691,6 +718,31 @@ class Player {
 
     toggleMute() { this.video.muted = !this.video.muted; }
 
+    cycleViz() {
+        if (!this.pb || !this.pb.visualizer) return;
+        const m = this.viz.nextMode();
+        toast(`시각화: ${m.label}`);
+        this._wakeUi();
+    }
+
+    toggleLp() {
+        if (!this.pb || !this.pb.visualizer) return;
+        this.viz.setNoise(!this.viz.lp.on);
+        this._syncLp(this.viz.lp.on);
+        this._wakeUi();
+    }
+
+    /** LP 버튼 상태와 강도 칸. showMenu면 강도 칸을 띄우고 8초 뒤 숨긴다 */
+    _syncLp(showMenu) {
+        const { on, level } = this.viz.lp;
+        this.lpBtn.classList.toggle('on', on);
+        this.lpRange.value = String(level);
+        this.lpVal.textContent = `${level}%`;
+        clearTimeout(this._lpTimer);
+        this.lpMenu.classList.toggle('hidden', !(showMenu && on));
+        if (showMenu && on) this._lpTimer = setTimeout(() => this.lpMenu.classList.add('hidden'), 8000);
+    }
+
     toggleFullscreen() {
         if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
         else if (this.root.requestFullscreen) this.root.requestFullscreen().catch(() => {});
@@ -756,6 +808,7 @@ class Player {
 
     playChannel(provider, channel, playlist) {
         this.prepSeq++; // 준비 중이던 다른 영상은 버린다
+        if (provider.kind === 'radio') this.viz.prime(); // 누른 그 순간에 (브라우저 소리 허용 조건)
         return this.start(provider.getPlayback(channel), playlist);
     }
 
@@ -798,7 +851,8 @@ class Player {
         this.optMenu.classList.add('hidden');
         this.posterEl.classList.add('hidden');
         this.liveBadge.classList.add('hidden');
-        this.root.classList.remove('is-live', 'is-audio');
+        this.root.classList.remove('is-live', 'is-audio', 'is-radio');
+        this.viz.show(false);
         this.curEl.textContent = fmtClock(0);
         this.durEl.textContent = fmtClock(0);
         this.playedEl.style.width = '0';
@@ -878,6 +932,7 @@ class Player {
 
     _syncPlayState() {
         const paused = this.video.paused;
+        this.viz.setPlaying(!paused && !!this.pb);
         const cls = paused ? 'fa-solid fa-play' : 'fa-solid fa-pause';
         this.playBtn.firstChild.className = cls;
         this.miniPlayBtn.firstChild.className = cls;
@@ -889,6 +944,7 @@ class Player {
     }
 
     _syncVolume() {
+        this.viz.syncVolume();
         const v = this.video;
         storeSet('yp_volume', v.volume);
         storeSet('yp_muted', v.muted);

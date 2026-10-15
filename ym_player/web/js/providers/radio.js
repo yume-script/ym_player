@@ -15,6 +15,7 @@ export class RadioProvider {
         this.now = {};          // 방송국 id -> {artist, title, text, art, since}
         this._nowAt = 0;
         this._timer = null;
+        this._watchSeq = 0;
     }
 
     channelOf(st) {
@@ -102,19 +103,27 @@ export class RadioProvider {
         const st = this.stations.find((s) => s.id === ch.stationId) || ch;
         this.refreshNow();
         this._watch(true);
+        // 방송국을 바꾸면 새 재생을 먼저 준비한 뒤 이전 재생의 onStop이 불린다 -> 자기 차례일 때만 끈다
+        const watch = ++this._watchSeq;
         const { cur } = this.nowNext(ch);
-        return {
-            url: st.url,
-            proxyUrl: streamProxyUrl(st.url),
+        // 서버 중계(같은 사이트 주소)로 받아야 브라우저가 소리를 분석해 시각화가 음악에 반응한다 (아이패드 포함).
+        // 중계가 안 되면 방송국 주소로 바로 (소리는 나지만 시각화는 기본 움직임)
+        const base = {
             kind: 'direct',
             live: true,
             audioOnly: true,
+            visualizer: true,
             poster: this.artFor(ch),
             title: st.name,
             subtitle: cur ? cur[2] : (st.subtitle || ''),
             channel: this.channelOf(st),
             provider: this,
-            onStop: () => this._watch(false),
+            onStop: () => { if (this._watchSeq === watch) this._watch(false); },
+        };
+        return {
+            ...base,
+            url: streamProxyUrl(st.url),
+            alternate: () => ({ ...base, url: st.url, altNote: '방송국에 바로 연결' }),
         };
     }
 }
