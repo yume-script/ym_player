@@ -789,3 +789,7 @@ body.viewer-open { overflow: hidden; }
     background: linear-gradient(0deg, rgba(0, 0, 0, 0.8), transparent); font-size: 0.9rem; line-height: 1.55; touch-action: pan-y; }
 .viewer.zoomed .viewer-caption, .viewer.zoomed .viewer-nav { opacity: 0; pointer-events: none; }
 @media (hover: none) { .viewer-nav { display: none; } }
+
+/* 라디오 */
+.src-type.radio { color: #d2a8ff; }
+.grid-channels { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }

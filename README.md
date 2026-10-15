@@ -79,6 +79,7 @@ sudo systemctl enable --now ym_player
   전화번호를 넣고 **[저장]** → 같은 카드에서 **[인증 코드 받기]** → 텔레그램 앱으로 온 코드 입력 → (2단계 인증을 쓰면) 비밀번호.
   로그인되면 들어가 있는 채널/그룹 목록이 나오고, 체크한 채널이 사이드바에 라이브러리처럼 붙습니다(체크 후 다시 [저장]).
 - **IPTV 추가**: M3U 주소 + (선택) XMLTV 편성표 주소. `.xml.gz`도 됩니다.
+- **라디오 추가**: 인터넷 라디오 방송국 목록 (아래 "인터넷 라디오").
   - **여러 M3U 합치기**: M3U 칸에 주소를 한 줄에 하나씩 넣으면 한 채널 목록으로 합칩니다(`#`로 시작하는 줄은 메모).
     뒤 목록의 채널이 앞 목록에 이미 있으면(같은 tvg-id, 같은 이름, 같은 주소) 한 번만 보이고, 뒤 주소는 **예비 주소**가 되어
     앞 주소가 안 나오면 재생기가 차례로 시도합니다(재생 화면 아래에 "예비 주소 1/2"). 일부 목록을 못 받아도 나머지로 보여 주고,
@@ -125,6 +126,7 @@ ym_player/                       저장소 루트
     ├── subtitles.py             자막 SRT/SMI/ASS/VTT -> WebVTT 변환 (순수 함수)
     ├── telegram_src.py          텔레그램: Telethon 로그인/채널/색인(SQLite)/Range 스트림/썸네일/이어보기
     ├── transcode.py             ffprobe로 보낼 방법 정하기 + ffmpeg 명령 (서버 변환)
+    ├── radio.py                 인터넷 라디오: 곡 정보(ICY) 읽기, iTunes 앨범 표지 고르기
     ├── media_cache.py           동영상 조각 캐시(디스크/메모리) + 앞쪽 미리 받기
     └── web/
         ├── index.html
@@ -160,6 +162,7 @@ ym_player/                       저장소 루트
 | `GET /api/tg/{id}/stream/{c}/{m}` · `thumb/{c}/{m}` · `POST progress` | Range 스트림, 썸네일, 재생 위치 저장 (설정에서 고른 채널만) |
 | `GET /api/tg/{id}/video/{c}/{m}?probe=1` · `GET /api/tg/{id}/transcode/{c}/{m}?start=초&mode=` | 재생 방법 판단(ffprobe), ffmpeg 서버 변환 스트림 (조각난 MP4) |
 | `GET /api/tg/{id}/videos?kind=video\|image` · `GET /api/tg/{id}/image/{c}/{m}` | 영상/사진 골라 목록, 사진 원본 (뷰어) |
+| `GET /api/radio/{id}/now` | 라디오 방송국마다 지금 나오는 곡과 앨범 표지 |
 | `POST /api/tg/{id}/hls/{c}/{m}?start=초&mode=` · `GET /api/tg-hls/{변환id}/{파일}` | Safari용 서버 변환 (HLS 재생목록·조각, 시작한 사람만) |
 | `GET /api/plex-sub/{id}?path=/library/streams/N&codec=` | Plex 외부 자막 파일을 받아 WebVTT로 바꿔 줌 (자막 스트림 경로만 허용) |
 | `* /api/plex/{id}/...` | Plex API·이미지·스트림 중계. **토큰은 서버가 붙임** (브라우저에 안 보임). 라이브러리 제한이 있는 사용자는 정해 둔 경로만, 허락된 섹션 항목만 |
@@ -180,6 +183,18 @@ getLibraryItems(...)  -> {items, total}                     (Plex만)
 getPlayback(id|채널)  -> {url, kind: 'hls'|'ts'|'direct', live, proxyUrl?, startTime,
                           onProgress(state, sec), onStop(sec), getNext()}
 ```
+
+## 인터넷 라디오
+
+설정 > 소스 > **[라디오 추가]**. 방송국 칸을 비워 두고 저장하면 공개 재즈 방송국 3개(RelaxingJazz, Radio Swiss Jazz,
+Jazz24)가 들어갑니다. 방송국은 한 줄에 하나 `이름 | 스트림 주소 | 설명 | 홈페이지`로 더하거나 뺄 수 있습니다.
+
+- 홈에 "라디오" 줄, 사이드바에 **방송국** 화면. 카드에 지금 나오는 곡(♪ 가수 - 제목)이 보이고, 누르면 바로 재생합니다.
+- 재생은 IPTV 라이브와 같은 재생기: 위/아래로 다른 방송국, 채널 목록, 즐겨찾기, 미니 플레이어(다른 화면으로 가도 계속).
+  화면에는 앨범 표지가 크게 나오고 곡이 바뀌면 부제와 표지도 바뀝니다(20초마다 확인).
+- 곡 정보는 방송 스트림에 섞여 오는 ICY 정보를 서버가 15초마다 읽고, 앨범 표지는 iTunes 검색에서 가수·제목이 맞는 곡을
+  찾습니다(1시간 캐시). 곡 정보를 보내지 않는 방송국은 설명만 보입니다.
+- 소리는 브라우저가 스트림을 바로 받고, 막히면(CORS, http 주소) 서버 중계로 받습니다.
 
 ## 텔레그램 채널
 

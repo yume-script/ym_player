@@ -1,7 +1,7 @@
 // Plex 라이브러리: [추천] 탭(섹션 허브) / [라이브러리] 탭(정렬 가능한 포스터 격자, 스크롤하면 더 불러옴)
 import { h, icon, clear, storeGet, storeSet } from '../util.js';
 import { registry } from '../providers/index.js';
-import { hubRow, posterCard, emptyState, loading } from '../cards.js';
+import { hubRow, posterCard, channelCard, playlistOf, emptyState, loading } from '../cards.js';
 
 const PAGE = 60;
 
@@ -51,7 +51,7 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
     const kindSel = p.libraryKinds ? h('select', { class: 'select' },
         p.libraryKinds().map(([v, label]) => h('option', { value: v, text: label, selected: v === (pref.kind || '') }))) : null;
     const countEl = h('span', { class: 'muted' });
-    const grid = h('div', { class: `grid${lib.type === 'artist' ? ' grid-square' : ''}${lib.type === 'telegram' ? ' grid-wide' : ''}` });
+    const grid = h('div', { class: `grid${lib.type === 'artist' ? ' grid-square' : ''}${lib.type === 'telegram' ? ' grid-wide' : ''}${lib.type === 'radio' ? ' grid-channels' : ''}` });
     const sentinel = h('div', { class: 'sentinel' });
     body.append(
         h('div', { class: 'toolbar' },
@@ -76,7 +76,9 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
             if (!res.items.length) total = start;
             // 텔레그램처럼 오래된 쪽을 아직 다 훑지 않은 소스는 "지금까지 찾은 수+"로
             countEl.textContent = res.approx ? `${(res.shown || 0).toLocaleString()}개+` : `${total.toLocaleString()}개`;
-            res.items.forEach((it) => grid.appendChild(posterCard(it)));
+            // 라디오 방송국처럼 채널이면 채널 카드 (누르면 바로 재생, 위/아래로 다른 방송국)
+            const playlist = playlistOf(res.items);
+            res.items.forEach((it) => grid.appendChild(it.type === 'channel' ? channelCard(it, playlist) : posterCard(it)));
             if (!start) grid.appendChild(emptyState('film', '항목이 없습니다'));
         } catch (e) {
             if (myGen === gen) grid.appendChild(emptyState('triangle-exclamation', '불러오지 못했습니다', e.message));

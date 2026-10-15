@@ -29,6 +29,8 @@ export async function renderSettings(main, _params, _query, ctx) {
                     class: 'btn',
                     on: { click: () => add({ type: 'telegram', name: 'Telegram', api_id: '', api_hash: '', phone: '', channels: [], enabled: true }) },
                 }, icon('paper-plane'), ' 텔레그램 추가'),
+                h('button', { class: 'btn', on: { click: () => add({ type: 'radio', name: '라디오', enabled: true }) } },
+                    icon('radio'), ' 라디오 추가'),
                 saveBtn),
             h('p', { class: 'muted settings-note' },
                 'Plex 토큰은 이 서버(data/config.json)에만 저장되고 브라우저로는 내려오지 않습니다. ',
@@ -215,6 +217,26 @@ export async function renderSettings(main, _params, _query, ctx) {
         list.lastElementChild && list.lastElementChild.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
 
+    /**
+     * 라디오 방송국 목록: 한 줄에 하나 "이름 | 스트림 주소 | 설명 | 홈페이지" (설명/홈페이지는 빼도 됨).
+     * 비워 두고 저장하면 서버가 기본 재즈 방송국 3개를 넣는다.
+     */
+    function stationEditor(src) {
+        const toText = (list) => (list || []).map((s) => [s.name, s.url, s.subtitle, s.homepage].filter((v, k) => v || k < 2).join(' | ')).join('\n');
+        const area = h('textarea', {
+            class: 'input url-list', rows: Math.max(3, (src.stations || []).length + 1), spellcheck: false, text: toText(src.stations),
+            placeholder: '이름 | 스트림 주소 | 설명 | 홈페이지\n비워 두고 저장하면 기본 재즈 방송국 3개(RelaxingJazz, Radio Swiss Jazz, Jazz24)를 넣습니다.',
+        });
+        area.addEventListener('input', () => {
+            const old = new Map((src.stations || []).map((s) => [s.name, s.id]));
+            src.stations = area.value.split('\n').map((line) => line.split('|').map((x) => x.trim()))
+                .filter(([name, url]) => name && url)
+                .map(([name, url, subtitle = '', homepage = '']) => ({ id: old.get(name), name, url, subtitle, homepage }));
+            touch();
+        });
+        return field('방송국', area, 'MP3/AAC 인터넷 라디오(Icecast/SHOUTcast) 주소. 곡 정보를 보내는 방송국은 지금 나오는 곡과 앨범 표지가 보입니다.');
+    }
+
     function bindInput(src, key, input, kind = 'value') {
         input.addEventListener(kind === 'checked' ? 'change' : 'input', () => { src[key] = input[kind]; touch(); });
         return input;
@@ -366,7 +388,8 @@ export async function renderSettings(main, _params, _query, ctx) {
         drafts.forEach((src, i) => {
             const isPlex = src.type === 'plex';
             const isTg = src.type === 'telegram';
-            const fields = isTg ? [
+            const isRadio = src.type === 'radio';
+            const fields = isRadio ? [stationEditor(src)] : isTg ? [
                 h('div', { class: 'row-2' },
                     field('API ID', bindInput(src, 'api_id', h('input', { class: 'input', value: src.api_id || '', placeholder: '숫자', inputmode: 'numeric' }))),
                     field('API Hash', bindInput(src, 'api_hash', h('input', {
@@ -399,7 +422,8 @@ export async function renderSettings(main, _params, _query, ctx) {
             list.appendChild(h('div', { class: `src-card${src.enabled ? '' : ' disabled'}` },
                 h('div', { class: 'src-head' },
                     h('span', { class: `src-type ${src.type}` },
-                        icon(isTg ? 'paper-plane' : isPlex ? 'server' : 'tower-broadcast'), isTg ? ' 텔레그램' : isPlex ? ' Plex' : ' IPTV'),
+                        icon(isRadio ? 'radio' : isTg ? 'paper-plane' : isPlex ? 'server' : 'tower-broadcast'),
+                        isRadio ? ' 라디오' : isTg ? ' 텔레그램' : isPlex ? ' Plex' : ' IPTV'),
                     bindInput(src, 'name', h('input', { class: 'input src-name', value: src.name || '', placeholder: '이름' })),
                     h('label', { class: 'check' }, bindInput(src, 'enabled', h('input', { type: 'checkbox', checked: !!src.enabled }), 'checked'), ' 사용'),
                     h('button', { class: 'icon-btn', title: '위로', on: { click: () => move(-1) } }, icon('arrow-up')),
@@ -476,7 +500,7 @@ export async function renderSettings(main, _params, _query, ctx) {
     showTab(storeGet('yp_settings_tab', 'sources'));
 }
 
-const TYPE_ICON = { plex: 'server', iptv: 'tower-broadcast', telegram: 'paper-plane' };
+const TYPE_ICON = { plex: 'server', iptv: 'tower-broadcast', telegram: 'paper-plane', radio: 'radio' };
 
 function fmtUptime(sec) {
     const d = Math.floor(sec / 86400), hh = Math.floor((sec % 86400) / 3600), mm = Math.floor((sec % 3600) / 60);

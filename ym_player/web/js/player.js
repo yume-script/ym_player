@@ -244,7 +244,7 @@ class Player {
         document.addEventListener('fullscreenchange', () => {
             this.fsBtn.firstChild.className = document.fullscreenElement ? 'fa-solid fa-compress' : 'fa-solid fa-expand';
         });
-        setInterval(() => this._tickLive(), 30000);
+        setInterval(() => this._tickLive(), 10000);
     }
 
     // ------------------------------------------------------------------
@@ -957,6 +957,14 @@ class Player {
         const sub = cur ? cur[2] : (pb.channel.group || '');
         this.subEl.textContent = sub;
         this.miniSub.textContent = sub;
+        // 라디오: 곡이 바뀌면 앨범 표지도
+        if (pb.audioOnly && pb.provider.artFor) {
+            const art = pb.provider.artFor(pb.channel);
+            if (art && art !== pb.poster) {
+                pb.poster = art;
+                this.posterEl.style.backgroundImage = `url("${art}")`;
+            }
+        }
     }
 
     // ------------------------------------------------------------------

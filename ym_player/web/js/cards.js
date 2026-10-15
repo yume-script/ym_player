@@ -76,7 +76,7 @@ export function posterCard(item, { wide = false } = {}) {
 export function channelCard(item, playlist) {
     const provider = registry.byId(item.pid);
     const ch = item.channel;
-    const art = img(item.logo, 'card-art shape-channel', 'tv');
+    const art = img(item.logo, 'card-art shape-channel', item.fallbackIcon || 'tv');
     art.appendChild(h('span', { class: 'live-badge corner', text: 'LIVE' }));
     const bar = progressBar(item.progress);
     if (bar) art.appendChild(bar);
