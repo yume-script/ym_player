@@ -76,7 +76,12 @@ export class IptvProvider {
         if (refresh) { this._channelsPromise = null; this._epgPromise = null; this.epg = null; }
         if (!this._channelsPromise) {
             this._channelsPromise = api(`/api/iptv/${encodeURIComponent(this.id)}/channels${refresh ? '?refresh=1' : ''}`)
-                .then((j) => { this.channels = j.channels || []; return this.channels; })
+                .then((j) => {
+                    // 여러 M3U 중 일부만 못 받았으면 나머지로 보여 주고 콘솔에만 남긴다 (설정 > 상태에서도 보임)
+                    for (const err of j.errors || []) console.warn(`[IPTV] ${this.name} M3U 일부 실패:`, err);
+                    this.channels = j.channels || [];
+                    return this.channels;
+                })
                 .catch((e) => { this._channelsPromise = null; throw e; });
         }
         return this._channelsPromise;
@@ -155,17 +160,25 @@ export class IptvProvider {
         return hits.length ? [{ title: `채널 · ${this.name}`, items: hits.map((c) => this.toItem(c)), live: true }] : [];
     }
 
-    getPlayback(ch) {
+    /**
+     * alt번째 주소로 재생. 0은 원래 주소, 1부터는 여러 M3U를 합칠 때 붙은 예비 주소(ch.alts).
+     * 이 주소가 끝내 안 나오면 재생기가 alternate()로 다음 예비 주소를 시도한다.
+     */
+    getPlayback(ch, alt = 0) {
         const { cur } = this.nowNext(ch);
+        const urls = [{ url: ch.url, ua: ch.ua, referer: ch.referer }, ...(ch.alts || [])];
+        const u = urls[alt] || urls[0];
         return {
-            url: ch.url,
-            proxyUrl: streamProxyUrl(ch.url, ch.ua, ch.referer),
-            kind: detectKind(ch.url),
+            url: u.url,
+            proxyUrl: streamProxyUrl(u.url, u.ua, u.referer),
+            kind: detectKind(u.url),
             live: true,
             title: ch.name,
             subtitle: cur ? cur[2] : (ch.group || ''),
             channel: ch,
             provider: this,
+            altNote: alt ? `예비 주소 ${alt}/${urls.length - 1}` : '',
+            alternate: alt + 1 < urls.length ? () => this.getPlayback(ch, alt + 1) : null,
         };
     }
 }

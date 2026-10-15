@@ -299,7 +299,7 @@ class Player {
             }
         } catch (e1) {
             if (token !== this.token) return;
-            if (viaProxyOnly || e1.final) return this._failed(e1);
+            if (viaProxyOnly || e1.final) return this._failedOrAlternate(pb, e1, token);
             if (token !== this.token) return;
             if (!pb.proxyUrl && pb.fallback) {
                 console.warn('[Player] 원본 재생 실패, 서버 변환으로 다시 시도:', e1.message);
@@ -311,7 +311,7 @@ class Player {
                 } catch (e3) { console.warn('[Player] 서버 변환 실패:', e3.message); }
                 if (token !== this.token) return;
             }
-            if (!pb.proxyUrl) return this._failed(e1);
+            if (!pb.proxyUrl) return this._failedOrAlternate(pb, e1, token);
             console.warn('[Player] 직접 재생 실패, 서버 중계로 다시 시도:', e1.message);
             this._showMsg('서버 중계로 다시 연결하는 중...', { spinner: true });
             this.viaProxy = true;
@@ -319,11 +319,11 @@ class Player {
                 label = (await this._attempt(pb.proxyUrl, pb.kind, token, pb.startTime || 0, !!pb.live)) + ' · 중계';
             } catch (e2) {
                 if (token !== this.token) return;
-                return this._failed(e2);
+                return this._failedOrAlternate(pb, e2, token);
             }
         }
         if (token !== this.token) return;
-        this.engineEl.textContent = pb.engineNote || label;
+        this.engineEl.textContent = pb.engineNote || (pb.altNote ? `${label} · ${pb.altNote}` : label);
         this.playingSince = this.video.currentTime || 0;
         this._hideMsg();
         if (pb.channel) channelHealth.set(pb.channel.id, 'online');
@@ -419,6 +419,18 @@ class Player {
         if (pb && pb.onStop) {
             try { pb.onStop(this._pos()); } catch (e) { /* 알림 실패는 무시 */ }
         }
+    }
+
+    /** 여러 M3U를 합쳐 같은 채널의 예비 주소가 있으면 그걸로, 없으면 실패 표시 */
+    _failedOrAlternate(pb, err, token) {
+        const next = !err.final && pb.alternate ? pb.alternate() : null;
+        if (!next) return this._failed(err);
+        console.warn('[Player] 이 주소로 재생 실패, 예비 주소로 다시 시도:', err.message);
+        this._showMsg(`다른 주소로 다시 연결하는 중... (${next.altNote})`, { spinner: true });
+        this._destroyEngines();
+        this.needsRecreate = true; // 실패한 MSE가 남아 다음 시도를 망가뜨리지 않게
+        if (token !== this.token) return;
+        return this.start(next, null, { auto: true });
     }
 
     _failed(err) {

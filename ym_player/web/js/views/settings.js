@@ -385,9 +385,14 @@ export async function renderSettings(main, _params, _query, ctx) {
                     ' HTTPS 인증서 확인 (자체 서명 인증서면 끄기)'),
                 libraryPicker(src),
             ] : [
-                field('M3U 주소', bindInput(src, 'm3u', h('input', { class: 'input', value: src.m3u || '', placeholder: 'https://iptv-org.github.io/iptv/countries/kr.m3u' }))),
-                field('EPG(XMLTV) 주소', bindInput(src, 'epg', h('input', { class: 'input', value: src.epg || '', placeholder: '선택 - .xml 또는 .xml.gz' })),
-                    '편성표 채널 매칭: tvg-id → 채널 표시명 순서로 찾습니다.'),
+                field('M3U 주소', bindInput(src, 'm3u', h('textarea', {
+                    class: 'input url-list', rows: Math.max(2, (src.m3u || '').split('\n').length), spellcheck: false, text: src.m3u || '',
+                    placeholder: 'https://iptv-org.github.io/iptv/countries/kr.m3u\n(여러 개면 한 줄에 하나씩)',
+                })), '여러 개를 넣으면 한 채널 목록으로 합칩니다. 같은 채널은 위 주소의 것을 쓰고, 아래 주소는 예비로 둡니다.'),
+                field('EPG(XMLTV) 주소', bindInput(src, 'epg', h('textarea', {
+                    class: 'input url-list', rows: Math.max(1, (src.epg || '').split('\n').length), spellcheck: false, text: src.epg || '',
+                    placeholder: '선택 - .xml 또는 .xml.gz (여러 개면 한 줄에 하나씩)',
+                })), '편성표 채널 매칭: tvg-id → 채널 표시명 순서로 찾습니다.'),
             ];
             const move = (d) => { const j = i + d; if (j < 0 || j >= drafts.length) return; [drafts[i], drafts[j]] = [drafts[j], drafts[i]]; touch(); draw(); };
             list.appendChild(h('div', { class: `src-card${src.enabled ? '' : ' disabled'}` },

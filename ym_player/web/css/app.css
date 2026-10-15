@@ -678,3 +678,6 @@ body.login-body { overflow: auto; min-height: 100vh; display: flex; align-items:
 .part-list { margin: 0; padding-left: 1.4rem; max-height: 40vh; overflow-y: auto; font-size: 0.9rem; color: var(--muted); }
 .part-list li { padding: 0.2rem 0; word-break: break-all; }
 .part-list li.cur { color: var(--text); font-weight: 600; }
+
+/* IPTV 주소 여러 줄 */
+textarea.url-list { resize: vertical; min-height: 2.4rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; line-height: 1.5; white-space: pre; overflow-x: auto; }
