@@ -393,3 +393,73 @@ def test_server_merges_several_m3u(monkeypatch, tmp_path):
             await origin_srv.close()
 
     asyncio.run(run())
+
+
+def test_radio_helpers():
+    from ym_player import radio
+    assert radio.parse_icy_block(b"StreamTitle='Miles Davis - So What';StreamUrl='';\0\0") == "Miles Davis - So What"
+    assert radio.parse_icy_block("StreamTitle='김광석 - 바람이 불어오는 곳';".encode("utf-8")) == "김광석 - 바람이 불어오는 곳"
+    assert radio.split_title("Miles Davis - So What") == {"artist": "Miles Davis", "title": "So What", "text": "Miles Davis - So What"}
+    assert radio.split_title("Station ID")["artist"] == ""
+    st = {"name": "Jazz24", "homepage": "https://www.jazz24.org/"}
+    assert radio.looks_like_station_text(radio.split_title("Jazz24"), st)
+    assert radio.looks_like_station_text(radio.split_title("Listen at jazz24.org"), st)
+    assert not radio.looks_like_station_text(radio.split_title("Bill Evans - Peace Piece"), st)
+    results = [{"artistName": "Someone Else", "trackName": "Other", "artworkUrl100": "https://a/x/100x100bb.jpg"},
+               {"artistName": "Bill Evans", "trackName": "Peace Piece (Remastered)", "artworkUrl100": "https://a/y/100x100bb.jpg"}]
+    assert radio.pick_artwork("Bill Evans", "Peace Piece", results) == "https://a/y/600x600bb.jpg"
+    assert radio.pick_artwork("Nobody", "Nothing at all", results[:1]) == ""
+
+
+def test_radio_source_and_now_playing(monkeypatch, tmp_path):
+    pytest.importorskip("aiohttp")
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from ym_player import server
+
+    monkeypatch.setattr(config_store, "CONFIG_FILE", str(tmp_path / "config.json"))
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    # 기본 방송국 / 잘못된 주소는 버림 / 다 버려지면 오류
+    cfg = config_store.replace_sources({"client_id": "x", "sources": []}, [{"type": "radio", "name": "라디오"}])
+    assert [s["id"] for s in cfg["sources"][0]["stations"]] == ["relaxingjazz", "radio-swiss-jazz", "jazz24"]
+    with pytest.raises(ValueError):
+        config_store.replace_sources(cfg, [{"type": "radio", "stations": [{"name": "x", "url": "ftp://x"}]}])
+
+    async def icy(request):
+        assert request.headers.get("Icy-MetaData") == "1"
+        meta = b"StreamTitle='Bill Evans - Peace Piece';"
+        meta += b"\0" * (-len(meta) % 16)
+        body = b"\xff" * 1000 + bytes([len(meta) // 16]) + meta + b"\xff" * 1000
+        return web.Response(body=body, headers={"icy-metaint": "1000", "Content-Type": "audio/mpeg"})
+
+    async def plain(request):
+        return web.Response(body=b"\xff" * 5000, headers={"Content-Type": "audio/mpeg"})
+
+    async def run():
+        origin = web.Application()
+        origin.router.add_get("/live", icy)
+        origin.router.add_get("/plain", plain)
+        osrv = TestServer(origin)
+        await osrv.start_server()
+        base = str(osrv.make_url("")).rstrip("/")
+        cfg = config_store.load()
+        config_store.replace_sources(cfg, [{"id": "rd", "type": "radio", "name": "라디오", "stations": [
+            {"name": "재즈", "url": f"{base}/live"}, {"name": "조용한 방송", "url": f"{base}/plain"}]}])
+        config_store.save(cfg)
+        monkeypatch.setattr(server, "_radio_art", _fake_art)
+        client = TestClient(TestServer(server.create_app(require_auth=False)))
+        await client.start_server()
+        try:
+            j = await (await client.get("/api/radio/rd/now")).json()
+            assert j["now"]["재즈"]["text"] == "Bill Evans - Peace Piece" and j["now"]["재즈"]["art"] == "ART"
+            assert j["now"]["조용한-방송"]["text"] == "" and j["now"]["조용한-방송"]["art"] == ""
+            assert (await client.get("/api/radio/nope/now")).status == 404
+        finally:
+            await client.close()
+            await osrv.close()
+
+    async def _fake_art(app, artist, title):
+        return "ART" if (artist, title) == ("Bill Evans", "Peace Piece") else ""
+
+    asyncio.run(run())

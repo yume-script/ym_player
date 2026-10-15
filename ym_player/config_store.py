@@ -22,7 +22,7 @@ import uuid
 DATA_DIR = os.environ.get("MP_DATA_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
 
-SOURCE_TYPES = ("plex", "iptv", "telegram")
+SOURCE_TYPES = ("plex", "iptv", "telegram", "radio")
 _SECRET_FIELDS = ("token", "api_hash")
 _lock = threading.Lock()
 
@@ -79,7 +79,7 @@ def _clean_source(raw, old):
     src = {
         "id": str(raw.get("id") or secrets.token_hex(4)),
         "type": stype,
-        "name": str(raw.get("name") or {"plex": "Plex", "iptv": "IPTV", "telegram": "Telegram"}[stype]).strip(),
+        "name": str(raw.get("name") or {"plex": "Plex", "iptv": "IPTV", "telegram": "Telegram", "radio": "라디오"}[stype]).strip(),
         "enabled": bool(raw.get("enabled", True)),
     }
     if stype == "plex":
@@ -102,12 +102,52 @@ def _clean_source(raw, old):
             if isinstance(c, dict) and str(c.get("id", "")).lstrip("-").isdigit():
                 channels.append({"id": int(c["id"]), "title": str(c.get("title") or c["id"])[:200]})
         src["channels"] = channels
+    elif stype == "radio":
+        stations = raw.get("stations")
+        # 새로 추가하면서 비워 두면 기본 방송국
+        src["stations"] = clean_stations(stations if stations else DEFAULT_STATIONS)
+        if not src["stations"]:
+            raise ValueError(f"[{src['name']}] 방송국이 하나도 없습니다.")
     else:
         src["m3u"] = "\n".join(url_list(raw.get("m3u")))
         src["epg"] = "\n".join(url_list(raw.get("epg")))
         if not src["m3u"]:
             raise ValueError(f"[{src['name']}] M3U 주소가 비어 있습니다.")
     return src
+
+
+# 인터넷 라디오 기본 방송국 (방송국이 공개한 스트림 주소). 설정에서 바꾸거나 더할 수 있다.
+DEFAULT_STATIONS = [
+    {"name": "RelaxingJazz", "subtitle": "Smooth Jazz", "url": "https://443-1.autopo.st/171/stream/3/",
+     "homepage": "https://relaxingjazz.com/"},
+    {"name": "Radio Swiss Jazz", "subtitle": "Jazz · Blues · Soul", "url": "https://stream.srg-ssr.ch/srgssr/rsj/mp3/128",
+     "homepage": "https://www.radioswissjazz.ch/"},
+    {"name": "Jazz24", "subtitle": "Classic & Modern Jazz", "url": "https://knkx-live-a.edge.audiocdn.com/6285_128k",
+     "homepage": "https://www.jazz24.org/"},
+]
+
+
+def clean_stations(value):
+    """라디오 방송국 목록 검사. 이름과 http(s) 스트림 주소가 있어야 하고, id는 이름에서 만든다 (즐겨찾기가 안 깨지게)."""
+    import re as _re
+    out, seen = [], set()
+    for st in value if isinstance(value, list) else []:
+        if not isinstance(st, dict):
+            continue
+        name = str(st.get("name") or "").strip()[:80]
+        url = str(st.get("url") or "").strip()
+        if not name or not url.startswith(("http://", "https://")):
+            continue
+        sid = str(st.get("id") or "").strip() or (_re.sub(r"[\W_]+", "-", name.lower()).strip("-") or "station")
+        base, n = sid[:40], 2
+        while sid in seen:
+            sid = f"{base}-{n}"
+            n += 1
+        seen.add(sid)
+        home = str(st.get("homepage") or "").strip()
+        out.append({"id": sid, "name": name, "subtitle": str(st.get("subtitle") or "").strip()[:80], "url": url[:500],
+                    "homepage": home[:300] if home.startswith(("http://", "https://")) else ""})
+    return out[:100]
 
 
 def url_list(value):

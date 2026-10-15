@@ -43,7 +43,7 @@ from urllib.parse import urlencode
 from aiohttp import ClientSession, ClientTimeout, web
 from yarl import URL
 
-from . import __version__, auth, config_store, iptv, media_cache, prefs, subtitles, telegram_src, transcode
+from . import __version__, auth, config_store, iptv, media_cache, prefs, radio, subtitles, telegram_src, transcode
 
 log = logging.getLogger("ym_player")
 
@@ -338,6 +338,80 @@ async def iptv_epg(request):
     data = {"success": True, **iptv.merge_epg(parsed), "errors": errors}
     cache[key] = (time.time(), data)
     return web.json_response(data)
+
+
+# ---------------------------------------------------------------------------
+# 인터넷 라디오 (지금 나오는 곡 + 앨범 표지). 소리는 브라우저가 스트림을 바로(막히면 /api/stream 중계로) 받는다
+# ---------------------------------------------------------------------------
+RADIO_NOW = web.AppKey("radio_now", dict)   # 스트림 주소 -> (시각, 곡 dict)
+RADIO_ART = web.AppKey("radio_art", dict)   # "가수|제목" -> (시각, 표지 주소)
+RADIO_NOW_SEC = 15
+RADIO_ART_SEC, RADIO_ART_MISS_SEC = 3600, 600
+
+
+async def _radio_icy(session, url):
+    """스트림의 첫 곡 정보 블록만 읽는다."""
+    headers = {"User-Agent": DEFAULT_UA, "Icy-MetaData": "1"}
+    async with session.get(url, headers=headers, timeout=ClientTimeout(total=6, sock_read=5)) as resp:
+        if resp.status >= 400:
+            return ""
+        metaint = int(resp.headers.get("icy-metaint") or 0)
+        if not 0 < metaint <= radio.ICY_MAX_METAINT:
+            return ""
+        await resp.content.readexactly(metaint)
+        size = (await resp.content.readexactly(1))[0] * 16
+        return radio.parse_icy_block(await resp.content.readexactly(size)) if size else ""
+
+
+async def _radio_art(app, artist, title):
+    key = f"{artist}|{title}".lower()
+    hit = app[RADIO_ART].get(key)
+    if hit and time.time() - hit[0] < (RADIO_ART_SEC if hit[1] else RADIO_ART_MISS_SEC):
+        return hit[1]
+    art = ""
+    try:
+        params = {"term": f"{artist} {title}".strip(), "entity": "song", "limit": "8", "media": "music"}
+        async with app[HTTP].get("https://itunes.apple.com/search", params=params,
+                                 timeout=ClientTimeout(total=5)) as resp:
+            if resp.status < 400:
+                art = radio.pick_artwork(artist, title, (await resp.json(content_type=None)).get("results"))
+    except Exception as e:
+        log.info("라디오 앨범 표지 찾기 실패 (%s - %s): %s", artist, title, e)
+        return ""
+    if len(app[RADIO_ART]) > 2000:
+        app[RADIO_ART].clear()
+    app[RADIO_ART][key] = (time.time(), art)
+    return art
+
+
+async def _radio_now(app, station):
+    cache = app[RADIO_NOW]
+    hit = cache.get(station["url"])
+    if hit and time.time() - hit[0] < RADIO_NOW_SEC:
+        return hit[1]
+    try:
+        text = await _radio_icy(app[HTTP], station["url"])
+    except Exception as e:  # 방송국마다 사정이 달라서 넓게 (ICY 200 같은 옛 응답, 끊김)
+        log.debug("라디오 곡 정보 %s 실패: %s", station["name"], e)
+        text = hit[1]["text"] if hit else ""
+    now = radio.split_title(text)
+    now["art"] = ""
+    if not radio.looks_like_station_text(now, station) and now["title"]:
+        now["art"] = await _radio_art(app, now["artist"], now["title"])
+    if not hit or hit[1]["text"] != now["text"]:
+        now["since"] = time.time()
+    else:
+        now["since"] = hit[1].get("since", time.time())
+    cache[station["url"]] = (time.time(), now)
+    return now
+
+
+async def radio_now(request):
+    """GET /api/radio/{sid}/now -> 방송국마다 지금 나오는 곡 (15초 캐시)."""
+    src = _source_or_404(request.match_info["sid"], "radio", request)
+    stations = src.get("stations") or []
+    nows = await asyncio.gather(*(_radio_now(request.app, st) for st in stations))
+    return web.json_response({"success": True, "now": {st["id"]: n for st, n in zip(stations, nows)}})
 
 
 async def stream_proxy(request):
@@ -1480,6 +1554,13 @@ async def _check_plex(request, cfg, src):
     return True, f"Plex {version} · 라이브러리 {len(dirs)}개" + (f" (숨김 {hidden})" if hidden else "")
 
 
+async def _check_radio(request, src):
+    stations = src.get("stations") or []
+    nows = await asyncio.gather(*(_radio_now(request.app, st) for st in stations))
+    with_info = sum(bool(n["text"]) for n in nows)
+    return True, f"방송국 {len(stations)}개 · 곡 정보 받음 {with_info}개"
+
+
 async def _check_iptv(request, src):
     try:
         channels, report = await _load_m3u(request, src, timeout=15)
@@ -1526,6 +1607,8 @@ async def admin_status(request):
             coro = _check_plex(request, cfg, src)
         elif src["type"] == "iptv":
             coro = _check_iptv(request, src)
+        elif src["type"] == "radio":
+            coro = _check_radio(request, src)
         else:
             coro = _check_telegram(request, src)
         ok, detail, ms = await _timed(coro)
@@ -1877,6 +1960,8 @@ def create_app(require_auth=True):
     app[TRANSCODES] = {}
     app[PROBES] = {}
     app[HLS_JOBS] = {}
+    app[RADIO_NOW] = {}
+    app[RADIO_ART] = {}
     app[PLEX_FILES] = {}
     app[STATIC_TOKEN] = static_token()
     app.on_response_prepare.append(_static_no_cache)
@@ -1913,6 +1998,7 @@ def create_app(require_auth=True):
     app.router.add_get("/api/iptv/{sid}/channels", iptv_channels)
     app.router.add_get("/api/iptv/{sid}/epg", iptv_epg)
     app.router.add_get("/api/stream", stream_proxy)
+    app.router.add_get("/api/radio/{sid}/now", radio_now)
     app.router.add_post("/api/plex-auth/pin", plex_pin_create)
     app.router.add_get("/api/plex-auth/pin/{pin_id}", plex_pin_check)
     app.router.add_get("/api/plex-sub/{sid}", plex_subtitle)
