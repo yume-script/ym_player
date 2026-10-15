@@ -6,9 +6,11 @@ import { api, normalizeName, storeGet, storeSet, toast } from '../util.js';
 const FAV_KEY = 'yp_fav_channels';
 const favorites = new Set();
 
+/** 즐겨찾기를 불러오고 받은 사용자 설정 전체를 돌려준다 (테마도 여기 들어 있어서 한 번만 받게) */
 export async function loadFavorites() {
-    let list;
-    try { list = (await api('/api/me/prefs')).prefs.fav_channels; } catch (e) { return; }
+    let list, prefs;
+    try { prefs = (await api('/api/me/prefs')).prefs; } catch (e) { return null; }
+    list = prefs.fav_channels;
     const local = storeGet(FAV_KEY, null);
     if (list === undefined && Array.isArray(local) && local.length) {
         list = local;
@@ -17,6 +19,7 @@ export async function loadFavorites() {
     if (local !== null) storeSet(FAV_KEY, null);
     favorites.clear();
     (list || []).forEach((id) => favorites.add(id));
+    return prefs;
 }
 
 function saveFavorites(list) {

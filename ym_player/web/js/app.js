@@ -4,6 +4,7 @@ import { registry } from './providers/index.js';
 import { emptyState } from './cards.js';
 import './player.js';
 import { loadFavorites } from './providers/iptv.js';
+import { loadMyTheme, openThemeDialog } from './theme.js';
 import { renderHome } from './views/home.js';
 import { renderLibrary } from './views/library.js';
 import { renderDetail } from './views/detail.js';
@@ -151,7 +152,7 @@ async function buildNav() {
     highlightNav();
 }
 
-/** 사이드바 맨 아래: (관리자만) 설정, 그리고 내 계정 (비밀번호 변경 / 로그아웃) */
+/** 사이드바 맨 아래: (관리자만) 설정, 그리고 내 계정 (테마 / 비밀번호 변경 / 로그아웃) */
 function navFooter() {
     const u = registry.user || {};
     const foot = h('div', { class: 'nav-footer' });
@@ -159,6 +160,7 @@ function navFooter() {
     foot.appendChild(h('div', { class: 'nav-account' },
         h('span', { class: 'avatar', text: (u.username || '?').slice(0, 1).toUpperCase() }),
         h('div', { class: 'who' }, h('b', { text: u.username || '' }), h('span', { text: u.role === 'admin' ? '관리자' : '사용자' })),
+        h('button', { class: 'icon-btn', title: '테마', on: { click: openThemeDialog } }, icon('palette')),
         h('button', { class: 'icon-btn', title: '비밀번호 변경', on: { click: changePassword } }, icon('key')),
         h('button', { class: 'icon-btn', title: '로그아웃', on: { click: logout } }, icon('right-from-bracket'))));
     return foot;
@@ -209,7 +211,8 @@ async function boot() {
     });
     try {
         registry.user = (await api('/api/auth/me')).user;
-        await Promise.all([registry.load(), loadFavorites()]);
+        const [, prefs] = await Promise.all([registry.load(), loadFavorites()]);
+        if (prefs) loadMyTheme(prefs);
     } catch (e) {
         toast(`설정을 불러오지 못했습니다: ${e.message}`, 'error', 8000);
     }

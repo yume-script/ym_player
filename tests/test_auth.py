@@ -419,3 +419,35 @@ def test_branding_title_and_icon(data):
         assert await (await c.get("/brand/icon")).read() == png
 
     run(flow)
+
+
+def test_theme_default_and_per_user(data):
+    async def flow(c, app):
+        assert 'data-theme="dark" data-accent="amber"' in await (await c.get("/login")).text()
+        await c.post("/api/auth/setup", json={"username": "admin", "password": "adminpw"})
+        r = await c.put("/api/admin/branding", json={"title": "집", "theme": "light", "accent": "blue"})
+        b = await r.json()
+        assert (b["title"], b["theme"], b["accent"]) == ("집", "light", "blue")
+        # 일부만 보내면 나머지는 그대로
+        b = await (await c.put("/api/admin/branding", json={"accent": "teal"})).json()
+        assert (b["title"], b["theme"], b["accent"]) == ("집", "light", "teal")
+        assert (await c.put("/api/admin/branding", json={"theme": "rainbow"})).status == 400
+        page = await (await c.get("/")).text()
+        assert 'data-theme="light" data-accent="teal"' in page and "__THEME__" not in page
+
+        # 사용자 선택은 prefs에 (빈 값 = 관리자 기본)
+        r = await c.put("/api/me/prefs", json={"theme": "black", "accent": ""})
+        assert (await r.json())["prefs"] == {"theme": "black", "accent": ""}
+        assert (await c.put("/api/me/prefs", json={"theme": "<script>"})).status == 400
+        assert (await c.put("/api/me/prefs", json={"accent": "gold"})).status == 400
+
+        # 백업/복원에 기본 테마가 들어간다. 이상한 사용자 테마 값은 버린다
+        backup = await (await c.get("/api/admin/backup")).json()
+        assert backup["config"]["branding"]["theme"] == "light"
+        backup["prefs"]["admin"]["theme"] = "nope"
+        await c.put("/api/admin/branding", json={"theme": "dark"})
+        assert (await c.post("/api/admin/restore", json=backup)).status == 200
+        assert (await (await c.get("/api/branding")).json())["theme"] == "light"
+        assert "theme" not in (await (await c.get("/api/me/prefs")).json())["prefs"]
+
+    run(flow)

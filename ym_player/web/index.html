@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ko">
+<html lang="ko" data-theme="__THEME__" data-accent="__ACCENT__" data-default-theme="__THEME__" data-default-accent="__ACCENT__">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -10,6 +10,17 @@
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
     <link rel="stylesheet" href="/static/css/app.css">
+    <script>
+        // 테마를 그리기 전에 정해 둔다 (깜빡임 방지). 사용자가 고른 값이 있으면 관리자 기본값 대신
+        (function () {
+            var r = document.documentElement;
+            try {
+                var t = JSON.parse(localStorage.getItem('yp_theme') || 'null');
+                if (t && t.theme) r.dataset.theme = t.theme;
+                if (t && t.accent) r.dataset.accent = t.accent;
+            } catch (e) { /* 저장소를 못 쓰는 브라우저 */ }
+        })();
+    </script>
     <!-- 재생 엔진 (원래 플러그인과 같은 버전) - 일반 script라 모듈보다 먼저 window.Hls / window.mpegts가 잡힌다 -->
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.8/dist/hls.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js"></script>

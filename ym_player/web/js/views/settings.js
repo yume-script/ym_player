@@ -4,6 +4,7 @@ import { h, icon, clear, api, toast, modal, storeGet, storeSet } from '../util.j
 import { registry } from '../providers/index.js';
 import { PlexProvider } from '../providers/plex.js';
 import { applyBranding } from '../brand.js';
+import { setDefaults, themePicker } from '../theme.js';
 
 function field(label, input, hint) {
     return h('label', { class: 'field' }, h('span', { class: 'field-label', text: label }), input,
@@ -607,7 +608,20 @@ async function renderLook(pane) {
         field('이름', titleIn, '왼쪽 위, 로그인 화면, 브라우저 탭에 나옵니다. 비우면 Yume Player.'),
         saveTitle,
         h('div', { class: 'brand-row' }, upload, reset, fileIn),
-        h('p', { class: 'field-hint', text: 'PNG, JPG, GIF, WebP, ICO 그림 (512KB까지). 정사각형 그림이 잘 맞습니다. 브라우저 탭 아이콘(favicon)으로도 쓰입니다.' })));
+        h('p', { class: 'field-hint', text: 'PNG, JPG, GIF, WebP, ICO 그림 (512KB까지). 정사각형 그림이 잘 맞습니다. 브라우저 탭 아이콘(favicon)으로도 쓰입니다.' })),
+    h('div', { class: 'src-card brand-card' },
+        h('h3', { class: 'pane-title' }, icon('swatchbook'), ' 기본 테마'),
+        h('p', { class: 'field-hint', text: '모든 사용자와 로그인 화면의 기본 테마입니다. 사용자는 사이드바 아래 [테마] 버튼으로 자기 테마를 따로 고를 수 있습니다.' }),
+        themePicker({
+            admin: true, value: { theme: b.theme, accent: b.accent },
+            onPick: async (v) => {
+                try {
+                    const info = await api('/api/admin/branding', { method: 'PUT', json: v });
+                    setDefaults(info);
+                    toast('기본 테마를 바꿨습니다.', 'success');
+                } catch (e) { toast(e.message, 'error'); }
+            },
+        })));
     show(b);
 }
 
