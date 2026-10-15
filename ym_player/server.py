@@ -81,7 +81,7 @@ TELEGRAM = web.AppKey("telegram", dict)
 REQUIRE_AUTH = web.AppKey("require_auth", bool)
 TG_INTERNAL = web.AppKey("tg_internal", dict)   # ffmpeg용 내부 주소 토큰 -> (소스id, 채널, 메시지, 만료)
 TRANSCODES = web.AppKey("transcodes", dict)     # 사용자명 -> 돌고 있는 ffmpeg 프로세스
-PROBES = web.AppKey("probes", collections.OrderedDict)  # (소스id, 채널, 메시지) -> decide() 결과  # 소스 id -> telegram_src.TelegramSource (연결을 계속 유지)
+PROBES = web.AppKey("probes", dict)  # (소스id, 채널, 메시지) -> 돌고 있는 ffprobe (같은 영상을 겹쳐 보지 않게)  # 소스 id -> telegram_src.TelegramSource (연결을 계속 유지)
 
 
 # ---------------------------------------------------------------------------
@@ -817,7 +817,7 @@ async def _tg_range_response(request, tg, channel, msg):
     if request.method == "HEAD":
         return resp
     try:
-        async for chunk in tg.iter_range(channel, msg, start, length):
+        async for chunk in tg.iter_cached(channel, msg, start, length, size):
             await resp.write(chunk)
     except (ConnectionError, asyncio.CancelledError):
         pass  # 브라우저가 탐색하거나 닫으면 연결을 끊는다 - 정상
@@ -830,7 +830,6 @@ async def _tg_range_response(request, tg, channel, msg):
 # ffmpeg/ffprobe는 이 서버의 내부 주소(/internal/tg/{토큰})로 텔레그램 파일을 Range로 읽는다.
 # 토큰은 추측할 수 없는 값이고 변환이 끝나면(또는 몇 시간 뒤) 지운다. 로그인 없이 열리는 유일한 영상 주소.
 _INTERNAL_TTL = 6 * 3600
-_PROBES_MAX = 3000
 
 
 def _internal_url(request, tg, channel, msg):
@@ -860,15 +859,27 @@ async def internal_tg(request):
 
 
 async def _tg_decision(request, tg, channel, msg):
-    """ffprobe로 이 영상을 어떻게 보낼지 (결과는 기억). ffmpeg가 없으면 원본 그대로."""
+    """ffprobe로 이 영상을 어떻게 보낼지. 결과는 DB에 남겨 두고(파일은 안 바뀜), 같은 영상을 동시에
+    물어보면(상세 화면이 미리 물어본 직후 [재생]) 돌고 있는 것을 같이 기다린다. ffmpeg가 없으면 원본 그대로."""
     if not transcode.available():
         return {"mode": "direct", "available": False, "reason": "서버에 ffmpeg가 없습니다"}
-    cache = request.app[PROBES]
+    saved = telegram_src.get_probe(tg.sid, channel, msg)
+    if saved:
+        return saved
     key = (tg.sid, channel, msg)
-    if key in cache:
-        cache.move_to_end(key)
-        return cache[key]
-    token, url = _internal_url(request, tg, channel, msg)
+    running = request.app[PROBES].get(key)
+    if running is None:
+        # 내부 주소는 지금 만든다 (미리 확인 요청은 응답이 먼저 끝나서 나중엔 연결 정보가 없다)
+        token, url = _internal_url(request, tg, channel, msg)
+        app = request.app
+        running = app[PROBES][key] = asyncio.ensure_future(_tg_probe(app, tg, channel, msg, token, url))
+        running.add_done_callback(lambda _f: app[PROBES].pop(key, None))
+    # 기다리던 브라우저가 떠나도 판단은 끝까지 해서 남겨 둔다
+    return await asyncio.shield(running)
+
+
+async def _tg_probe(app, tg, channel, msg, token, url):
+    t0 = time.monotonic()
     try:
         info = await transcode.probe(url)
         result = {**transcode.decide(info), "available": True}
@@ -876,11 +887,23 @@ async def _tg_decision(request, tg, channel, msg):
         log.warning("telegram %s/%s ffprobe 실패: %s", channel, msg, e)
         return {"mode": "direct", "available": True, "reason": f"형식을 알아내지 못했습니다: {e}"}
     finally:
-        request.app[TG_INTERNAL].pop(token, None)
-    cache[key] = result
-    while len(cache) > _PROBES_MAX:
-        cache.popitem(last=False)
+        app[TG_INTERNAL].pop(token, None)
+    log.info("telegram %s/%s 형식 확인 %.1f초: %s (%s/%s/%s)", channel, msg, time.monotonic() - t0,
+             result["mode"], result.get("container"), result.get("video"), result.get("audio"))
+    telegram_src.save_probe(tg.sid, channel, msg, result)
     return result
+
+
+@telegram_api
+async def tg_probe(request, tg):
+    """미리 형식 확인 (상세 화면을 열거나 재생 버튼에 마우스를 올리면). 결과는 기억만 하고 바로 돌려준다."""
+    channel, msg = _ids(request, tg)
+    if not telegram_src.get_video(tg.sid, channel, msg):
+        return _json_error(404, "색인에 없는 영상입니다.")
+    if transcode.available() and not telegram_src.get_probe(tg.sid, channel, msg):
+        await tg.authorized_client()
+        asyncio.ensure_future(_tg_decision(request, tg, channel, msg))
+    return web.json_response({"success": True})
 
 
 @telegram_api
@@ -1280,7 +1303,7 @@ def create_app(require_auth=True):
     app[PLEX_SECTIONS] = {}
     app[TG_INTERNAL] = {}
     app[TRANSCODES] = {}
-    app[PROBES] = collections.OrderedDict()
+    app[PROBES] = {}
     app.on_startup.append(_on_startup)
     app.on_cleanup.append(_on_cleanup)
 
@@ -1319,6 +1342,7 @@ def create_app(require_auth=True):
     app.router.add_get(r"/api/tg/{sid}/video/{channel:-?\d+}/{msg:\d+}", tg_video)
     app.router.add_get(r"/api/tg/{sid}/stream/{channel:-?\d+}/{msg:\d+}", tg_stream)
     app.router.add_get(r"/api/tg/{sid}/transcode/{channel:-?\d+}/{msg:\d+}", tg_transcode)
+    app.router.add_post(r"/api/tg/{sid}/probe/{channel:-?\d+}/{msg:\d+}", tg_probe)
     app.router.add_get("/internal/tg/{token}", internal_tg)
     app.router.add_get(r"/api/tg/{sid}/thumb/{channel:-?\d+}/{msg:\d+}", tg_thumb)
     app.router.add_post("/api/tg/{sid}/progress", tg_progress)

@@ -17,6 +17,7 @@ export class TelegramProvider {
         this.kind = 'telegram';
         this.channels = (src.channels || []).map((c) => ({ id: String(c.id), title: c.title }));
         this.base = `/api/tg/${encodeURIComponent(src.id)}`;
+        this._warmed = new Set();
     }
 
     channelTitle(id) {
@@ -89,7 +90,19 @@ export class TelegramProvider {
         return data.item;
     }
 
+    /**
+     * 서버에 이 영상의 형식 확인(ffprobe)을 미리 시켜 둔다. 상세 화면을 열거나 재생 버튼에 마우스를 올리면 불러서,
+     * [재생]을 누를 때는 이미 결과가 있게 한다 (텔레그램에서 파일 머리를 받느라 몇 초 걸리는 걸 숨김).
+     */
+    warm(id) {
+        if (this._warmed.has(id)) return;
+        this._warmed.add(id);
+        const [channel, msg] = String(id).split(':');
+        fetch(`${this.base}/probe/${channel}/${msg}`, { method: 'POST' }).catch(() => {});
+    }
+
     async getDetail(id) {
+        this.warm(id);
         const v = await this._video(id);
         const item = this.toItem(v);
         const metaLine = [(v.date || '').slice(0, 10), v.duration ? fmtDuration(v.duration * 1000) : '',

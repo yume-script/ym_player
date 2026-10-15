@@ -52,7 +52,10 @@ def max_jobs():
 async def probe(url, timeout=45):
     """ffprobe 결과 JSON (format + streams). 실패하면 RuntimeError."""
     proc = await asyncio.create_subprocess_exec(
-        ffprobe_path(), "-v", "error", "-show_entries",
+        # 코덱 이름/화소 형식은 파일 머리(mkv 헤더, mp4 moov)에 있어서 많이 읽을 필요가 없다.
+        # 기본값(5MB, 5초 분석)대로면 텔레그램에서 몇 MB를 더 받느라 [재생]이 몇 초 늦어진다.
+        ffprobe_path(), "-v", "error", "-probesize", "1500000", "-analyzeduration", "0",
+        "-show_entries",
         "format=format_name,duration:stream=index,codec_type,codec_name,profile,pix_fmt,width,height,channels",
         "-of", "json", url,
         stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
