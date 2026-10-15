@@ -190,6 +190,41 @@ def looks_like_m3u8(content_type, url, head: bytes):
     return head.lstrip()[:7] == b"#EXTM3U"
 
 
+def looks_like_mpd(content_type, url, head: bytes):
+    """MPEG-DASH 매니페스트(.mpd)일 것 같으면 True (끝까지 읽어서 <MPD가 있는지 다시 본다)."""
+    if "dash+xml" in (content_type or "").lower():
+        return True
+    if url.split("?", 1)[0].lower().endswith(".mpd"):
+        return True
+    return head.lstrip()[:4] in (b"<MPD", b"<?xm")
+
+
+_MPD_OPEN_RE = re.compile(r"<MPD\b[^>]*>", re.S)
+_BASEURL_RE = re.compile(r"(<BaseURL\b[^>]*>)(.*?)(</BaseURL>)", re.S)
+
+
+def rewrite_mpd(text, base_url):
+    """중계로 받은 MPD의 기준 주소(BaseURL)를 원본 서버의 절대 주소로.
+
+    재생기는 매니페스트를 /api/stream?url=... 로 받기 때문에 조각 주소(상대 주소)를 그 기준으로 풀면 틀린다.
+    MPD 바로 아래 BaseURL을 원본 기준 절대 주소로 바꾸고(없으면 넣고), 그 아래 단계의 상대 BaseURL은 그대로 둔다.
+    재생기(dash.js)는 이렇게 나온 원본 절대 주소를 다시 중계 주소로 감싸서 요청한다.
+    """
+    m = _MPD_OPEN_RE.search(text)
+    if not m:
+        return text
+    first_period = text.find("<Period", m.end())
+    top = _BASEURL_RE.search(text, m.end(), first_period if first_period >= 0 else len(text))
+    if top:
+        absolute = urljoin(base_url, top.group(2).strip())
+        return text[:top.start(2)] + _xml_escape(absolute) + text[top.end(2):]
+    return text[:m.end()] + f"<BaseURL>{_xml_escape(base_url)}</BaseURL>" + text[m.end():]
+
+
+def _xml_escape(value):
+    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def stream_proxy_url(target, ua="", referer=""):
     url = "/api/stream?url=" + quote(target, safe="")
     if ua:

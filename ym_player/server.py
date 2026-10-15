@@ -308,6 +308,13 @@ async def stream_proxy(request):
             body = iptv.rewrite_m3u8(text, str(upstream.url), lambda u: iptv.stream_proxy_url(u, ua, referer))
             return web.Response(text=body, content_type="application/vnd.apple.mpegurl",
                                 headers={"Cache-Control": "no-cache"})
+        if upstream.status < 400 and iptv.looks_like_mpd(upstream.headers.get("Content-Type"), str(upstream.url), head):
+            rest = await upstream.content.read(8 * 1024 * 1024)
+            text = iptv.decode_text(head + rest)
+            if "<MPD" in text:
+                return web.Response(text=iptv.rewrite_mpd(text, str(upstream.url)), content_type="application/dash+xml",
+                                    headers={"Cache-Control": "no-cache"})
+            head = head + rest  # MPD가 아니었다 - 읽은 만큼 그대로 넘긴다
 
         resp = web.StreamResponse(status=upstream.status, headers=_resp_headers(upstream))
         await resp.prepare(request)

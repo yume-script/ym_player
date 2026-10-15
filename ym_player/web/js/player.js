@@ -20,6 +20,30 @@ const AUTO_RECOVER_RESET_SEC = 30;
 // 직접 연결로는 끊기고 중계로는 되는 채널 - 다음부터 처음부터 중계로 연다 (이번 탭 동안)
 const PROXY_FIRST_KEY = 'yp_proxy_first';
 
+// DASH(.mpd) 엔진은 크고(약 800KB) 쓰는 채널이 드물어서, 처음 필요할 때만 불러온다
+const DASHJS_URL = 'https://cdn.jsdelivr.net/npm/dashjs@4.7.4/dist/dash.all.min.js';
+let dashjsLoading = null;
+function loadDashjs() {
+    if (window.dashjs) return Promise.resolve(window.dashjs);
+    if (!dashjsLoading) {
+        dashjsLoading = new Promise((resolve, reject) => {
+            const el = document.createElement('script');
+            el.src = DASHJS_URL;
+            el.onload = () => (window.dashjs ? resolve(window.dashjs) : reject(new Error('dash.js를 불러오지 못했습니다')));
+            el.onerror = () => { dashjsLoading = null; el.remove(); reject(new Error('dash.js를 불러오지 못했습니다 (인터넷 연결 확인)')); };
+            document.head.appendChild(el);
+        });
+    }
+    return dashjsLoading;
+}
+
+/** 다시 시도해도 소용없는 실패 (DRM 등) - 서버 중계로 다시 열지 않는다 */
+function finalError(message) {
+    const e = new Error(message);
+    e.final = true;
+    return e;
+}
+
 function proxyFirst() {
     try { return new Set(JSON.parse(sessionStorage.getItem(PROXY_FIRST_KEY) || '[]')); } catch (e) { return new Set(); }
 }
@@ -275,7 +299,7 @@ class Player {
             }
         } catch (e1) {
             if (token !== this.token) return;
-            if (viaProxyOnly) return this._failed(e1);
+            if (viaProxyOnly || e1.final) return this._failed(e1);
             if (token !== this.token) return;
             if (!pb.proxyUrl && pb.fallback) {
                 console.warn('[Player] 원본 재생 실패, 서버 변환으로 다시 시도:', e1.message);
@@ -403,7 +427,10 @@ class Player {
         // 실패한 MSE가 같은 <video>에 남아 다음 채널까지 망가뜨리는 브라우저 버그 대응 (원래 플러그인 참고)
         this.needsRecreate = true;
         this._destroyEngines();
-        this._showMsg(this.pb && this.pb.live ? '스트림에 연결할 수 없습니다 (오프라인 또는 차단).' : `재생할 수 없습니다: ${err && err.message ? err.message : err}`,
+        // 이유가 분명한 실패(DRM 등)는 그 이유를, 라이브의 흔한 연결 실패는 짧게
+        const reason = err && err.message ? err.message : err;
+        this._showMsg(err && err.final ? reason
+            : this.pb && this.pb.live ? '스트림에 연결할 수 없습니다 (오프라인 또는 차단).' : `재생할 수 없습니다: ${reason}`,
             { error: true });
     }
 
@@ -442,7 +469,42 @@ class Player {
             };
 
             if (kind === 'dash') {
-                fail(new Error('DASH(.mpd) 스트림은 아직 재생할 수 없습니다. 재생목록에서 m3u8(HLS)이나 ts 주소를 쓰세요.'));
+                loadDashjs().then((dashjs) => {
+                    if (stale()) { clearTimeout(timer); return; }
+                    const p = dashjs.MediaPlayer().create();
+                    this.dash = p;
+                    const E = dashjs.MediaPlayer.events;
+                    if (url.startsWith('/api/stream')) {
+                        // 중계로 받은 MPD는 서버가 기준 주소를 원본 절대 주소로 바꿔 둔다 -> 조각 요청도 중계로 감싼다
+                        const extra = new URLSearchParams(url.split('?')[1] || '');
+                        p.extend('RequestModifier', () => ({
+                            modifyRequestHeader: (xhr) => xhr,
+                            modifyRequestURL: (u) => {
+                                if (!/^https?:/i.test(u) || u.startsWith(location.origin)) return u;
+                                const q = new URLSearchParams({ url: u });
+                                if (extra.get('ua')) q.set('ua', extra.get('ua'));
+                                if (extra.get('ref')) q.set('ref', extra.get('ref'));
+                                return `/api/stream?${q}`;
+                            },
+                        }), true);
+                    }
+                    p.updateSettings({ debug: { logLevel: dashjs.Debug.LOG_LEVEL_WARNING }, streaming: { retryAttempts: { MPD: 2 } } });
+                    p.on(E.MANIFEST_LOADED, (e) => {
+                        // 암호화된 스트림: 키(라이선스) 없이는 못 튼다. DRM 해제는 하지 않는다
+                        if (JSON.stringify(e.data || {}).includes('ContentProtection')) {
+                            fail(finalError('DRM(암호화)이 걸린 DASH 스트림이라 재생할 수 없습니다.'));
+                        }
+                    });
+                    p.on(E.ERROR, (e) => {
+                        const err = e && e.error;
+                        fail(new Error(`DASH 오류: ${(err && (err.message || err.code)) || '알 수 없음'}`));
+                    });
+                    p.on(E.CAN_PLAY, () => ok('DASH'));
+                    p.on(E.PLAYBACK_PLAYING, () => ok('DASH'));
+                    if (startTime > 0) p.on(E.STREAM_INITIALIZED, () => { if (!live) p.seek(startTime); });
+                    p.initialize(v, url, true);
+                    v.play().catch((e) => { if (e && e.name === 'NotAllowedError') { ok('DASH'); this._needsGesture(); } });
+                }).catch((e) => fail(e));
                 return;
             }
 
@@ -558,12 +620,14 @@ class Player {
     // later=true: 엔진 자신의 오류 콜백 안에서 부를 때. 그 자리에서 destroy하면 hls.js가
     // 남은 처리 중에 null을 건드려 예외를 내므로, 참조만 바로 끊고 실제 정리는 다음 틱에 한다.
     _destroyEngines(later = false) {
-        const hls = this.hls, ts = this.mpegts;
+        const hls = this.hls, ts = this.mpegts, dash = this.dash;
         this.hls = null;
         this.mpegts = null;
+        this.dash = null;
         if (this._detachDirect) { this._detachDirect(); this._detachDirect = null; }
         const run = () => {
             if (hls) { try { hls.destroy(); } catch (e) { /* 이미 깨짐 */ } }
+            if (dash) { try { dash.reset(); } catch (e) { /* 이미 깨짐 */ } }
             if (ts) {
                 for (const fn of ['pause', 'unload', 'detachMediaElement', 'destroy']) {
                     try { ts[fn](); } catch (e) { /* 이미 깨짐 */ }
