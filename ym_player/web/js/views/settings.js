@@ -5,6 +5,7 @@ import { registry } from '../providers/index.js';
 import { PlexProvider } from '../providers/plex.js';
 import { applyBranding } from '../brand.js';
 import { setDefaults, themePicker } from '../theme.js';
+import { CHANGELOG, CREDITS, REPO } from '../credits.js';
 
 function field(label, input, hint) {
     return h('label', { class: 'field' }, h('span', { class: 'field-label', text: label }), input,
@@ -41,8 +42,9 @@ export async function renderSettings(main, _params, _query, ctx) {
         cache: h('div', { class: 'settings-pane' }),
         look: h('div', { class: 'settings-pane' }),
         backup: h('div', { class: 'settings-pane' }),
+        thanks: h('div', { class: 'settings-pane' }),
     };
-    const TABS = [['sources', 'layer-group', '소스'], ['users', 'users', '사용자'], ['status', 'heart-pulse', '상태'], ['cache', 'hard-drive', '캐시'], ['look', 'palette', '화면'], ['backup', 'box-archive', '백업']];
+    const TABS = [['sources', 'layer-group', '소스'], ['users', 'users', '사용자'], ['status', 'heart-pulse', '상태'], ['cache', 'hard-drive', '캐시'], ['look', 'palette', '화면'], ['backup', 'box-archive', '백업'], ['thanks', 'heart', 'Thanks to']];
     const tabBar = h('div', { class: 'tabs', role: 'tablist' });
     const showTab = (key) => {
         if (!panes[key]) key = 'sources';
@@ -53,6 +55,7 @@ export async function renderSettings(main, _params, _query, ctx) {
         if (key === 'cache') renderCache(panes.cache);
         if (key === 'look') renderLook(panes.look);
         if (key === 'backup' && !panes.backup.firstChild) renderBackup(panes.backup);
+        if (key === 'thanks' && !panes.thanks.firstChild) renderThanks(panes.thanks);
     };
     TABS.forEach(([key, ic, label]) => tabBar.appendChild(h('button', {
         class: 'tab', role: 'tab', dataset: { tab: key }, on: { click: () => showTab(key) },
@@ -657,6 +660,37 @@ async function renderLook(pane) {
 }
 
 /** 백업 내려받기 / 백업 파일로 되돌리기 */
+/** 참고한 저장소, 쓰는 라이브러리, 변경 이력 (credits.js) */
+function renderThanks(pane) {
+    const linkRow = (it) => h('li', { class: 'thanks-item' },
+        h('div', { class: 'thanks-name' },
+            it.url ? h('a', { href: it.url, target: '_blank', rel: 'noopener', text: it.name }) : h('b', { text: it.name }),
+            it.url ? h('span', { class: 'thanks-url', text: it.url.replace(/^https?:\/\//, '') }) : null),
+        h('p', { class: 'thanks-note', text: it.note }));
+    // 변경 이력은 날짜별로 묶는다 (새것이 위)
+    const byDate = [];
+    for (const e of CHANGELOG) {
+        const last = byDate[byDate.length - 1];
+        if (last && last.date === e.date) last.items.push(e); else byDate.push({ date: e.date, items: [e] });
+    }
+    clear(pane).append(
+        h('div', { class: 'src-card thanks-card' },
+            h('h3', { class: 'pane-title' }, icon('heart'), ' 참고한 저장소'),
+            h('p', { class: 'field-hint', text: 'Yume Player는 아래 프로젝트에서 출발했거나 아이디어를 얻었습니다. 고맙습니다.' }),
+            h('ul', { class: 'thanks-list' }, CREDITS.sources.map(linkRow))),
+        h('div', { class: 'src-card thanks-card' },
+            h('h3', { class: 'pane-title' }, icon('cubes'), ' 쓰고 있는 오픈소스'),
+            h('ul', { class: 'thanks-list' }, CREDITS.libraries.map(linkRow))),
+        h('div', { class: 'src-card thanks-card' },
+            h('h3', { class: 'pane-title' }, icon('clock-rotate-left'), ' 변경 이력'),
+            h('p', { class: 'field-hint' }, '저장소: ', h('a', { href: REPO, target: '_blank', rel: 'noopener', text: REPO.replace(/^https?:\/\//, '') })),
+            byDate.map((g) => h('section', { class: 'changelog-day' },
+                h('h4', { text: g.date }),
+                h('ul', { class: 'changelog' }, g.items.map((e) => h('li', {},
+                    h('a', { class: 'changelog-pr', href: `${REPO}/pull/${e.pr}`, target: '_blank', rel: 'noopener', text: `#${e.pr}` }),
+                    h('span', { text: e.title }))))))));
+}
+
 function renderBackup(pane) {
     const fileIn = h('input', { type: 'file', accept: '.json,application/json', class: 'hidden' });
     const restoreBtn = h('button', { class: 'btn', on: { click: () => fileIn.click() } }, icon('upload'), ' 백업 파일로 복원');
