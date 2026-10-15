@@ -441,6 +441,11 @@ class Player {
                 }
             };
 
+            if (kind === 'dash') {
+                fail(new Error('DASH(.mpd) 스트림은 아직 재생할 수 없습니다. 재생목록에서 m3u8(HLS)이나 ts 주소를 쓰세요.'));
+                return;
+            }
+
             if (kind === 'ts' && window.mpegts && window.mpegts.isSupported()) {
                 try {
                     const p = window.mpegts.createPlayer(
