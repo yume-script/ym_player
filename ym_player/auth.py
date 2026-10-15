@@ -176,6 +176,34 @@ def update_user(username, password=None, role=None, acting=None, access=False):
     return public_user(user)
 
 
+def clean_backup_users(raw):
+    """백업 파일의 사용자 목록 검사 (해시 그대로 옮김). 관리자가 한 명은 있어야 한다."""
+    if not isinstance(raw, list) or not raw:
+        raise AuthError("사용자 목록이 없습니다.")
+    out, seen = [], set()
+    for u in raw:
+        if not isinstance(u, dict):
+            raise AuthError("사용자 항목 모양이 틀렸습니다.")
+        name = str(u.get("username") or "")
+        if not USERNAME_RE.match(name) or name.lower() in seen:
+            raise AuthError(f"아이디가 틀렸거나 겹칩니다: {name}")
+        if u.get("role") not in ROLES:
+            raise AuthError(f"{name}: 알 수 없는 권한")
+        try:
+            bytes.fromhex(str(u["salt"]))
+            int(str(u["hash"]), 16)
+            iterations = int(u.get("iterations") or ITERATIONS)
+        except (KeyError, ValueError):
+            raise AuthError(f"{name}: 비밀번호 해시가 없습니다.")
+        seen.add(name.lower())
+        out.append({"username": name, "role": u["role"], "salt": str(u["salt"]), "hash": str(u["hash"]),
+                    "iterations": iterations, "pw_ver": str(u.get("pw_ver") or secrets.token_hex(4)),
+                    "created": u.get("created"), "access": clean_access(u.get("access"))})
+    if not any(u["role"] == "admin" for u in out):
+        raise AuthError("관리자가 한 명은 있어야 합니다.")
+    return out
+
+
 def delete_user(username, acting=None):
     users = load_users()
     user = next((u for u in users if u["username"].lower() == str(username).lower()), None)

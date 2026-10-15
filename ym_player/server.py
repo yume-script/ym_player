@@ -12,6 +12,7 @@
 - /login, /api/auth/...   로그인 화면, 로그인/로그아웃/첫 관리자 만들기/비밀번호 변경
 - /api/users              사용자 관리 (관리자만)
 - /api/me/prefs           내 즐겨찾기 채널 등 사용자별 작은 설정 (prefs.py)
+- /api/admin/...          상태 점검, 백업 내려받기/복원 (관리자만)
 - /api/config             소스 목록 조회/저장 (Plex 토큰은 브라우저로 안 내보냄)
 - /api/iptv/{id}/channels M3U를 받아 채널 목록 JSON으로
 - /api/iptv/{id}/epg      XMLTV(.gz 포함)를 받아 지금-3시간 ~ +24시간 편성표 JSON으로
@@ -22,10 +23,12 @@
 - /api/plex-auth/...      plex.tv PIN 로그인 (토큰/서버 목록 받아오기)
 """
 import asyncio
+import collections
 import json
 import logging
 import re
 import os
+import platform
 import time
 from urllib.parse import urlencode
 
@@ -50,6 +53,24 @@ _PASS_RESP_HEADERS = ("Content-Type", "Content-Length", "Content-Range", "Accept
                       "Cache-Control", "Last-Modified", "ETag")
 _PASS_REQ_HEADERS = ("Range", "Accept", "Accept-Language", "Content-Type", "If-None-Match", "If-Modified-Since")
 
+
+class _RecentWarnings(logging.Handler):
+    """상태 화면에 보여줄 최근 경고/오류 몇 개 (메모리에만)."""
+
+    def __init__(self, size=60):
+        super().__init__(logging.WARNING)
+        self.items = collections.deque(maxlen=size)
+
+    def emit(self, record):
+        try:
+            self.items.append({"time": record.created, "level": record.levelname, "logger": record.name,
+                               "message": record.getMessage()[:500]})
+        except Exception:
+            pass
+
+
+RECENT = _RecentWarnings()
+STARTED = time.time()
 
 HTTP = web.AppKey("http", ClientSession)
 CHANNEL_CACHE = web.AppKey("channel_cache", dict)
@@ -937,6 +958,138 @@ async def users_delete(request):
 
 
 # ---------------------------------------------------------------------------
+# 상태 점검 / 백업·복원 (관리자)
+# ---------------------------------------------------------------------------
+async def _timed(coro):
+    t0 = time.monotonic()
+    try:
+        ok, detail = await coro
+    except asyncio.TimeoutError:
+        ok, detail = False, "시간 초과"
+    except Exception as e:
+        ok, detail = False, f"{type(e).__name__}: {e}"
+    return ok, detail, int((time.monotonic() - t0) * 1000)
+
+
+async def _check_plex(request, cfg, src):
+    hdrs = {**plex_headers(cfg, src.get("token")), "Accept": "application/json"}
+    ssl = None if src.get("verify_ssl", True) else False
+    http = request.app[HTTP]
+    async with http.get(f"{src['url']}/identity", headers=hdrs, ssl=ssl, timeout=ClientTimeout(total=8)) as r:
+        if r.status >= 400:
+            return False, f"HTTP {r.status}"
+        version = ((await r.json(content_type=None)).get("MediaContainer") or {}).get("version", "?")
+    async with http.get(f"{src['url']}/library/sections", headers=hdrs, ssl=ssl, timeout=ClientTimeout(total=8)) as r:
+        if r.status == 401:
+            return False, f"Plex {version} - 토큰이 맞지 않습니다 (HTTP 401)"
+        if r.status >= 400:
+            return False, f"Plex {version} - 라이브러리 목록 HTTP {r.status}"
+        dirs = ((await r.json(content_type=None)).get("MediaContainer") or {}).get("Directory") or []
+    hidden = len(set(src.get("hidden_libraries") or []) & {str(d.get("key")) for d in dirs})
+    return True, f"Plex {version} · 라이브러리 {len(dirs)}개" + (f" (숨김 {hidden})" if hidden else "")
+
+
+async def _check_iptv(request, src):
+    raw = await _fetch_bytes(request.app[HTTP], src["m3u"], timeout=15)
+    text = iptv.decode_text(raw)
+    channels = iptv.parse_m3u(text, src["name"], src["id"])
+    if not channels:
+        head = text.lstrip()[:80].lower()
+        hint = " - 로그인 화면(HTML)이 온 것 같습니다. apikey를 확인하세요" if head.startswith(("<!doctype", "<html")) else ""
+        return False, f"채널이 0개입니다{hint}"
+    return True, f"채널 {len(channels)}개" + (" · EPG 있음" if src.get("epg") else "")
+
+
+async def _check_telegram(request, src):
+    pool = request.app[TELEGRAM]
+    tg = pool.get(src["id"])
+    if tg is None or not tg.matches(src):
+        tg = pool[src["id"]] = telegram_src.TelegramSource(src)
+    tg.channels = [int(c["id"]) for c in src.get("channels") or []]
+    st = await asyncio.wait_for(tg.status(), 15)
+    counts = telegram_src.index_counts(src["id"])
+    total = sum(counts.values())
+    if not st.get("authorized"):
+        return False, st.get("error") or "로그인이 필요합니다 (설정 > 소스에서 로그인)"
+    note = f"{st.get('name') or '로그인됨'} · 채널 {len(tg.channels)}개 · 색인한 영상 {total}개"
+    if not st.get("fast_crypto"):
+        note += " · cryptg 없음(느림)"
+    return True, note
+
+
+@admin_only
+async def admin_status(request):
+    cfg = config_store.load()
+
+    async def one(src):
+        if not src.get("enabled", True):
+            return {"id": src["id"], "name": src["name"], "type": src["type"], "enabled": False,
+                    "ok": None, "detail": "꺼 둠", "ms": 0}
+        if src["type"] == "plex":
+            coro = _check_plex(request, cfg, src)
+        elif src["type"] == "iptv":
+            coro = _check_iptv(request, src)
+        else:
+            coro = _check_telegram(request, src)
+        ok, detail, ms = await _timed(coro)
+        return {"id": src["id"], "name": src["name"], "type": src["type"], "enabled": True,
+                "ok": ok, "detail": detail, "ms": ms}
+
+    sources = await asyncio.gather(*(one(s) for s in cfg["sources"]))
+    users = auth.load_users()
+    return web.json_response({"success": True, "server": {
+        "python": platform.python_version(), "uptime": int(time.time() - STARTED),
+        "data_dir": config_store.DATA_DIR, "users": len(users),
+        "admins": sum(u["role"] == "admin" for u in users),
+        "cryptg": telegram_src.fast_crypto(), "telethon": telegram_src.available(),
+    }, "sources": sources, "warnings": list(reversed(RECENT.items))})
+
+
+BACKUP_FORMAT = "ym_player-backup"
+
+
+@admin_only
+async def admin_backup(request):
+    """설정(토큰 포함) + 사용자(비밀번호 해시) + 사용자별 즐겨찾기. 텔레그램 로그인/색인은 안 들어감."""
+    data = {"format": BACKUP_FORMAT, "version": 1, "created": int(time.time()),
+            "config": config_store.load(), "users": auth.load_users(), "prefs": prefs.load_all()}
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    return web.json_response(data, dumps=lambda o: json.dumps(o, ensure_ascii=False, indent=2), headers={
+        "Content-Disposition": f'attachment; filename="ym_player-backup-{stamp}.json"', "Cache-Control": "no-store"})
+
+
+@admin_only
+async def admin_restore(request):
+    body = await _json_body(request)
+    if body.get("format") != BACKUP_FORMAT:
+        return _json_error(400, "Yume Player 백업 파일이 아닙니다.")
+    try:
+        raw_cfg = body.get("config") or {}
+        cfg = config_store.replace_sources({"client_id": str(raw_cfg.get("client_id") or ""), "sources": []},
+                                           raw_cfg.get("sources") or [])
+        if not cfg["client_id"]:
+            cfg["client_id"] = config_store.load()["client_id"]
+        users = auth.clean_backup_users(body.get("users"))
+    except (ValueError, auth.AuthError) as e:
+        return _json_error(400, f"백업 내용이 올바르지 않습니다: {e}")
+    old_tg = {s["id"] for s in config_store.load().get("sources", []) if s.get("type") == "telegram"}
+    config_store.save(cfg)
+    auth.save_users(users)
+    prefs.replace_all(body.get("prefs") if isinstance(body.get("prefs"), dict) else {})
+    request.app[CHANNEL_CACHE].clear()
+    request.app[EPG_CACHE].clear()
+    request.app[PLEX_SECTIONS].clear()
+    for sid in old_tg | {s["id"] for s in cfg["sources"] if s.get("type") == "telegram"}:
+        tg = request.app[TELEGRAM].pop(sid, None)
+        if tg is not None:
+            asyncio.ensure_future(tg.close())  # 바뀐 API ID로 다시 연결되게 (세션 파일은 그대로)
+    log.warning("관리자 %s가 백업을 복원했습니다 (소스 %d개, 사용자 %d명)", username(request), len(cfg["sources"]), len(users))
+    me = auth.find_user(username(request))
+    return web.json_response({"success": True, "sources": len(cfg["sources"]), "users": len(users),
+                              "still_logged_in": bool(me and me.get("role") == "admin")})
+
+
+# ---------------------------------------------------------------------------
 # 앱
 # ---------------------------------------------------------------------------
 async def index(request):
@@ -966,6 +1119,9 @@ async def _on_cleanup(app):
 def create_app(require_auth=True):
     """require_auth=False는 테스트용 (모든 요청을 관리자로 본다)."""
     app = web.Application(middlewares=[auth_middleware], client_max_size=8 * 1024 * 1024)
+    root = logging.getLogger()
+    if RECENT not in root.handlers:
+        root.addHandler(RECENT)
     app[REQUIRE_AUTH] = require_auth
     app[CHANNEL_CACHE] = {}
     app[EPG_CACHE] = {}
@@ -984,6 +1140,9 @@ def create_app(require_auth=True):
     app.router.add_post("/api/auth/password", auth_password)
     app.router.add_get("/api/me/prefs", prefs_get)
     app.router.add_put("/api/me/prefs", prefs_put)
+    app.router.add_get("/api/admin/status", admin_status)
+    app.router.add_get("/api/admin/backup", admin_backup)
+    app.router.add_post("/api/admin/restore", admin_restore)
     app.router.add_get("/api/users", users_list)
     app.router.add_post("/api/users", users_create)
     app.router.add_put("/api/users/{name}", users_update)

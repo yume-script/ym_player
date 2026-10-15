@@ -313,3 +313,55 @@ def test_prefs_are_per_user(data):
         assert prefs.get("kim")["fav_channels"] == ["tv:9"]
 
     run(flow)
+
+
+def test_backup_restore_and_status(data):
+    from aiohttp.test_utils import TestServer
+
+    async def flow(c, app):
+        origin = TestServer(_fake_plex())
+        await origin.start_server()
+        try:
+            await c.post("/api/auth/setup", json={"username": "admin", "password": "adminpw"})
+            await c.post("/api/users", json={"username": "kim", "password": "kimpass"})
+            await c.put("/api/config", json={"sources": [
+                {"id": "px", "type": "plex", "name": "집", "url": str(origin.make_url("")).rstrip("/"), "token": "T"},
+                {"id": "tv", "type": "iptv", "name": "TV", "m3u": "http://127.0.0.1:9/x.m3u"},
+            ]})
+            await c.put("/api/me/prefs", json={"fav_channels": ["tv:1"]})
+
+            st = await (await c.get("/api/admin/status")).json()
+            by_id = {s["id"]: s for s in st["sources"]}
+            assert by_id["px"]["ok"] is False  # 가짜 Plex에는 /identity가 없다
+            assert by_id["tv"]["ok"] is False and st["server"]["users"] == 2
+
+            r = await c.get("/api/admin/backup")
+            assert r.status == 200 and "attachment" in r.headers["Content-Disposition"]
+            backup = await r.json()
+            assert backup["format"] == "ym_player-backup" and backup["config"]["sources"][0]["token"] == "T"
+            assert {u["username"] for u in backup["users"]} == {"admin", "kim"}
+
+            # 바꿔 놓고 복원하면 돌아온다
+            await c.put("/api/config", json={"sources": []})
+            await c.delete("/api/users/kim")
+            assert (await c.post("/api/admin/restore", json={"format": "nope"})).status == 400
+            bad = {**backup, "users": [{**u, "role": "user"} for u in backup["users"]]}
+            assert (await c.post("/api/admin/restore", json=bad)).status == 400  # 관리자 없음
+            r = await c.post("/api/admin/restore", json=backup)
+            res = await r.json()
+            assert r.status == 200 and res["still_logged_in"] and res["users"] == 2
+            assert config_store.get_source(config_store.load(), "px")["token"] == "T"
+            assert auth.verify_password("kim", "kimpass")
+            assert (await (await c.get("/api/me/prefs")).json())["prefs"]["fav_channels"] == ["tv:1"]
+
+            # 일반 사용자는 못 함
+            await c.post("/api/auth/logout")
+            c.session.cookie_jar.clear()
+            await c.post("/api/auth/login", json={"username": "kim", "password": "kimpass"})
+            for path in ("/api/admin/status", "/api/admin/backup"):
+                assert (await c.get(path)).status == 403
+            assert (await c.post("/api/admin/restore", json=backup)).status == 403
+        finally:
+            await origin.close()
+
+    run(flow)
