@@ -452,3 +452,68 @@ def test_transcode_stream_end_to_end(env, tmp_path):
         assert (await c.get("/internal/tg/nope")).status == 404
 
     run(flow)
+
+
+def test_block_cache_serves_same_bytes_and_reuses_head_tail(env):
+    """512KB 경계로 받아 앞/뒤 조각은 기억 - 어떤 Range든 내용이 같고, 두 번째 요청은 텔레그램에 안 간다."""
+    size = telegram_src.STREAM_CHUNK * 10 + 1234
+    data = bytes((i * 31) % 251 for i in range(size))
+    doc = env.msgs[999].document
+    doc.size, doc.data = size, data
+    calls = []
+    orig = env.iter_download
+
+    def counting(doc_, offset=0, **kw):
+        calls.append(offset)
+        return orig(doc_, offset=offset, **kw)
+    env.iter_download = counting
+
+    async def main():
+        env.authorized = True
+        env.connected = True
+        tg = telegram_src.TelegramSource({"id": "tg", "api_id": "1", "api_hash": "h", "channels": [{"id": 777}]})
+        B = telegram_src.STREAM_CHUNK
+
+        async def read(start, length):
+            out = b""
+            async for chunk in tg.iter_cached(777, 999, start, length, size):
+                out += chunk
+            return out
+        for start, length in [(0, 100), (B - 10, 30), (3, B * 2 + 5), (size - 700, 700), (B * 5 + 7, B * 2), (0, size)]:
+            assert await read(start, length) == data[start:start + length], (start, length)
+        assert all(off % B == 0 for off in calls)  # 경계에 맞춘 요청만
+        calls.clear()
+        assert await read(10, B * 2) == data[10:10 + B * 2]           # 앞쪽 - 기억해 둔 것
+        assert await read(size - 5000, 5000) == data[-5000:]          # 끝쪽(mp4 moov) - 기억해 둔 것
+        assert calls == []
+        assert len([k for k in tg._blocks]) == telegram_src.HEAD_BLOCKS + telegram_src.TAIL_BLOCKS
+
+    asyncio.run(main())
+
+
+def test_probe_is_shared_and_remembered(env, monkeypatch):
+    from ym_player import transcode
+    monkeypatch.setattr(transcode, "available", lambda: True)
+    seen = []
+
+    async def fake_probe(url, timeout=45):
+        seen.append(url)
+        await asyncio.sleep(0.2)
+        return _probe("matroska,webm", ("video", "hevc", {"pix_fmt": "yuv420p10le"}), ("audio", "ac3", {}))
+    monkeypatch.setattr(transcode, "probe", fake_probe)
+
+    async def flow(c):
+        env.authorized = True
+        await c.get("/api/tg/tg/videos?channel=777&limit=5")
+        # 상세 화면의 미리 확인 + 바로 [재생] 두 번 -> ffprobe는 한 번
+        assert (await c.post("/api/tg/tg/probe/777/999")).status == 200
+        items = await asyncio.gather(*(c.get("/api/tg/tg/video/777/999?probe=1") for _ in range(2)))
+        plays = [(await r.json())["item"]["play"]["mode"] for r in items]
+        assert plays == ["transcode", "transcode"] and len(seen) == 1
+        # DB에 남아서 서버를 다시 켜도 다시 안 본다
+        assert telegram_src.get_probe("tg", 777, 999)["mode"] == "transcode"
+        await c.get("/api/tg/tg/video/777/999?probe=1")
+        assert len(seen) == 1
+        assert (await c.post("/api/tg/tg/probe/777/12345")).status == 404
+
+    run(flow)

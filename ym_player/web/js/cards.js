@@ -38,7 +38,11 @@ export function posterCard(item, { wide = false } = {}) {
     if (PLAYABLE.has(item.type) && provider) {
         art.appendChild(h('button', {
             class: 'card-play', title: '재생',
-            on: { click: (e) => { e.preventDefault(); e.stopPropagation(); player.playItem(provider, item.id); } },
+            on: {
+                click: (e) => { e.preventDefault(); e.stopPropagation(); player.playItem(provider, item.id); },
+                // 누르기 직전에 서버가 미리 준비할 수 있는 소스면 (텔레그램: 형식 확인)
+                pointerenter: () => { if (provider.warm) provider.warm(item.id); },
+            },
         }, icon('play')));
     }
     return h('a', { class: `card card-${shape}`, href: item.route || '#' },

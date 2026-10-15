@@ -34,6 +34,7 @@ class Player {
         this.pb = null;
         this.token = 0;
         this.attemptSeq = 0;
+        this.prepSeq = 0;   // [재생]을 누른 뒤 준비(getPlayback)하는 동안 다른 걸 누르거나 닫으면 버리기 위함
         this.recoverCount = 0;
         this.viaProxy = false;
         this.playingSince = 0;
@@ -354,6 +355,7 @@ class Player {
     }
 
     stop() {
+        this.prepSeq++;
         this._finishCurrent();
         this.token++;
         this._destroyEngines();
@@ -617,16 +619,50 @@ class Player {
     }
 
     playChannel(provider, channel, playlist) {
+        this.prepSeq++; // 준비 중이던 다른 영상은 버린다
         return this.start(provider.getPlayback(channel), playlist);
     }
 
     async playItem(provider, id, opts) {
+        // 누르자마자 재생 화면부터 띄운다. 준비(서버의 형식 확인, Plex 메타데이터 등)가 몇 초 걸려도
+        // 아무 반응 없이 멈칫한 것처럼 보이지 않게.
+        const seq = ++this.prepSeq;
+        this._preparing();
         try {
             const pb = await provider.getPlayback(id, opts);
+            if (seq !== this.prepSeq) return;
             await this.start(pb);
         } catch (e) {
+            if (seq !== this.prepSeq) return;
             toast(`재생 준비 실패: ${e.message}`, 'error');
+            this.stop();
         }
+    }
+
+    /** 지금 보던 것을 정리하고 빈 재생 화면에 "재생 준비 중"을 띄운다 */
+    _preparing() {
+        this._finishCurrent();
+        this.token++;
+        this._destroyEngines();
+        try { this.video.pause(); } catch (e) { /* 이미 정지 */ }
+        this.video.removeAttribute('src');
+        this.video.load();
+        this._applyTrack(null);
+        this.pb = null;
+        this.titleEl.textContent = '';
+        this.subEl.textContent = '';
+        this.engineEl.textContent = '';
+        this.subMenu.classList.add('hidden');
+        this.optMenu.classList.add('hidden');
+        this.posterEl.classList.add('hidden');
+        this.liveBadge.classList.add('hidden');
+        this.root.classList.remove('is-live', 'is-audio');
+        this.curEl.textContent = fmtClock(0);
+        this.durEl.textContent = fmtClock(0);
+        this.playedEl.style.width = '0';
+        this.bufEl.style.width = '0';
+        this.expand();
+        this._showMsg('재생 준비 중...', { spinner: true });
     }
 
     toggleFav() {
@@ -930,6 +966,10 @@ class Player {
     }
 
     _onKey(e) {
+        if (!this.pb && !this.minimized && e.key === 'Escape' && !this.root.classList.contains('hidden')) {
+            this.stop(); // 준비 중에 Esc
+            return;
+        }
         if (!this.pb || this.minimized) return;
         const tag = (document.activeElement && document.activeElement.tagName) || '';
         if (['INPUT', 'SELECT', 'TEXTAREA'].includes(tag) && e.key !== 'Escape') return;

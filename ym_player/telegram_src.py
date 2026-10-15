@@ -13,6 +13,7 @@
 - 이어보기: 재생 위치를 이 서버의 SQLite에 저장 (텔레그램엔 시청 기록이 없어서)
 """
 import asyncio
+import json
 import logging
 import os
 import re
@@ -30,7 +31,12 @@ SCAN_BATCH = 400          # 한 번에 훑는 메시지 수 (동영상이 아닌
 OLDER_BATCHES_PER_PAGE = 3
 MSG_CACHE_SIZE = 3000     # 훑으면서 받은 메시지 객체를 기억 -> 썸네일/재생 때 다시 요청하지 않음
 THUMB_CONCURRENCY = 4     # 썸네일 동시 다운로드 수 (텔레그램 요청 제한에 안 걸리게)
-THUMB_PREFETCH = 60       # 새로 색인한 영상 중 미리 받아 둘 썸네일 수 (채널마다, 한 번 훑을 때)
+THUMB_PREFETCH = 60
+# 파일 앞/뒤 몇 조각은 메모리에 기억한다. ffprobe(형식 확인), 브라우저의 첫 요청, mp4 끝의 moov 읽기가
+# 같은 부분을 되풀이해서 받으므로 두 번째부터는 텔레그램에 다시 가지 않는다.
+HEAD_BLOCKS = 4           # 앞쪽 2MB
+TAIL_BLOCKS = 2           # 뒤쪽 1MB
+BLOCK_CACHE_SIZE = 192    # 조각 수 (512KB씩, 최대 약 96MB)       # 새로 색인한 영상 중 미리 받아 둘 썸네일 수 (채널마다, 한 번 훑을 때)
 
 
 def fast_crypto():
@@ -143,6 +149,8 @@ CREATE TABLE IF NOT EXISTS peers(source TEXT, channel INTEGER, access_hash TEXT,
     PRIMARY KEY(source, channel));
 CREATE TABLE IF NOT EXISTS progress(source TEXT, channel INTEGER, msg INTEGER, position REAL,
     duration REAL, watched INTEGER DEFAULT 0, updated REAL, PRIMARY KEY(source, channel, msg));
+CREATE TABLE IF NOT EXISTS probes(source TEXT, channel INTEGER, msg INTEGER, data TEXT,
+    PRIMARY KEY(source, channel, msg));
 CREATE TABLE IF NOT EXISTS user_progress(source TEXT, user TEXT, channel INTEGER, msg INTEGER, position REAL,
     duration REAL, watched INTEGER DEFAULT 0, updated REAL, PRIMARY KEY(source, user, channel, msg));
 """
@@ -266,6 +274,19 @@ def save_progress(sid, channel, msg, position, duration, watched=None, user=""):
             (sid, user, channel, msg, 0 if watched else position, duration, int(bool(watched)), time.time()))
 
 
+def get_probe(sid, channel, msg):
+    """서버 변환 판단(ffprobe) 결과 - 파일은 안 바뀌므로 한 번 알아내면 계속 쓴다."""
+    with db() as conn:
+        r = conn.execute("SELECT data FROM probes WHERE source=? AND channel=? AND msg=?", (sid, channel, msg)).fetchone()
+    return json.loads(r[0]) if r else None
+
+
+def save_probe(sid, channel, msg, data):
+    with db() as conn:
+        conn.execute("INSERT OR REPLACE INTO probes(source,channel,msg,data) VALUES(?,?,?,?)",
+                     (sid, channel, msg, json.dumps(data, ensure_ascii=False)))
+
+
 def index_counts(sid):
     """채널마다 색인한 영상 수 (상태 화면용)."""
     with db() as conn:
@@ -276,7 +297,7 @@ def index_counts(sid):
 def forget_source(sid):
     """소스를 지우면 그 색인/진행 기록도 지운다 (세션 파일은 TelegramSource.logout이)."""
     with db() as conn:
-        for table in ("videos", "sync_state", "peers", "progress", "user_progress"):
+        for table in ("videos", "sync_state", "peers", "progress", "user_progress", "probes"):
             conn.execute(f"DELETE FROM {table} WHERE source=?", (sid,))
 
 
@@ -298,6 +319,7 @@ class TelegramSource:
         self._tasks = {}            # 뒤에서 도는 작업 (같은 일을 겹쳐 돌리지 않게 이름으로)
         self._thumb_sem = asyncio.Semaphore(THUMB_CONCURRENCY)
         self._thumb_inflight = {}
+        self._blocks = OrderedDict()  # (channel, msg, 조각번호) -> bytes
         if not fast_crypto():
             log.warning("cryptg가 없어 텔레그램 암호화를 순수 파이썬으로 처리합니다 (느림): pip install cryptg")
 
@@ -575,6 +597,48 @@ class TelegramSource:
                 if fresh:
                     raise
                 fresh = True
+
+    async def iter_cached(self, channel, msg, start, length, size):
+        """iter_range와 같지만 512KB 경계에 맞춰 받고, 파일 앞/뒤 조각은 기억해 두었다가 다시 쓴다.
+
+        경계에 맞춘 요청은 Telethon이 앞부분을 버리려고 더 받는 일도 없다.
+        """
+        end = start + length
+        pos = start
+        last_block = (size - 1) // STREAM_CHUNK
+        keep = lambda bi: bi < HEAD_BLOCKS or bi > last_block - TAIL_BLOCKS  # noqa: E731
+        while pos < end:
+            bi = pos // STREAM_CHUNK
+            hit = self._blocks.get((channel, msg, bi))
+            if hit is not None:
+                self._blocks.move_to_end((channel, msg, bi))
+                piece = hit[pos - bi * STREAM_CHUNK:end - bi * STREAM_CHUNK]
+                yield piece
+                pos += len(piece)
+                continue
+            # 여기부터 끝까지(또는 기억해 둔 다음 조각 전까지) 텔레그램에서 이어 받는다
+            stop = bi + 1
+            while stop * STREAM_CHUNK < end and (channel, msg, stop) not in self._blocks:
+                stop += 1
+            fetch_start = bi * STREAM_CHUNK
+            fetch_len = min(size, stop * STREAM_CHUNK) - fetch_start
+            buf, cur = b"", bi
+            async for chunk in self.iter_range(channel, msg, fetch_start, fetch_len):
+                buf += chunk
+                while len(buf) >= STREAM_CHUNK or (buf and cur * STREAM_CHUNK + len(buf) >= fetch_start + fetch_len):
+                    block, buf = buf[:STREAM_CHUNK], buf[STREAM_CHUNK:]
+                    if keep(cur):
+                        self._blocks[(channel, msg, cur)] = block
+                        while len(self._blocks) > BLOCK_CACHE_SIZE:
+                            self._blocks.popitem(last=False)
+                    lo = max(pos, cur * STREAM_CHUNK) - cur * STREAM_CHUNK
+                    piece = block[lo:end - cur * STREAM_CHUNK]
+                    if piece:
+                        yield piece
+                        pos += len(piece)
+                    cur += 1
+            if pos < min(end, size) and cur == bi:
+                raise TgError("텔레그램에서 파일을 받지 못했습니다.")
 
     def _thumb_path(self, channel, msg):
         return os.path.join(config_store.DATA_DIR, "telegram_thumbs", self.sid, f"{int(channel)}_{int(msg)}.jpg")
