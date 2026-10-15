@@ -54,6 +54,20 @@ export class TelegramProvider {
         const id = `${v.channel}:${v.msg}`;
         this._seen.set(id, v);
         const thumb = v.has_thumb ? `${this.base}/thumb/${v.channel}/${v.msg}` : '';
+        if (v.kind === 'image') {
+            // 사진: 누르면 뷰어로 (cards.js). 원본은 처음 열 때 서버가 텔레그램에서 받아 둔다
+            const sub = [this.channelTitle(v.channel), (v.date || '').slice(0, 10), v.width ? `${v.width}×${v.height}` : '']
+                .filter(Boolean).join(' · ');
+            return {
+                pid: this.id, id, type: 'photo', title: v.title, subtitle: sub,
+                thumb, wideThumb: thumb, shape: 'wide',
+                image: `${this.base}/image/${v.channel}/${v.msg}`,
+                caption: (v.caption || '').split('\n')[0].trim() === v.title
+                    ? (v.caption || '').split('\n').slice(1).join('\n').trim() : (v.caption || ''),
+                width: v.width, height: v.height,
+                raw: v,
+            };
+        }
         const sub = [this.channelTitle(v.channel), (v.date || '').slice(0, 10), v.duration ? fmtDuration(v.duration * 1000) : '']
             .filter(Boolean).join(' · ');
         return {
@@ -97,8 +111,13 @@ export class TelegramProvider {
         return [['latest', '최신순'], ['oldest', '오래된 순'], ['title', '제목']];
     }
 
-    async getLibraryItems(channel, { start = 0, size = 60, sort = 'latest' } = {}) {
-        const p = new URLSearchParams({ channel, offset: start, limit: size, sort });
+    /** 라이브러리 화면의 보기 고르기 (영상/사진) */
+    libraryKinds() {
+        return [['', '전체'], ['video', '영상'], ['image', '사진']];
+    }
+
+    async getLibraryItems(channel, { start = 0, size = 60, sort = 'latest', kind = '' } = {}) {
+        const p = new URLSearchParams({ channel, offset: start, limit: size, sort, kind });
         const data = await api(`${this.base}/videos?${p}`);
         // 아직 훑지 않은 오래된 메시지가 남았으면 total보다 더 있을 수 있다 -> 한 칸 더 있다고 알려 계속 불러오게
         const total = data.more ? Math.max(data.total, start + data.items.length + 1) : data.total;
@@ -107,7 +126,12 @@ export class TelegramProvider {
 
     async search(query) {
         const data = await api(`${this.base}/videos?${new URLSearchParams({ q: query, limit: 40 })}`);
-        return data.items.length ? [{ title: `영상 · ${this.name}`, items: data.items.map((v) => this.toItem(v)) }] : [];
+        const items = data.items.map((v) => this.toItem(v));
+        const videos = items.filter((it) => it.type !== 'photo'), photos = items.filter((it) => it.type === 'photo');
+        return [
+            videos.length ? { title: `영상 · ${this.name}`, items: videos } : null,
+            photos.length ? { title: `사진 · ${this.name}`, items: photos } : null,
+        ].filter(Boolean);
     }
 
     async _video(id, probe = false) {

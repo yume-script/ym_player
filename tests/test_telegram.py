@@ -657,7 +657,7 @@ def test_existing_index_titles_are_repaired_once(monkeypatch, tmp_path):
     row = telegram_src.get_video("tg", 1, 2)
     assert row["title"] == "영화" and row["file_name"] == "영화.mkv"
     with telegram_src.db() as c:
-        assert c.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert c.execute("PRAGMA user_version").fetchone()[0] == 3
 
 
 def test_split_parts_are_grouped(monkeypatch, tmp_path):
@@ -725,5 +725,62 @@ def test_hls_transcode_for_safari(env, tmp_path):
         r2 = await (await c.post("/api/tg/tg/hls/777/999", params={"start": "4", "mode": "audio"})).json()
         assert r2["url"] != j["url"] and len(app[server.HLS_JOBS]) == 1
         assert not os.path.exists(old.dir) and (await c.get(j["url"])).status == 404
+
+    run(flow)
+
+
+def test_photos_are_indexed_and_old_index_rescans(monkeypatch, tmp_path):
+    import sqlite3
+    from types import SimpleNamespace
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    # 사진 메시지 / 이미지 파일 / 영상 / 스티커
+    photo = SimpleNamespace(sizes=[SimpleNamespace(type="m", w=320, h=240, size=20000),
+                                   SimpleNamespace(type="y", w=1280, h=960, sizes=[100, 90000])])
+    p = SimpleNamespace(id=5, photo=photo, document=None, message="바다 사진\n설명", date=None)
+    item = telegram_src.message_to_media(p)
+    assert item["kind"] == "image" and (item["width"], item["height"], item["size"]) == (1280, 960, 90000)
+    assert item["title"] == "바다 사진" and telegram_src.message_to_video(p) is None
+    png = video_msg(6, mime="image/png", name="map.png", attrs=[DocumentAttributeFilename("map.png")])
+    assert telegram_src.message_to_media(png)["kind"] == "image"
+    vid = video_msg(7)
+    assert telegram_src.message_to_media(vid)["kind"] == "video"
+    sticker = video_msg(8, mime="image/webp", attrs=[type("DocumentAttributeSticker", (), {})()])
+    assert telegram_src.message_to_media(sticker) is None
+
+    # kind 칸이 없던 예전 색인: 칸을 더하고 (기존 행은 video), 채널을 처음부터 다시 훑게 한다
+    conn = sqlite3.connect(str(tmp_path / "telegram.db"))
+    conn.executescript(telegram_src._SCHEMA.replace("    kind TEXT DEFAULT 'video', PRIMARY KEY", "    PRIMARY KEY"))
+    conn.execute("INSERT INTO videos(source,channel,msg,title,caption,file_name,mime,duration,size,width,height,date,has_thumb)"
+                 " VALUES('tg',1,2,'영상','','a.mp4','video/mp4',1,1,1,1,'',0)")
+    conn.execute("INSERT INTO sync_state(source,channel,newest,oldest,complete) VALUES('tg',1,99,1,1)")
+    conn.execute("PRAGMA user_version = 2")
+    conn.commit()
+    conn.close()
+    telegram_src._migrated.discard(str(tmp_path))
+    assert telegram_src.get_video("tg", 1, 2)["kind"] == "video"
+    assert telegram_src.sync_state("tg", 1)["newest"] == 0
+    telegram_src.upsert_videos("tg", 1, [{**item, "msg": 3}])
+    assert [r["msg"] for r in telegram_src.query_videos("tg", [1], kind="image")[0]] == [3]
+    assert [r["msg"] for r in telegram_src.query_videos("tg", [1], kind="video")[0]] == [2]
+
+
+def test_image_endpoint_and_kind_filter(env):
+    from types import SimpleNamespace
+    photo = SimpleNamespace(sizes=[SimpleNamespace(type="y", w=800, h=600, size=5000)])
+    env.msgs[1000] = SimpleNamespace(id=1000, photo=photo, document=None, message="사진 하나",
+                                     date=datetime(2026, 1, 2, tzinfo=timezone.utc))
+
+    async def flow(c):
+        env.authorized = True
+        imgs = (await (await c.get("/api/tg/tg/videos?channel=777&limit=5&kind=image")).json())["items"]
+        assert [(i["msg"], i["kind"], i["title"]) for i in imgs] == [(1000, "image", "사진 하나")]
+        vids = (await (await c.get("/api/tg/tg/videos?channel=777&limit=5&kind=video")).json())["items"]
+        assert vids and all(v["kind"] == "video" for v in vids)
+        home = await (await c.get("/api/tg/tg/home")).json()
+        assert all(v["kind"] == "video" for row in home["channels"] for v in row["items"])
+        r = await c.get("/api/tg/tg/image/777/1000")
+        assert r.status == 200 and r.content_type == "image/jpeg" and (await r.read()).startswith(b"\xff\xd8")
+        assert (await c.get("/api/tg/tg/image/777/999")).status == 404  # 영상은 뷰어로 안 연다
+        assert (await c.get("/api/tg/tg/image/888/1000")).status == 404  # 고르지 않은 채널
 
     run(flow)

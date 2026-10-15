@@ -3,6 +3,7 @@ import { h, icon } from './util.js';
 import { player } from './player.js';
 import { registry } from './providers/index.js';
 import { channelHealth } from './providers/iptv.js';
+import { openViewer } from './viewer.js';
 
 const PLAYABLE = new Set(['movie', 'episode', 'track', 'clip']);
 
@@ -27,7 +28,7 @@ export function progressBar(ratio) {
 export function posterCard(item, { wide = false } = {}) {
     const provider = registry.byId(item.pid);
     const shape = wide ? 'wide' : item.shape;
-    const fallback = { movie: 'film', show: 'tv', season: 'tv', episode: 'tv', artist: 'music', album: 'compact-disc', track: 'music' }[item.type] || 'photo-film';
+    const fallback = { movie: 'film', show: 'tv', season: 'tv', episode: 'tv', artist: 'music', album: 'compact-disc', track: 'music', photo: 'image' }[item.type] || 'photo-film';
     const art = img(wide ? item.wideThumb : item.thumb, `card-art shape-${shape}`, fallback);
 
     if (item.watched) art.appendChild(h('span', { class: 'card-watched', title: '시청함' }, icon('check')));
@@ -44,6 +45,26 @@ export function posterCard(item, { wide = false } = {}) {
                 pointerenter: () => { if (provider.warm) provider.warm(item.id); },
             },
         }, icon('play')));
+    }
+    if (item.type === 'photo') {
+        art.appendChild(h('span', { class: 'card-kind', title: '사진' }, icon('image')));
+        // 사진은 뷰어로. 같은 격자/줄에 있는 사진끼리 좌우로 넘겨 본다
+        const card = h('a', {
+            class: `card card-${shape} card-photo`, href: '#',
+            on: {
+                click: (e) => {
+                    e.preventDefault();
+                    const box = card.closest('.grid, .row-track') || card.parentNode;
+                    const cards = [...box.querySelectorAll('.card-photo')];
+                    openViewer(cards.map((c) => c._item), cards.indexOf(card));
+                },
+            },
+        },
+        art,
+        h('div', { class: 'card-title', text: item.title, title: item.title }),
+        item.subtitle ? h('div', { class: 'card-sub', text: item.subtitle }) : null);
+        card._item = item;
+        return card;
     }
     return h('a', { class: `card card-${shape}`, href: item.route || '#' },
         art,

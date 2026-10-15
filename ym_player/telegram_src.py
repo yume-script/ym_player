@@ -20,6 +20,7 @@ import logging
 import os
 import quopri
 import re
+import shutil
 import sqlite3
 import time
 import unicodedata
@@ -164,10 +165,39 @@ def fix_text(value):
     return unicodedata.normalize("NFC", s)
 
 
-def message_to_video(msg):
-    """동영상 메시지면 색인용 dict, 아니면 None. (움짤/스티커/둥근 영상 메시지는 뺀다)"""
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif", ".heic", ".heif"}
+IMAGE_MAX_BYTES = 40 * 1024 * 1024   # 뷰어로 열 이미지 파일 크기 한도 (그보다 크면 썸네일만)
+
+
+def _caption_title(msg, file_name, fallback):
+    caption = fix_text(getattr(msg, "message", "") or "").strip()
+    first_line = caption.splitlines()[0].strip() if caption else ""
+    return caption, (first_line or os.path.splitext(file_name)[0] or fallback)[:300]
+
+
+def _photo_item(msg, photo):
+    """사진 메시지 (텔레그램이 압축해서 올린 사진). 가장 큰 크기를 원본으로 친다."""
+    best_w = best_h = best_size = 0
+    for size in getattr(photo, "sizes", None) or []:
+        w, h = int(getattr(size, "w", 0) or 0), int(getattr(size, "h", 0) or 0)
+        nbytes = getattr(size, "size", 0) or max(getattr(size, "sizes", None) or [0])
+        if w * h >= best_w * best_h:
+            best_w, best_h, best_size = w, h, int(nbytes or 0)
+    caption, title = _caption_title(msg, "", "사진")
+    date = getattr(msg, "date", None)
+    return {"msg": int(msg.id), "kind": "image", "title": title, "caption": caption[:4000], "file_name": "",
+            "mime": "image/jpeg", "duration": 0, "size": best_size, "width": best_w, "height": best_h,
+            "date": date.isoformat() if date else "", "has_thumb": 1}
+
+
+def message_to_media(msg):
+    """색인할 메시지면 dict (kind = video | image), 아니면 None.
+    움짤/스티커/둥근 영상 메시지는 뺀다. 사진은 압축 사진과 이미지 파일(문서) 둘 다."""
+    photo = getattr(msg, "photo", None)
+    if photo is not None:
+        return _photo_item(msg, photo)
     doc = getattr(msg, "document", None) or getattr(msg, "video", None)
-    if doc is None or getattr(msg, "photo", None) is not None:
+    if doc is None:
         return None
     mime = str(getattr(doc, "mime_type", "") or "").lower()
     file_name, duration, width, height, is_video = "", 0, 0, 0, False
@@ -184,16 +214,25 @@ def message_to_video(msg):
         if getattr(attr, "file_name", None):
             file_name = fix_text(attr.file_name)
     ext = os.path.splitext(file_name.lower())[1]
-    if mime == "image/gif" or ext == ".gif":
-        return None
+    is_image = not is_video and ((mime.startswith("image/") and mime != "image/svg+xml") or ext in IMAGE_EXTS)
+    if is_image:
+        for attr in getattr(doc, "attributes", None) or []:
+            if _attr_name(attr) == "DocumentAttributeImageSize":
+                width, height = int(getattr(attr, "w", 0) or 0), int(getattr(attr, "h", 0) or 0)
+        caption, title = _caption_title(msg, file_name, "이미지")
+        date = getattr(msg, "date", None)
+        return {"msg": int(msg.id), "kind": "image", "title": title, "caption": caption[:4000], "file_name": file_name,
+                "mime": mime or "image/jpeg", "duration": 0, "size": int(getattr(doc, "size", 0) or 0),
+                "width": width, "height": height, "date": date.isoformat() if date else "",
+                "has_thumb": 1 if (getattr(doc, "thumbs", None) or []) else 0}
     if not (is_video or mime.startswith("video/") or ext in VIDEO_EXTS):
         return None
-    caption = fix_text(getattr(msg, "message", "") or "").strip()
-    first_line = caption.splitlines()[0].strip() if caption else ""
+    caption, title = _caption_title(msg, file_name, "제목 없음")
     date = getattr(msg, "date", None)
     return {
         "msg": int(msg.id),
-        "title": (first_line or os.path.splitext(file_name)[0] or "제목 없음")[:300],
+        "kind": "video",
+        "title": title,
         "caption": caption[:4000],
         "file_name": file_name,
         "mime": mime or "video/mp4",
@@ -204,6 +243,12 @@ def message_to_video(msg):
         "date": date.isoformat() if date else "",
         "has_thumb": 1 if (getattr(doc, "thumbs", None) or []) else 0,
     }
+
+
+def message_to_video(msg):
+    """동영상 메시지면 색인용 dict, 아니면 None (예전 이름 - 사진은 None)."""
+    item = message_to_media(msg)
+    return item if item and item["kind"] == "video" else None
 
 
 def browser_mime(mime):
@@ -217,7 +262,7 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS videos(
     source TEXT, channel INTEGER, msg INTEGER, title TEXT, caption TEXT, file_name TEXT, mime TEXT,
     duration INTEGER, size INTEGER, width INTEGER, height INTEGER, date TEXT, has_thumb INTEGER,
-    PRIMARY KEY(source, channel, msg));
+    kind TEXT DEFAULT 'video', PRIMARY KEY(source, channel, msg));
 CREATE INDEX IF NOT EXISTS videos_by_date ON videos(source, channel, msg DESC);
 CREATE TABLE IF NOT EXISTS sync_state(
     source TEXT, channel INTEGER, newest INTEGER DEFAULT 0, oldest INTEGER DEFAULT 0,
@@ -252,6 +297,13 @@ def db():
         if conn.execute("PRAGMA user_version").fetchone()[0] < 2:
             _fix_indexed_text(conn)
             conn.execute("PRAGMA user_version = 2")
+        if conn.execute("PRAGMA user_version").fetchone()[0] < 3:
+            # 사진도 색인한다 (kind). 예전에 훑은 채널은 사진을 건너뛰었으니 처음부터 다시 훑게 한다
+            if "kind" not in {r[1] for r in conn.execute("PRAGMA table_info(videos)")}:
+                conn.execute("ALTER TABLE videos ADD COLUMN kind TEXT DEFAULT 'video'")
+            with conn:
+                conn.execute("DELETE FROM sync_state")
+            conn.execute("PRAGMA user_version = 3")
     return conn
 
 
@@ -274,13 +326,14 @@ def upsert_videos(sid, channel, items):
         return
     with db() as conn:
         conn.executemany(
-            """INSERT INTO videos(source,channel,msg,title,caption,file_name,mime,duration,size,width,height,date,has_thumb)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """INSERT INTO videos(source,channel,msg,title,caption,file_name,mime,duration,size,width,height,date,has_thumb,kind)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(source,channel,msg) DO UPDATE SET title=excluded.title, caption=excluded.caption,
                  file_name=excluded.file_name, mime=excluded.mime, duration=excluded.duration, size=excluded.size,
-                 width=excluded.width, height=excluded.height, date=excluded.date, has_thumb=excluded.has_thumb""",
+                 width=excluded.width, height=excluded.height, date=excluded.date, has_thumb=excluded.has_thumb,
+                 kind=excluded.kind""",
             [(sid, channel, it["msg"], it["title"], it["caption"], it["file_name"], it["mime"], it["duration"],
-              it["size"], it["width"], it["height"], it["date"], it["has_thumb"]) for it in items])
+              it["size"], it["width"], it["height"], it["date"], it["has_thumb"], it.get("kind", "video")) for it in items])
 
 
 def sync_state(sid, channel):
@@ -316,12 +369,16 @@ def _progress_map(conn, sid, rows, user=""):
     return {(p["channel"], p["msg"]): dict(p) for p in got if (p["channel"], p["msg"]) in keys}
 
 
-def query_videos(sid, channels, offset=0, limit=40, q="", sort="latest", user=""):
+def query_videos(sid, channels, offset=0, limit=40, q="", sort="latest", user="", kind=""):
+    """kind: "video" / "image" / ""(둘 다)"""
     if not channels:
         return [], 0
     marks = ",".join("?" * len(channels))
     where = f"source=? AND channel IN ({marks})"
     args = [sid, *channels]
+    if kind in ("video", "image"):
+        where += " AND kind=?"
+        args.append(kind)
     if q:
         where += " AND (title LIKE ? OR caption LIKE ? OR file_name LIKE ?)"
         like = f"%{q}%"
@@ -361,12 +418,12 @@ def video_parts(sid, channel, msg, user=""):
     """같은 채널에서 이 영상과 한 묶음인 조각들 (번호순). 조각이 아니거나 하나뿐이면 []."""
     with db() as conn:
         r = conn.execute("SELECT * FROM videos WHERE source=? AND channel=? AND msg=?", (sid, channel, msg)).fetchone()
-        key = r and _part_key(r)
+        key = r and r["kind"] == "video" and _part_key(r)
         if not key:
             return []
         like = key[0].replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         rows = conn.execute(
-            "SELECT * FROM videos WHERE source=? AND channel=? AND (file_name LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\') "
+            "SELECT * FROM videos WHERE source=? AND channel=? AND kind='video' AND (file_name LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\') "
             "ORDER BY msg LIMIT 300", (sid, channel, like, like)).fetchall()
         rows = [x for x in rows if (_part_key(x) or ("",))[0] == key[0]]
         prog = _progress_map(conn, sid, rows, user)
@@ -448,6 +505,7 @@ def forget_source(sid):
     with db() as conn:
         for table in ("videos", "sync_state", "peers", "progress", "user_progress", "probes"):
             conn.execute(f"DELETE FROM {table} WHERE source=?", (sid,))
+    shutil.rmtree(os.path.join(config_store.DATA_DIR, "telegram_images", sid), ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -626,7 +684,7 @@ class TelegramSource:
         items, ids = [], []
         async for msg in client.iter_messages(peer, **kwargs):
             ids.append(int(msg.id))
-            item = message_to_video(msg)
+            item = message_to_media(msg)
             if item:
                 items.append(item)
                 self._remember(channel, msg)
@@ -661,7 +719,7 @@ class TelegramSource:
             save_sync_state(self.sid, channel, oldest=min(ids + [st["oldest"]]), complete=int(len(ids) < SCAN_BATCH))
             return bool(ids)
 
-    async def videos(self, channels, offset=0, limit=40, q="", sort="latest", fill=True, user=""):
+    async def videos(self, channels, offset=0, limit=40, q="", sort="latest", fill=True, user="", kind=""):
         """목록. 이미 색인한 채널은 DB에서 바로 돌려주고 새 영상 받기는 뒤에서 한다 (기다리지 않음).
 
         - 처음 보는 채널만 첫 SCAN_BATCH개를 받을 때까지 기다린다 (보여줄 게 없으니까)
@@ -683,13 +741,13 @@ class TelegramSource:
             elif time.time() - st["latest_at"] >= LATEST_SYNC_SEC:
                 self.background(("latest", c), lambda c=c: self.sync_latest(c))
                 syncing = True
-        rows, total = query_videos(self.sid, channels, offset, limit, q, sort, user)
+        rows, total = query_videos(self.sid, channels, offset, limit, q, sort, user, kind)
         if fill and len(channels) == 1 and not q and sort == "latest":
             ch = channels[0]
             for _ in range(OLDER_BATCHES_PER_PAGE):
                 if len(rows) >= limit or not await self.sync_older(ch):
                     break
-                rows, total = query_videos(self.sid, channels, offset, limit, q, sort, user)
+                rows, total = query_videos(self.sid, channels, offset, limit, q, sort, user, kind)
             ahead = total - (offset + len(rows))
             if ahead < limit * 2 and not sync_state(self.sid, ch)["complete"]:
                 self.background(("older", ch), lambda: self.sync_older(ch))
@@ -699,7 +757,7 @@ class TelegramSource:
 
     # ----- 파일 -----
     def _remember(self, channel, msg):
-        if (getattr(msg, "document", None) or getattr(msg, "video", None)) is None:
+        if (getattr(msg, "document", None) or getattr(msg, "video", None) or getattr(msg, "photo", None)) is None:
             return
         key = (channel, int(msg.id))
         self._msgs[key] = msg
@@ -799,6 +857,63 @@ class TelegramSource:
                 f.write(data)
             os.replace(tmp, path)
             return path
+
+    # ----- 사진 원본 (뷰어) -----
+    IMAGE_CACHE_MAX = 1024 * 1024 * 1024  # 받아 둔 사진 원본은 합쳐서 1GB까지 (넘으면 오래 안 본 것부터 지움)
+
+    def _image_dir(self):
+        return os.path.join(config_store.DATA_DIR, "telegram_images", self.sid)
+
+    async def image(self, channel, msg, row):
+        """사진 원본 파일 경로. 처음 한 번 텔레그램에서 받아 디스크에 두고, 같은 사진을 동시에 달라고 해도 한 번만."""
+        ext = {"image/png": ".png", "image/webp": ".webp", "image/gif": ".gif", "image/bmp": ".bmp",
+               "image/avif": ".avif", "image/heic": ".heic", "image/heif": ".heif"}.get(row.get("mime"), ".jpg")
+        path = os.path.join(self._image_dir(), f"{int(channel)}_{int(msg)}{ext}")
+        if os.path.exists(path):
+            os.utime(path)  # 최근에 본 사진 (캐시 정리 순서)
+            return path
+        if int(row.get("size") or 0) > IMAGE_MAX_BYTES:
+            raise TgError(f"이미지 파일이 너무 큽니다 ({int(row['size']) // (1024 * 1024)}MB). 텔레그램 앱에서 열어 주세요.")
+        key = ("img", channel, int(msg))
+        fut = self._thumb_inflight.get(key)
+        if fut is None:
+            fut = self._thumb_inflight[key] = asyncio.ensure_future(self._fetch_image(channel, msg, path))
+            fut.add_done_callback(lambda _f: self._thumb_inflight.pop(key, None))
+        return await asyncio.shield(fut)
+
+    async def _fetch_image(self, channel, msg, path):
+        from telethon.errors import FileReferenceExpiredError
+        client = await self.authorized_client()
+        async with self._dl_sem:
+            try:
+                data = await client.download_media(await self._message(channel, msg), file=bytes)
+            except FileReferenceExpiredError:
+                data = await client.download_media(await self._message(channel, msg, fresh=True), file=bytes)
+        if not data:
+            raise TgError("텔레그램에서 이미지를 받지 못했습니다.")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+        await asyncio.to_thread(self._trim_images)
+        return path
+
+    def _trim_images(self):
+        folder = self._image_dir()
+        try:
+            files = [(e.stat().st_mtime, e.stat().st_size, e.path) for e in os.scandir(folder) if e.is_file()]
+        except OSError:
+            return
+        total = sum(f[1] for f in files)
+        for _mtime, size, path in sorted(files):
+            if total <= self.IMAGE_CACHE_MAX:
+                break
+            try:
+                os.remove(path)
+                total -= size
+            except OSError:
+                pass
 
     async def prefetch_thumbs(self, channel, msgs):
         for mid in msgs:

@@ -883,7 +883,7 @@ async def tg_videos(request, tg):
         channels = mine
     data = await tg.videos(channels, offset=_int_arg(request, "offset"), limit=_int_arg(request, "limit", 40, 1, 200),
                            q=request.query.get("q", "").strip(), sort=request.query.get("sort", "latest"),
-                           user=username(request))
+                           user=username(request), kind=request.query.get("kind", ""))
     return web.json_response({"success": True, **data})
 
 
@@ -892,7 +892,7 @@ async def tg_home(request, tg):
     """홈 줄: 이어보기 + 채널마다 최신 영상 몇 개. 채널들을 동시에, 오래된 쪽 채우기 없이."""
     async def one(ch):
         try:
-            data = await tg.videos([ch], limit=12, fill=False, user=username(request))
+            data = await tg.videos([ch], limit=12, fill=False, user=username(request), kind="video")
         except telegram_src.TgError:
             raise
         except Exception as e:
@@ -1290,6 +1290,26 @@ async def tg_thumb(request, tg):
     except telegram_src.TgError as e:
         return _json_error(404, str(e))
     return web.FileResponse(path, headers={"Cache-Control": "private, max-age=86400", "Content-Type": "image/jpeg"})
+
+
+_IMAGE_TYPES = {".jpg": "image/jpeg", ".png": "image/png", ".webp": "image/webp", ".gif": "image/gif",
+                ".bmp": "image/bmp", ".avif": "image/avif", ".heic": "image/heic", ".heif": "image/heif"}
+
+
+@telegram_api
+async def tg_image(request, tg):
+    """사진 원본 (뷰어). 처음 한 번 텔레그램에서 받아 data/telegram_images에 둔다."""
+    channel, msg = _ids(request, tg)
+    row = telegram_src.get_video(tg.sid, channel, msg)
+    if not row or row.get("kind") != "image":
+        return _json_error(404, "색인에 없는 사진입니다.")
+    try:
+        path = await tg.image(channel, msg, row)
+    except telegram_src.TgError as e:
+        return _json_error(404, str(e))
+    ctype = _IMAGE_TYPES.get(os.path.splitext(path)[1], "image/jpeg")
+    return web.FileResponse(path, headers={"Cache-Control": "private, max-age=86400", "Content-Type": ctype,
+                                           "X-Content-Type-Options": "nosniff"})
 
 
 @telegram_api
@@ -1911,6 +1931,7 @@ def create_app(require_auth=True):
     app.router.add_post(r"/api/tg/{sid}/probe/{channel:-?\d+}/{msg:\d+}", tg_probe)
     app.router.add_get("/internal/tg/{token}", internal_tg)
     app.router.add_get(r"/api/tg/{sid}/thumb/{channel:-?\d+}/{msg:\d+}", tg_thumb)
+    app.router.add_get(r"/api/tg/{sid}/image/{channel:-?\d+}/{msg:\d+}", tg_image)
     app.router.add_post("/api/tg/{sid}/progress", tg_progress)
     app.router.add_route("*", "/api/plex/{sid}/{tail:.*}", plex_proxy)
     app.router.add_get("/s/{token}/{path:.+}", versioned_static)
