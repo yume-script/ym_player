@@ -28,6 +28,7 @@ import asyncio
 import base64
 import binascii
 import collections
+import hashlib
 import html
 import json
 import logging
@@ -113,7 +114,7 @@ async def auth_middleware(request, handler):
     if user:
         request["user"] = auth.public_user(user)
         return await handler(request)
-    if request.path in _PUBLIC_PATHS or request.path.startswith(("/static/", "/internal/tg/")):
+    if request.path in _PUBLIC_PATHS or request.path.startswith(("/static/", "/s/", "/internal/tg/")):
         return await handler(request)
     if request.path.startswith("/api/"):
         return web.json_response({"success": False, "error": "로그인이 필요합니다.", "login": True}, status=401)
@@ -1316,7 +1317,7 @@ def _set_session(request, resp, user, remember):
 
 
 async def login_page(request):
-    return _render_page("login.html")
+    return _render_page("login.html", request.app[STATIC_TOKEN])
 
 
 async def auth_state(request):
@@ -1737,7 +1738,7 @@ async def admin_restore(request):
 # 앱
 # ---------------------------------------------------------------------------
 async def index(request):
-    return _render_page("index.html")
+    return _render_page("index.html", request.app[STATIC_TOKEN])
 
 
 # 기본 아이콘 (초승달 + 재생). 화면 안에서는 색을 강조색 변수로 칠해 테마를 따르고, 브라우저 탭은 주황 고정
@@ -1764,10 +1765,45 @@ def brand_mark_html(icon_url, show_version=True):
     return f'<span class="brand-mark{" has-img" if icon_url else ""}">{inner}{badge}</span>'
 
 
-def _render_page(name):
-    """index.html/login.html에 관리자가 정한 이름과 아이콘을 넣어서 (처음 그릴 때부터 바른 이름이 보이게)."""
+def static_token():
+    """화면 파일(web/) 전체의 지문. 파일이 바뀌면(업데이트) 값이 바뀐다."""
+    h = hashlib.sha1()
+    for root, _dirs, files in sorted(os.walk(WEB_DIR)):
+        for fn in sorted(files):
+            path = os.path.join(root, fn)
+            st = os.stat(path)
+            h.update(f"{os.path.relpath(path, WEB_DIR)}:{st.st_size}:{st.st_mtime_ns}".encode())
+    return h.hexdigest()[:10]
+
+
+STATIC_TOKEN = web.AppKey("static_token", str)
+
+
+async def versioned_static(request):
+    """/s/{지문}/js/app.js -> web/js/app.js. 주소에 지문이 들어 있어 파일이 바뀌면 주소도 바뀌므로 오래 캐시해도 된다.
+    (예전엔 /static/만 있고 캐시 지시가 없어서, Safari가 업데이트 뒤에도 옛 화면 코드를 며칠씩 썼다)"""
+    rel = request.match_info["path"]
+    path = os.path.realpath(os.path.join(WEB_DIR, rel))
+    if not path.startswith(os.path.realpath(WEB_DIR) + os.sep) or not os.path.isfile(path):
+        return web.Response(status=404)
+    current = request.match_info["token"] == request.app[STATIC_TOKEN]
+    return web.FileResponse(path, headers={
+        "Cache-Control": "public, max-age=31536000, immutable" if current else "no-cache"})
+
+
+async def _static_no_cache(request, response):
+    """옛 주소(/static/)로 받는 파일은 매번 바뀌었는지 확인하게 (바뀌지 않았으면 304라 가볍다)."""
+    if request.path.startswith("/static/") and "Cache-Control" not in response.headers:
+        response.headers["Cache-Control"] = "no-cache"
+
+
+def _render_page(name, token=""):
+    """index.html/login.html에 관리자가 정한 이름과 아이콘을 넣어서 (처음 그릴 때부터 바른 이름이 보이게).
+    화면 파일 주소는 지문이 들어간 /s/{지문}/로 바꿔서, 업데이트하면 브라우저가 새 파일을 받게 한다."""
     with open(os.path.join(WEB_DIR, name), encoding="utf-8") as f:
         page = f.read()
+    if token:
+        page = page.replace('"/static/', f'"/s/{token}/')
     b = branding_info()
     page = (page.replace("__BRAND_TITLE__", html.escape(b["title"]))
                 .replace("__BRAND_FAVICON__", html.escape(b["icon_url"] or DEFAULT_FAVICON))
@@ -1822,6 +1858,8 @@ def create_app(require_auth=True):
     app[PROBES] = {}
     app[HLS_JOBS] = {}
     app[PLEX_FILES] = {}
+    app[STATIC_TOKEN] = static_token()
+    app.on_response_prepare.append(_static_no_cache)
     app.on_startup.append(_on_startup)
     app.on_cleanup.append(_on_cleanup)
 
@@ -1875,6 +1913,7 @@ def create_app(require_auth=True):
     app.router.add_get(r"/api/tg/{sid}/thumb/{channel:-?\d+}/{msg:\d+}", tg_thumb)
     app.router.add_post("/api/tg/{sid}/progress", tg_progress)
     app.router.add_route("*", "/api/plex/{sid}/{tail:.*}", plex_proxy)
+    app.router.add_get("/s/{token}/{path:.+}", versioned_static)
     app.router.add_static("/static/", WEB_DIR, show_index=False)
     return app
 

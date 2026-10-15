@@ -470,3 +470,21 @@ def test_version_badge(data):
         assert status["server"]["version"] == __version__
 
     run(flow)
+
+
+def test_static_files_get_versioned_urls(data):
+    import re
+
+    async def flow(c, app):
+        page = await (await c.get("/login")).text()
+        m = re.search(r'src="/s/([0-9a-f]{10})/js/login\.js"', page)
+        assert m and '"/static/' not in page
+        r = await c.get(f"/s/{m.group(1)}/js/login.js")
+        assert r.status == 200 and "immutable" in r.headers["Cache-Control"]
+        r = await c.get("/s/0000000000/js/login.js")  # 옛 지문 - 받긴 하지만 매번 확인
+        assert r.status == 200 and r.headers["Cache-Control"] == "no-cache"
+        assert (await c.get("/static/js/login.js")).headers["Cache-Control"] == "no-cache"
+        assert (await c.get(f"/s/{m.group(1)}/../server.py")).status == 404
+        assert (await c.get(f"/s/{m.group(1)}/%2e%2e/server.py")).status == 404
+
+    run(flow)
