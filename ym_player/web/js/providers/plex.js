@@ -6,7 +6,7 @@
 //              playable, viewOffset, duration, children[], childrenTitle, childrenStyle, parent }
 //   playback = { url, kind, live, startTime, title, subtitle, poster, audioOnly,
 //                onProgress(state, sec), onStop(sec), getNext() }
-import { fmtDuration, uuid } from '../util.js';
+import { fmtDuration, uuid, storeGet, storeSet } from '../util.js';
 
 const PRODUCT = 'Yume Player';
 const LIB_ICONS = { movie: 'film', show: 'tv', artist: 'music' };
@@ -36,6 +36,29 @@ export function subtitleStreams(part) {
         };
     });
 }
+
+/** 음성 트랙 (streamType 2). def=파일의 기본 트랙 - 원본 재생(브라우저)은 이것만 틀 수 있다 */
+export function audioStreams(part) {
+    const list = ((part && part.Stream) || []).filter((st) => st.streamType === 2);
+    const hasDefault = list.some((st) => st.default);
+    return list.map((st, i) => ({
+        id: String(st.id),
+        label: st.extendedDisplayTitle || st.displayTitle || st.title || st.language || `음성 ${i + 1}`,
+        selected: !!st.selected,
+        def: hasDefault ? !!st.default : i === 0,
+    }));
+}
+
+// 화질: 원본(되면 변환 없이) 또는 Plex 변환 비트레이트 상한. 마지막 고른 것을 기억한다
+export const QUALITIES = [
+    { id: 'original', label: '원본', note: '되면 변환 없이' },
+    { id: '20000', label: '1080p 20Mbps', res: '1920x1080' },
+    { id: '8000', label: '1080p 8Mbps', res: '1920x1080' },
+    { id: '4000', label: '720p 4Mbps', res: '1280x720' },
+    { id: '2000', label: '720p 2Mbps', res: '1280x720' },
+    { id: '1000', label: '480p 1Mbps', res: '854x480' },
+];
+const QUALITY_KEY = 'yp_plex_quality';
 
 // 브라우저 <video>로 그대로 틀 수 있는 조합이면 트랜스코딩 없이 원본 파일을 바로 준다
 function canDirectPlay(media, audioOnly) {
@@ -254,6 +277,13 @@ export class PlexProvider {
         }).then((r) => { if (!r.ok) throw new Error(`자막 선택 저장 실패 (HTTP ${r.status})`); });
     }
 
+    // 음성 선택도 Plex에 저장한다 (Plex 앱과 같아지게, 변환할 때 Plex가 이 트랙을 쓴다)
+    setAudio(partId, streamId) {
+        return fetch(this.url(`/library/parts/${partId}`, { audioStreamID: streamId, allParts: 1 }), {
+            method: 'PUT', headers: { Accept: 'application/json' },
+        }).then((r) => { if (!r.ok) throw new Error(`음성 선택 저장 실패 (HTTP ${r.status})`); });
+    }
+
     subtitleTrack(id, st) {
         if (!st || !st.text) return null;
         const p = new URLSearchParams({ path: st.key, codec: st.codec });
@@ -264,8 +294,10 @@ export class PlexProvider {
      * opts.fromStart  처음부터
      * opts.startAt    이 위치(초)부터 - 자막을 바꾸느라 다시 불러올 때
      * opts.subtitleId 이 자막으로 ('0'=끄기). 없으면 Plex에 저장된 선택을 따른다
+     * opts.audioId    이 음성 트랙으로. 없으면 Plex에 저장된 선택
+     * opts.quality    QUALITIES의 id. 없으면 지난번 고른 것
      */
-    async getPlayback(id, { fromStart = false, startAt = null, subtitleId } = {}) {
+    async getPlayback(id, { fromStart = false, startAt = null, subtitleId, audioId, quality } = {}) {
         const mc = await this.req(`/library/metadata/${id}`);
         const m = (mc.Metadata || [])[0];
         const media = m && (m.Media || [])[0];
@@ -283,13 +315,25 @@ export class PlexProvider {
         // 브라우저가 못 그리는 자막(내장/이미지)을 골랐으면 원본 재생 대신 Plex가 영상에 입혀서 보내게 한다
         const burn = !!chosen && !chosen.text;
 
+        let audios = audioStreams(part);
+        if (audioId !== undefined && audios.some((a) => a.id === audioId) && !audios.some((a) => a.id === audioId && a.selected)) {
+            await this.setAudio(part.id, audioId);
+            audios = audios.map((a) => ({ ...a, selected: a.id === audioId }));
+        }
+        const audio = audios.find((a) => a.selected) || audios.find((a) => a.def) || null;
+        // 브라우저는 파일 안의 다른 음성 트랙을 고를 수 없다 -> 기본 트랙이 아니면 Plex 변환으로
+        const otherAudio = !!audio && !audio.def && audios.length > 1;
+
+        if (quality !== undefined) storeSet(QUALITY_KEY, quality);
+        const q = QUALITIES.find((x) => x.id === (quality ?? storeGet(QUALITY_KEY, 'original'))) || QUALITIES[0];
+
         const session = uuid();
         // 상세 화면의 [이어보기] 버튼과 같은 기준: 30초 넘게 봤고 거의 끝까지 보진 않았을 때만 이어서
         const vo = m.viewOffset || 0;
         const resumable = vo > 30000 && (!m.duration || vo < m.duration * 0.95);
         const startTime = startAt != null ? startAt : (!fromStart && resumable ? vo / 1000 : 0);
         let url, kind;
-        if (canDirectPlay(media, audioOnly) && !burn) {
+        if (canDirectPlay(media, audioOnly) && !burn && !otherAudio && q.id === 'original') {
             url = this.base + part.key;
             kind = 'direct';
         } else {
@@ -305,8 +349,8 @@ export class PlexProvider {
                 directStream: 1,
                 directStreamAudio: 1,
                 videoQuality: 100,
-                videoResolution: '1920x1080',
-                maxVideoBitrate: 20000,
+                videoResolution: q.res || '1920x1080',
+                maxVideoBitrate: q.res ? Number(q.id) : 20000,
                 subtitleSize: 100,
                 audioBoost: 100,
                 // 텍스트 자막은 브라우저가 따로 띄우므로 입히지 않는다
@@ -345,6 +389,14 @@ export class PlexProvider {
              * 텍스트 자막끼리/끄기는 그 자리에서 <track>만 바꾸고 ({track}),
              * 영상에 입혀야 하는 자막으로 가거나 입힌 자막을 떼야 하면 그 위치부터 다시 불러온다 ({reload}).
              */
+            audios: audioOnly ? [] : audios,
+            activeAudio: audio ? audio.id : '',
+            qualities: audioOnly ? [] : QUALITIES,
+            activeQuality: q.id,
+            transcoding: kind === 'hls',
+            // 음성/화질을 바꾸면 그 위치부터 다시 불러온다 (자막 선택은 Plex에 저장돼 있어 그대로)
+            selectAudio: async (aid, atSec) => ({ reload: await this.getPlayback(id, { startAt: atSec, audioId: aid }) }),
+            selectQuality: async (qid, atSec) => ({ reload: await this.getPlayback(id, { startAt: atSec, quality: qid }) }),
             selectSubtitle: async (subId, atSec) => {
                 const st = subs.find((x) => x.id === subId) || null;
                 const needsBurn = !!st && !st.text;
