@@ -40,6 +40,15 @@ def decode_text(data: bytes) -> str:
     return data.decode("utf-8", errors="replace")
 
 
+def _clean_logo(value):
+    """tvg-logo="None"(파이썬 None을 그대로 찍은 재생목록) 같은 값이나 상대 주소는 버린다.
+    그대로 두면 브라우저가 이 앱 기준 주소(/None)로 받으려 해서 404만 쌓인다."""
+    value = (value or "").strip()
+    if value.lower() in ("none", "null", "undefined", "nan"):
+        return ""
+    return value if value.startswith(("http://", "https://", "data:image/")) else ""
+
+
 def parse_m3u(text, source_name="IPTV", source_id=""):
     """#EXTINF 줄과 바로 다음 주소 줄을 묶어 채널 목록으로 만든다.
 
@@ -60,7 +69,7 @@ def parse_m3u(text, source_name="IPTV", source_id=""):
             cur = {
                 "tvg_id": attrs.get("tvg-id", "").strip(),
                 "name": name,
-                "logo": attrs.get("tvg-logo", ""),
+                "logo": _clean_logo(attrs.get("tvg-logo", "")),
                 "group": attrs.get("group-title", "") or "기타",
                 "chno": attrs.get("tvg-chno", ""),
             }

@@ -226,3 +226,12 @@ def test_server_proxies_m3u_epg_streams_and_plex(monkeypatch, tmp_path):
             await origin_srv.close()
 
     asyncio.run(run())
+
+
+def test_parse_m3u_drops_bogus_logos():
+    text = ("#EXTM3U\n"
+            '#EXTINF:-1 tvg-logo="None",A\nhttp://x/a.m3u8\n'
+            '#EXTINF:-1 tvg-logo="logo.png",B\nhttp://x/b.m3u8\n'
+            '#EXTINF:-1 tvg-logo=" https://cdn/c.png ",C\nhttp://x/c.mpd\n')
+    logos = [c["logo"] for c in iptv.parse_m3u(text)]
+    assert logos == ["", "", "https://cdn/c.png"]
