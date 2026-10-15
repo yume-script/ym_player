@@ -56,7 +56,7 @@ async def probe(url, timeout=45):
         # 기본값(5MB, 5초 분석)대로면 텔레그램에서 몇 MB를 더 받느라 [재생]이 몇 초 늦어진다.
         ffprobe_path(), "-v", "error", "-probesize", "1500000", "-analyzeduration", "0",
         "-show_entries",
-        "format=format_name,duration:stream=index,codec_type,codec_name,profile,pix_fmt,width,height,channels",
+        "format=format_name,duration:stream=index,codec_type,codec_name,profile,pix_fmt,width,height,channels,start_time",
         "-of", "json", url,
         stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     try:
@@ -88,7 +88,13 @@ def decide(info):
         container = "mkv"
     else:
         container = fmt.split(",")[0] or "?"
-    out = {"container": container, "video": vc + (f" {pix}" if pix and pix not in _8BIT else ""), "audio": ac}
+    out = {"container": container, "video": vc + (f" {pix}" if pix and pix not in _8BIT else ""), "audio": ac,
+           "audio_tracks": sum(s.get("codec_type") == "audio" for s in streams)}
+    # 소리가 영상보다 늦게 시작하도록 만들어진 파일 (재생 첫 몇 초가 조용함) 확인용
+    try:
+        out["av_offset"] = round(float(a["start_time"]) - float(v["start_time"]), 3) if a and v else 0.0
+    except (KeyError, TypeError, ValueError):
+        out["av_offset"] = 0.0
 
     v_ok8 = pix in _8BIT
     if not v:

@@ -420,7 +420,13 @@ def get_probe(sid, channel, msg):
     """서버 변환 판단(ffprobe) 결과 - 파일은 안 바뀌므로 한 번 알아내면 계속 쓴다."""
     with db() as conn:
         r = conn.execute("SELECT data FROM probes WHERE source=? AND channel=? AND msg=?", (sid, channel, msg)).fetchone()
-    return json.loads(r[0]) if r else None
+    if not r:
+        return None
+    data = json.loads(r[0])
+    # 예전 판단에는 음성 트랙 정보가 없다 -> 한 번 다시 확인 (실패 결과는 그대로 둔다)
+    if data.get("container") and "audio_tracks" not in data:
+        return None
+    return data
 
 
 def save_probe(sid, channel, msg, data):
