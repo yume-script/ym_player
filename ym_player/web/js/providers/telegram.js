@@ -1,8 +1,21 @@
 // 텔레그램 채널 소스. 서버(/api/tg/{id}/...)가 Telethon으로 채널 영상을 색인하고 스트림을 이어 준다.
 // 설정에서 고른 채널 하나하나가 라이브러리처럼 보인다. 항목 id는 "채널id:메시지id".
-import { api, fmtDuration } from '../util.js';
+import { api, fmtDuration, h, modal } from '../util.js';
 
 const TRANSCODE_NOTE = { remux: '서버 변환(포장만)', audio: '서버 변환(음성)', transcode: '서버 변환(H.264)' };
+
+// 나눠 올린 파일의 조각 이름 ("이름_0001", "이름.002", "이름 part2", "이름 CD2"). 서버 telegram_src._PART_RE와 같은 규칙
+const PART_RE = /^(.*?)[\s._-]*(?:(?:part|pt|cd|disc|disk)[\s._-]*0*(\d{1,3})|[._-](0\d{2,3}))(?:\.\w{2,4})?$/i;
+
+function looksLikePart(v) {
+    return [v.file_name, v.title].some((n) => {
+        const m = PART_RE.exec((n || '').trim());
+        return m && m[1].length >= 3;
+    });
+}
+
+const ORDINAL = ['첫', '두', '세', '네', '다섯', '여섯', '일곱', '여덟', '아홉', '열'];
+const nth = (n) => `${ORDINAL[n - 1] || n} 번째`;
 
 function fmtSize(bytes) {
     if (!bytes) return '';
@@ -18,6 +31,7 @@ export class TelegramProvider {
         this.channels = (src.channels || []).map((c) => ({ id: String(c.id), title: c.title }));
         this.base = `/api/tg/${encodeURIComponent(src.id)}`;
         this._warmed = new Set();
+        this._seen = new Map(); // 항목 id -> 목록에서 받은 영상 정보 (조각 파일인지 미리 보려고)
     }
 
     channelTitle(id) {
@@ -27,6 +41,7 @@ export class TelegramProvider {
 
     toItem(v) {
         const id = `${v.channel}:${v.msg}`;
+        this._seen.set(id, v);
         const thumb = v.has_thumb ? `${this.base}/thumb/${v.channel}/${v.msg}` : '';
         const sub = [this.channelTitle(v.channel), (v.date || '').slice(0, 10), v.duration ? fmtDuration(v.duration * 1000) : '']
             .filter(Boolean).join(' · ');
@@ -138,6 +153,45 @@ export class TelegramProvider {
     }
 
     /**
+     * 재생 직전 확인. 여러 파일로 나눠 올린 영상의 두 번째 이후 조각을 누르면 첫 조각부터 볼지 묻는다.
+     * 반환: 재생할 항목 id (이 조각 또는 첫 조각), 취소하면 null.
+     * 묻지 않는 경우: 조각 이름이 아님 / 다음 조각 자동 재생 / 이 조각을 보던 중 / 앞 조각을 다 봤음
+     */
+    async confirmPlay(id, opts = {}) {
+        if (opts.auto) return id;
+        const seen = this._seen.get(id);
+        if (seen && !looksLikePart(seen)) return id;
+        let v;
+        try { v = await this._video(id); } catch (e) { return id; } // 재생 단계에서 오류를 보여 준다
+        const parts = v.parts || [];
+        const idx = parts.findIndex((p) => p.msg === v.msg);
+        if (idx <= 0) return id;
+        const resumable = v.position > 30 && (!v.duration || v.position < v.duration * 0.95);
+        if (resumable && !opts.fromStart) return id;
+        if (parts[idx - 1].watched) return id;
+        const first = parts[0];
+        return new Promise((resolve) => {
+            let answer = null;
+            const pick = (val) => { answer = val; m.close(); };
+            const body = h('div', { class: 'part-ask' },
+                h('p', { text: `이 영상은 ${parts.length}개로 나눠진 파일 중 ${nth(idx + 1)} 파일입니다. 이 파일을 재생할까요?` }),
+                h('ol', { class: 'part-list' }, parts.map((p, i) => h('li', { class: i === idx ? 'cur' : '' },
+                    h('span', { text: p.title }),
+                    p.watched ? h('small', { text: ' · 다 봄' }) : null))));
+            const m = modal('나눠진 파일', body, [
+                h('button', { class: 'btn', on: { click: () => pick(null) } }, '취소'),
+                h('button', { class: 'btn', on: { click: () => pick(`${v.channel}:${first.msg}`) } }, '첫 번째 파일부터'),
+                h('button', { class: 'btn btn-accent', on: { click: () => pick(id) } }, `${nth(idx + 1)} 파일 재생`),
+            ]);
+            // 바깥을 누르거나 X로 닫아도 끝나게 (닫힌 뒤 결과를 넘긴다)
+            new MutationObserver((_, obs) => {
+                if (!m.el.isConnected) { obs.disconnect(); resolve(answer); }
+            }).observe(document.body, { childList: true });
+            m.el.querySelector('.btn-accent').focus();
+        });
+    }
+
+    /**
      * 서버가 ffprobe로 형식을 보고 정한 방법(v.play.mode)대로:
      *   direct  -> 원본 파일 Range 스트림 (탐색도 브라우저가). 그래도 못 열면 fallback으로 서버 변환
      *   그 밖   -> /transcode (ffmpeg가 만든 조각난 MP4). timeOffset초부터 시작하는 스트림이라
@@ -164,6 +218,12 @@ export class TelegramProvider {
             onStop: (sec) => report(sec),
             getNext: null,
         };
+        // 나눠진 파일이면 끝난 뒤 다음 조각을 이어서 재생
+        const parts = v.parts || [];
+        const nextPart = parts[parts.findIndex((p) => p.msg === v.msg) + 1];
+        if (parts.length && nextPart && parts.some((p) => p.msg === v.msg)) {
+            common.getNext = async () => ({ pid: this.id, id: `${channel}:${nextPart.msg}`, title: nextPart.title });
+        }
         const converted = (at, mode) => ({
             ...common,
             url: `${this.base}/transcode/${channel}/${msg}?${new URLSearchParams({ start: Math.floor(at), mode })}`,

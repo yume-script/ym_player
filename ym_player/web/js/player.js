@@ -693,6 +693,12 @@ class Player {
     }
 
     async playItem(provider, id, opts) {
+        // 재생 전에 물어볼 게 있으면 (텔레그램 나눠진 파일의 두 번째 이후 조각 등) 먼저 묻는다
+        if (provider.confirmPlay) {
+            const ask = ++this.prepSeq;
+            id = await provider.confirmPlay(id, opts || {});
+            if (id == null || ask !== this.prepSeq) return;
+        }
         // 누르자마자 재생 화면부터 띄운다. 준비(서버의 형식 확인, Plex 메타데이터 등)가 몇 초 걸려도
         // 아무 반응 없이 멈칫한 것처럼 보이지 않게.
         const seq = ++this.prepSeq;
@@ -799,7 +805,7 @@ class Player {
             if (!next || this.pb !== pb) return;
             const provider = registry.byId(next.pid);
             toast(`다음: ${next.title}`);
-            this.playItem(provider, next.id, { fromStart: true });
+            this.playItem(provider, next.id, { fromStart: true, auto: true });
         } catch (e) { /* 다음 화가 없으면 그냥 끝 */ }
     }
 

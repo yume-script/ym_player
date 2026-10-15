@@ -672,3 +672,9 @@ body.login-body { overflow: auto; min-height: 100vh; display: flex; align-items:
 .brand-card .field { align-self: stretch; }
 .brand-preview { display: flex; align-items: center; gap: 0.6rem; font-weight: 700; font-size: 1.1rem; padding: 0.75rem 1rem; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
 .brand-row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+
+/* 텔레그램 나눠진 파일 확인 */
+.part-ask p { margin: 0 0 0.8rem; line-height: 1.5; }
+.part-list { margin: 0; padding-left: 1.4rem; max-height: 40vh; overflow-y: auto; font-size: 0.9rem; color: var(--muted); }
+.part-list li { padding: 0.2rem 0; word-break: break-all; }
+.part-list li.cur { color: var(--text); font-weight: 600; }

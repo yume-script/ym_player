@@ -658,3 +658,25 @@ def test_existing_index_titles_are_repaired_once(monkeypatch, tmp_path):
     assert row["title"] == "영화" and row["file_name"] == "영화.mkv"
     with telegram_src.db() as c:
         assert c.execute("PRAGMA user_version").fetchone()[0] == 2
+
+
+def test_split_parts_are_grouped(monkeypatch, tmp_path):
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    telegram_src._migrated.discard(str(tmp_path))
+    base = "Hope.2026.1080p.AMZN.WEB-DL.DDP5.1.H.264-KyoGo"
+    rows = [(10, f"{base}_0001", f"{base}_0001.mkv"), (9, f"{base}_0000", f"{base}_0000.mkv"),
+            (11, "새 영화 소개", f"{base}_0002.mkv"),     # 제목이 캡션이어도 파일 이름으로 묶는다
+            (12, "Hope.2026 리뷰", "Hope.2026.mkv"),      # 연도는 조각 번호가 아님
+            (13, "Other_0001", "Other_0001.mkv")]
+    with telegram_src.db() as conn:
+        conn.executemany(
+            "INSERT INTO videos(source,channel,msg,title,caption,file_name,mime,duration,size,width,height,date,has_thumb)"
+            " VALUES('tg',1,?,?,'',?,'video/mp4',60,1,1,1,'',0)", rows)
+    telegram_src.save_progress("tg", 1, 9, 60, 60, watched=True)
+    parts = telegram_src.video_parts("tg", 1, 10)
+    assert [(p["msg"], p["part"]) for p in parts] == [(9, 1), (10, 2), (11, 3)]
+    assert parts[0]["watched"] and not parts[1]["watched"]
+    assert telegram_src.video_parts("tg", 1, 12) == []
+    assert telegram_src.video_parts("tg", 1, 13) == []      # 하나뿐이면 묶음이 아님
+    assert telegram_src.split_part("Movie.part2.mp4") == ("movie", 2)
+    assert telegram_src.split_part("Movie.2026") is None
