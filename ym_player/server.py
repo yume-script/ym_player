@@ -190,6 +190,8 @@ async def get_config(request):
             allowed = auth.allowed_libraries(user, s["id"])
             if s["type"] == "plex" and allowed is not None:
                 item["allowed_libraries"] = sorted(allowed)
+            if s["type"] == "telegram" and allowed is not None:
+                item["channels"] = [c for c in item.get("channels") or [] if str(c["id"]) in allowed]
             out.append(item)
         pub["sources"] = out
     return web.json_response(pub)
@@ -813,10 +815,20 @@ def _int_arg(request, name, default=0, lo=0, hi=10 ** 12):
         return default
 
 
+def _user_channels(request, tg):
+    """설정에서 고른 채널 중 이 사용자가 볼 수 있는 것 (관리자/제한 없음이면 전부)."""
+    allowed = auth.allowed_libraries(request.get("user"), tg.sid)
+    return [c for c in tg.channels if allowed is None or str(c) in allowed]
+
+
 @telegram_api
 async def tg_videos(request, tg):
     channel = request.query.get("channel")
-    channels = [int(channel)] if channel and channel.lstrip("-").isdigit() else list(tg.channels)
+    mine = _user_channels(request, tg)
+    if channel and channel.lstrip("-").isdigit():
+        channels = [int(channel)] if int(channel) in mine else []
+    else:
+        channels = mine
     data = await tg.videos(channels, offset=_int_arg(request, "offset"), limit=_int_arg(request, "limit", 40, 1, 200),
                            q=request.query.get("q", "").strip(), sort=request.query.get("sort", "latest"),
                            user=username(request))
@@ -836,15 +848,16 @@ async def tg_home(request, tg):
             return None
         return {"channel": ch, "items": data["items"]}
 
-    rows = [r for r in await asyncio.gather(*(one(ch) for ch in tg.channels)) if r]
+    mine = _user_channels(request, tg)
+    rows = [r for r in await asyncio.gather(*(one(ch) for ch in mine)) if r]
     return web.json_response({"success": True,
-                              "continue": telegram_src.continue_watching(tg.sid, tg.channels, user=username(request)),
+                              "continue": telegram_src.continue_watching(tg.sid, mine, user=username(request)),
                               "channels": rows})
 
 
 def _ids(request, tg):
     channel, msg = int(request.match_info["channel"]), int(request.match_info["msg"])
-    if channel not in tg.channels:
+    if channel not in _user_channels(request, tg):
         raise web.HTTPNotFound(text="설정에서 고르지 않은 채널입니다.")
     return channel, msg
 
@@ -1077,7 +1090,7 @@ async def tg_progress(request, tg):
         channel, msg = int(body.get("channel")), int(body.get("msg"))
     except (TypeError, ValueError):
         return _json_error(400, "channel/msg가 없습니다.")
-    if channel not in tg.channels:
+    if channel not in _user_channels(request, tg):
         return _json_error(404, "설정에서 고르지 않은 채널입니다.")
     watched = body.get("watched")
     telegram_src.save_progress(tg.sid, channel, msg, body.get("position"), body.get("duration"),
