@@ -12,7 +12,7 @@
 - /login, /api/auth/...   로그인 화면, 로그인/로그아웃/첫 관리자 만들기/비밀번호 변경
 - /api/users              사용자 관리 (관리자만)
 - /api/me/prefs           내 즐겨찾기 채널 등 사용자별 작은 설정 (prefs.py)
-- /api/admin/...          상태 점검, 백업 내려받기/복원 (관리자만)
+- /api/admin/...          상태 점검, 백업 내려받기/복원, 동영상 캐시 설정/비우기 (관리자만)
 - /api/config             소스 목록 조회/저장 (Plex 토큰은 브라우저로 안 내보냄)
 - /api/iptv/{id}/channels M3U를 받아 채널 목록 JSON으로
 - /api/iptv/{id}/epg      XMLTV(.gz 포함)를 받아 지금-3시간 ~ +24시간 편성표 JSON으로
@@ -37,7 +37,7 @@ from urllib.parse import urlencode
 from aiohttp import ClientSession, ClientTimeout, web
 from yarl import URL
 
-from . import auth, config_store, iptv, prefs, subtitles, telegram_src, transcode
+from . import auth, config_store, iptv, media_cache, prefs, subtitles, telegram_src, transcode
 
 log = logging.getLogger("ym_player")
 
@@ -81,6 +81,7 @@ TELEGRAM = web.AppKey("telegram", dict)
 REQUIRE_AUTH = web.AppKey("require_auth", bool)
 TG_INTERNAL = web.AppKey("tg_internal", dict)   # ffmpeg용 내부 주소 토큰 -> (소스id, 채널, 메시지, 만료)
 TRANSCODES = web.AppKey("transcodes", dict)     # 사용자명 -> 돌고 있는 ffmpeg 프로세스
+PLEX_FILES = web.AppKey("plex_files", dict)  # 캐시 키 -> (크기, Content-Type) - Plex 원본 파일
 PROBES = web.AppKey("probes", dict)  # (소스id, 채널, 메시지) -> 돌고 있는 ffprobe (같은 영상을 겹쳐 보지 않게)  # 소스 id -> telegram_src.TelegramSource (연결을 계속 유지)
 
 
@@ -202,10 +203,14 @@ async def put_config(request):
     except ValueError as e:
         return _json_error(400, str(e))
     old_ids = {s["id"] for s in config_store.load().get("sources", []) if s.get("type") == "telegram"}
+    old_plex = {s["id"] for s in config_store.load().get("sources", []) if s.get("type") == "plex"}
     config_store.save(cfg)
     request.app[CHANNEL_CACHE].clear()
     request.app[EPG_CACHE].clear()
-    # 지운 텔레그램 소스는 로그아웃(텔레그램의 "활성 세션"에서도 빠지게)하고 색인도 지운다
+    # 지운 Plex 소스의 동영상 캐시는 지운다
+    for sid in old_plex - {s["id"] for s in cfg["sources"] if s.get("type") == "plex"}:
+        await asyncio.to_thread(media_cache.STORE.drop_prefix, f"plex:{sid}:")
+    # 지운 텔레그램 소스는 로그아웃(텔레그램의 "활성 세션"에서도 빠지게)하고 색인·캐시도 지운다
     new_ids = {s["id"] for s in cfg["sources"] if s.get("type") == "telegram"}
     for sid in old_ids - new_ids:
         tg = request.app[TELEGRAM].pop(sid, None) or telegram_src.TelegramSource({"id": sid})
@@ -363,6 +368,10 @@ async def plex_proxy(request):
     allowed = auth.allowed_libraries(request.get("user"), src["id"])
     if allowed is not None:
         return await _plex_restricted(request, cfg, src, allowed)
+    if _RE_PLEX_PART_FILE.match("/" + request.match_info["tail"]):
+        cached = await _plex_part_cached(request, cfg, src)
+        if cached is not None:
+            return cached
     upstream = await _plex_upstream(request, cfg, src)
     if isinstance(upstream, web.Response):
         return upstream
@@ -370,6 +379,57 @@ async def plex_proxy(request):
         return await _pipe_response(request, upstream)
     finally:
         upstream.release()
+
+
+_RE_PLEX_PART_FILE = re.compile(r"^/library/parts/\d+/\d+/[^/]+$")
+
+
+def _plex_tail(request, src):
+    raw_path = request.rel_url.raw_path
+    prefix = f"/api/plex/{src['id']}/"
+    return raw_path[len(prefix):] if raw_path.startswith(prefix) else request.match_info["tail"]
+
+
+async def _plex_part_cached(request, cfg, src):
+    """Plex 원본 파일(/library/parts/{id}/{시각}/파일)을 조각 캐시와 미리 받기를 거쳐 보낸다.
+    경로의 {시각}은 파일이 바뀌면 달라지므로 그대로 캐시 키로 쓴다. Range를 못 하는 서버면 None (그냥 중계)."""
+    if request.method not in ("GET", "HEAD") or not media_cache.STORE.enabled:
+        return None
+    tail = _plex_tail(request, src)
+    url = f"{src['url']}/{tail}"
+    headers = plex_headers(cfg, src.get("token"))
+    ssl = None if src.get("verify_ssl", True) else False
+    http = request.app[HTTP]
+    key = f"plex:{src['id']}:{tail.split('?')[0]}"
+    info = request.app[PLEX_FILES].get(key)
+    if info is None:
+        try:
+            async with http.get(URL(url, encoded=True), headers={**headers, "Range": "bytes=0-0"}, ssl=ssl,
+                                timeout=ClientTimeout(total=20)) as r:
+                m = re.match(r"bytes \d+-\d+/(\d+)", r.headers.get("Content-Range", ""))
+                if r.status != 206 or not m:
+                    return None
+                info = (int(m.group(1)), r.headers.get("Content-Type") or "application/octet-stream")
+        except Exception as e:
+            return _json_error(502, f"Plex 서버 연결 실패: {type(e).__name__}: {e}")
+        request.app[PLEX_FILES][key] = info
+    size, ctype = info
+
+    async def fetch(bi):
+        a = bi * media_cache.BLOCK
+        b = min(size, a + media_cache.BLOCK) - 1
+        async with http.get(URL(url, encoded=True), headers={**headers, "Range": f"bytes={a}-{b}"}, ssl=ssl,
+                            timeout=ClientTimeout(total=120, sock_connect=10)) as r:
+            if r.status != 206:
+                raise IOError(f"Plex 조각 요청 HTTP {r.status}")
+            data = await r.read()
+        if len(data) != b - a + 1:
+            raise IOError("Plex에서 조각을 다 받지 못했습니다.")
+        return data
+
+    st = media_cache.streamer(key, size, fetch, meta={"source": src["id"], "title": tail.rsplit("/", 1)[-1]},
+                              concurrency=4)
+    return await _range_response(request, size, ctype, st.iter_range, f"Plex 파일 {tail}")
 
 
 async def _plex_upstream(request, cfg, src, accept=None):
@@ -539,6 +599,10 @@ async def _plex_restricted(request, cfg, src, allowed):
     elif _RE_PLEX_PART.match(path):
         if cache.get((sid, "part", _RE_PLEX_PART.match(path).group(1))) not in allowed:
             return denied
+        if _RE_PLEX_PART_FILE.match(path):
+            cached = await _plex_part_cached(request, cfg, src)
+            if cached is not None:
+                return cached
     elif path in _PLEX_FILTER_PATHS:
         filtered = True
     elif path == "/photo/:/transcode":
@@ -808,14 +872,22 @@ async def _tg_range_response(request, tg, channel, msg):
     row = telegram_src.get_video(tg.sid, channel, msg)
     if not row or not row["size"]:
         return _json_error(404, "색인에 없는 영상입니다.")
+    await tg.authorized_client()  # 로그인 안 됐으면 응답을 시작하기 전에 JSON 오류로
     size = int(row["size"])
+    return await _range_response(
+        request, size, telegram_src.browser_mime(row["mime"]),
+        lambda start, length: tg.iter_cached(channel, msg, start, length, size, duration=row.get("duration") or 0),
+        f"telegram 스트림 {channel}/{msg}")
+
+
+async def _range_response(request, size, content_type, open_range, label):
+    """Range 요청 하나에 답한다. open_range(start, length)는 바이트 조각을 내는 async iterator."""
     try:
         start, end, partial = telegram_src.parse_range(request.headers.get("Range"), size)
     except ValueError:
         return web.Response(status=416, headers={"Content-Range": f"bytes */{size}", "Accept-Ranges": "bytes"})
-    await tg.authorized_client()  # 로그인 안 됐으면 응답을 시작하기 전에 JSON 오류로
     length = end - start + 1
-    headers = {"Content-Type": telegram_src.browser_mime(row["mime"]), "Accept-Ranges": "bytes",
+    headers = {"Content-Type": content_type, "Accept-Ranges": "bytes",
                "Content-Length": str(length), "Cache-Control": "no-store"}
     if partial:
         headers["Content-Range"] = f"bytes {start}-{end}/{size}"
@@ -824,12 +896,12 @@ async def _tg_range_response(request, tg, channel, msg):
     if request.method == "HEAD":
         return resp
     try:
-        async for chunk in tg.iter_cached(channel, msg, start, length, size):
+        async for chunk in open_range(start, length):
             await resp.write(chunk)
     except (ConnectionError, asyncio.CancelledError):
         pass  # 브라우저가 탐색하거나 닫으면 연결을 끊는다 - 정상
     except Exception as e:
-        log.warning("telegram 스트림 %s/%s 중단: %s", channel, msg, e)
+        log.warning("%s 중단: %s", label, e)
     return resp
 
 
@@ -1219,8 +1291,45 @@ async def admin_status(request):
         "data_dir": config_store.DATA_DIR, "users": len(users),
         "admins": sum(u["role"] == "admin" for u in users),
         "cryptg": telegram_src.fast_crypto(), "telethon": telegram_src.available(),
+        "cache": {**await asyncio.to_thread(media_cache.STORE.stats), "enabled": media_cache.STORE.enabled},
         "ffmpeg": transcode.available(), "transcoding": sum(p.returncode is None for p in request.app[TRANSCODES].values()),
     }, "sources": sources, "warnings": list(reversed(RECENT.items))})
+
+
+@admin_only
+async def admin_cache_get(request):
+    cfg = config_store.load()
+    return web.json_response({"success": True, "settings": media_cache.clean_settings(cfg.get("cache")),
+                              "stats": await asyncio.to_thread(media_cache.STORE.stats)})
+
+
+@admin_only
+async def admin_cache_put(request):
+    body = await _json_body(request)
+    settings = media_cache.clean_settings(body)
+    if settings["dir"]:
+        try:
+            os.makedirs(settings["dir"], exist_ok=True)
+            probe_file = os.path.join(settings["dir"], ".write-test")
+            with open(probe_file, "w") as f:
+                f.write("ok")
+            os.remove(probe_file)
+        except OSError as e:
+            return _json_error(400, f"캐시 폴더에 쓸 수 없습니다: {e}")
+    cfg = config_store.load()
+    cfg["cache"] = settings
+    config_store.save(cfg)
+    media_cache.STORE.configure(settings)
+    return web.json_response({"success": True, "settings": settings,
+                              "stats": await asyncio.to_thread(media_cache.STORE.stats)})
+
+
+@admin_only
+async def admin_cache_clear(request):
+    await asyncio.to_thread(media_cache.STORE.clear)
+    request.app[PLEX_FILES].clear()
+    log.warning("관리자 %s가 동영상 캐시를 비웠습니다", username(request))
+    return web.json_response({"success": True, "stats": await asyncio.to_thread(media_cache.STORE.stats)})
 
 
 BACKUP_FORMAT = "ym_player-backup"
@@ -1247,11 +1356,14 @@ async def admin_restore(request):
                                            raw_cfg.get("sources") or [])
         if not cfg["client_id"]:
             cfg["client_id"] = config_store.load()["client_id"]
+        if "cache" in raw_cfg:
+            cfg["cache"] = media_cache.clean_settings(raw_cfg.get("cache"))
         users = auth.clean_backup_users(body.get("users"))
     except (ValueError, auth.AuthError) as e:
         return _json_error(400, f"백업 내용이 올바르지 않습니다: {e}")
     old_tg = {s["id"] for s in config_store.load().get("sources", []) if s.get("type") == "telegram"}
     config_store.save(cfg)
+    media_cache.STORE.configure(cfg.get("cache"))
     auth.save_users(users)
     prefs.replace_all(body.get("prefs") if isinstance(body.get("prefs"), dict) else {})
     request.app[CHANNEL_CACHE].clear()
@@ -1277,6 +1389,7 @@ async def index(request):
 
 async def _on_startup(app):
     app[HTTP] = ClientSession(auto_decompress=True)
+    media_cache.STORE.configure(config_store.load().get("cache"))
     if app[REQUIRE_AUTH]:
         made = auth.bootstrap_from_env()
         if made:
@@ -1311,6 +1424,7 @@ def create_app(require_auth=True):
     app[TG_INTERNAL] = {}
     app[TRANSCODES] = {}
     app[PROBES] = {}
+    app[PLEX_FILES] = {}
     app.on_startup.append(_on_startup)
     app.on_cleanup.append(_on_cleanup)
 
@@ -1326,6 +1440,9 @@ def create_app(require_auth=True):
     app.router.add_put("/api/me/prefs", prefs_put)
     app.router.add_get("/api/admin/status", admin_status)
     app.router.add_get("/api/admin/backup", admin_backup)
+    app.router.add_get("/api/admin/cache", admin_cache_get)
+    app.router.add_put("/api/admin/cache", admin_cache_put)
+    app.router.add_delete("/api/admin/cache", admin_cache_clear)
     app.router.add_post("/api/admin/restore", admin_restore)
     app.router.add_get("/api/users", users_list)
     app.router.add_post("/api/users", users_create)

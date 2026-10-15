@@ -656,3 +656,9 @@ body.login-body { overflow: auto; min-height: 100vh; display: flex; align-items:
 .warn-time { color: var(--muted); white-space: nowrap; }
 .warn-msg { word-break: break-word; }
 .warn-row.error .warn-msg, .warn-row.critical .warn-msg { color: #f85149; }
+.cache-card { margin-bottom: 1rem; display: flex; flex-direction: column; align-items: flex-start; gap: 0.6rem; }
+.cache-card .pane-title { margin-top: 0; }
+.cache-card .field, .cache-card .row-2 { align-self: stretch; }
+.cache-card p { margin: 0; }
+.cache-bar { align-self: stretch; height: 8px; border-radius: 999px; background: var(--bg-elev2); overflow: hidden; }
+.cache-bar div { height: 100%; background: var(--accent); }

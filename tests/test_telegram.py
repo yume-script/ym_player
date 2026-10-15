@@ -161,6 +161,8 @@ def env(monkeypatch, tmp_path):
         return fake
 
     monkeypatch.setattr(telegram_src.TelegramSource, "get_client", get_client)
+    from ym_player import media_cache
+    media_cache.STORE.configure(None)  # 이 테스트의 데이터 폴더 기준으로 (앞 테스트의 조각이 남지 않게)
     cfg = config_store.load()
     config_store.replace_sources(cfg, [{"id": "tg", "type": "telegram", "name": "텔레", "api_id": "1234",
                                         "api_hash": "SECRET", "phone": "+82 10-1234-5678",
@@ -455,7 +457,8 @@ def test_transcode_stream_end_to_end(env, tmp_path):
 
 
 def test_block_cache_serves_same_bytes_and_reuses_head_tail(env):
-    """512KB 경계로 받아 앞/뒤 조각은 기억 - 어떤 Range든 내용이 같고, 두 번째 요청은 텔레그램에 안 간다."""
+    """512KB 경계로 받아 디스크에 남김 - 어떤 Range든 내용이 같고, 두 번째부터는 텔레그램에 안 간다."""
+    from ym_player import media_cache
     size = telegram_src.STREAM_CHUNK * 10 + 1234
     data = bytes((i * 31) % 251 for i in range(size))
     doc = env.msgs[999].document
@@ -467,6 +470,7 @@ def test_block_cache_serves_same_bytes_and_reuses_head_tail(env):
         calls.append(offset)
         return orig(doc_, offset=offset, **kw)
     env.iter_download = counting
+    media_cache.STORE.configure({"ahead_min": 0})  # 미리 받기 없이 읽은 것만
 
     async def main():
         env.authorized = True
@@ -482,11 +486,60 @@ def test_block_cache_serves_same_bytes_and_reuses_head_tail(env):
         for start, length in [(0, 100), (B - 10, 30), (3, B * 2 + 5), (size - 700, 700), (B * 5 + 7, B * 2), (0, size)]:
             assert await read(start, length) == data[start:start + length], (start, length)
         assert all(off % B == 0 for off in calls)  # 경계에 맞춘 요청만
+        assert sorted(set(calls)) == [i * B for i in range(11)] and len(calls) == 11  # 조각마다 한 번씩만
         calls.clear()
-        assert await read(10, B * 2) == data[10:10 + B * 2]           # 앞쪽 - 기억해 둔 것
-        assert await read(size - 5000, 5000) == data[-5000:]          # 끝쪽(mp4 moov) - 기억해 둔 것
+        media_cache.STORE.ram.clear()  # 메모리를 비워도 디스크에서
+        assert await read(0, size) == data
         assert calls == []
-        assert len([k for k in tg._blocks]) == telegram_src.HEAD_BLOCKS + telegram_src.TAIL_BLOCKS
+        st = media_cache.STORE.stats()
+        assert st["bytes"] == size and st["files"] == 1
+
+    asyncio.run(main())
+
+
+def test_prefetch_ahead_and_eviction(env, tmp_path):
+    from ym_player import media_cache
+    B = media_cache.BLOCK
+    store = media_cache.STORE
+    store.configure({"dir": str(tmp_path / "c"), "max_gb": 0.5, "ahead_min": 1})
+    fetched = []
+
+    async def fetch(bi):
+        fetched.append(bi)
+        await asyncio.sleep(0.01)
+        return bytes([bi % 256]) * B
+
+    async def main():
+        st = media_cache.streamer("t:a", B * 40, fetch, bytes_per_sec=B * 10 / 60)  # 1분 = 10조각 -> 최소 8
+        out = b""
+        async for piece in st.iter_range(0, 10):
+            out += piece
+        assert out == b"\x00" * 10
+        n = st.ahead_blocks()
+        assert n == 11  # 1분 x 10조각/분, 올림
+        for _ in range(50):
+            await asyncio.sleep(0.02)
+            if len(fetched) >= n + 1:
+                break
+        await asyncio.sleep(0.05)
+        assert sorted(fetched) == list(range(n + 1))   # 읽은 0번 + 앞쪽 n개를 뒤에서, 더는 안 받음
+        # 탐색하면 그 위치에서 다시 앞쪽을 채운다
+        async for _ in st.iter_range(B * 30, 10):
+            pass
+        for _ in range(50):
+            await asyncio.sleep(0.02)
+            if 39 in fetched:
+                break
+        assert set(range(30, 40)) <= set(fetched)
+        # 용량이 넘치면 오래 안 본 영상부터 통째로 지운다
+        store.settings["max_gb"] = (B * 25) / 1024 ** 3
+        other = media_cache.streamer("t:b", B * 30, fetch)
+        store.settings["ahead_min"] = 0
+        async for _ in other.iter_range(0, B * 30):
+            pass
+        # 먼저 본 t:a는 지워지고, 지금 받는 t:b는 (그것만으로 한도를 넘어도) 남긴다
+        assert store.stats()["files"] == 1 and store.usage == B * 30
+        assert not store.has_cached_sync("t:a", 35) or ("t:a", 35) in store.ram
 
     asyncio.run(main())
 

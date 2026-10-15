@@ -115,6 +115,7 @@ ym_player/                       저장소 루트
     ├── subtitles.py             자막 SRT/SMI/ASS/VTT -> WebVTT 변환 (순수 함수)
     ├── telegram_src.py          텔레그램: Telethon 로그인/채널/색인(SQLite)/Range 스트림/썸네일/이어보기
     ├── transcode.py             ffprobe로 보낼 방법 정하기 + ffmpeg 명령 (서버 변환)
+    ├── media_cache.py           동영상 조각 캐시(디스크/메모리) + 앞쪽 미리 받기
     └── web/
         ├── index.html
         ├── css/app.css          Plex 다크 테마
@@ -142,6 +143,7 @@ ym_player/                       저장소 루트
 | `GET/POST /api/users`, `PUT/DELETE /api/users/{name}` | 사용자 관리 (관리자만). PUT에 `access`(볼 수 있는 소스/라이브러리, `null`=전부) |
 | `GET/PUT /api/me/prefs` | 내 즐겨찾기 채널 |
 | `GET /api/admin/status` · `GET /api/admin/backup` · `POST /api/admin/restore` | 상태 점검, 백업 내려받기, 백업 복원 (관리자만) |
+| `GET/PUT/DELETE /api/admin/cache` | 동영상 캐시 설정·사용량 / 저장 / 비우기 (관리자만) |
 | `/api/tg/{id}/status · code · sign-in · logout` | 텔레그램 로그인 (코드 → 2단계 비밀번호) |
 | `GET /api/tg/{id}/channels · videos · video/{c}/{m} · home` | 채널 목록, 영상 목록(색인·과거 채우기), 영상 하나, 홈 줄 |
 | `GET /api/tg/{id}/stream/{c}/{m}` · `thumb/{c}/{m}` · `POST progress` | Range 스트림, 썸네일, 재생 위치 저장 (설정에서 고른 채널만) |
@@ -178,7 +180,7 @@ getPlayback(id|채널)  -> {url, kind: 'hls'|'ts'|'direct', live, proxyUrl?, sta
 - **재생**: 브라우저의 Range 요청을 텔레그램 파일의 해당 위치부터 그대로 받아 넘깁니다(탐색 가능, 서버에 파일을 저장하지 않음).
 - **서버 변환 (ffmpeg)**: 틀기 전에 서버가 `ffprobe`로 그릇·코덱을 보고 브라우저가 못 여는 것만 ffmpeg로 바꿔 보냅니다.
   형식 확인은 영상마다 한 번만 하고 `data/telegram.db`에 남기며, 상세 화면을 열거나 재생 버튼에 마우스를 올리면 미리 해 둡니다.
-  파일 앞 2MB·뒤 1MB는 메모리에 기억해서 형식 확인과 실제 재생이 같은 부분을 텔레그램에서 두 번 받지 않습니다. 재생 화면 아래 표시로 어느 쪽인지 보입니다.
+  받은 조각은 동영상 캐시(아래)에 남아서 형식 확인과 실제 재생이 같은 부분을 텔레그램에서 두 번 받지 않습니다. 재생 화면 아래 표시로 어느 쪽인지 보입니다.
 
   | 파일 | 보내는 방법 | 표시 | CPU |
   |---|---|---|---|
@@ -200,6 +202,20 @@ getPlayback(id|채널)  -> {url, kind: 'hls'|'ts'|'direct', live, proxyUrl?, sta
 - **`cryptg`**(requirements에 포함): 텔레그램 데이터 복호화를 C로 합니다. 없으면 순수 파이썬이라 2MB 복호화에
   약 300ms(약 7MB/s)가 걸리고 그동안 서버의 다른 요청까지 멈칫합니다. 있으면 약 20ms(약 90MB/s). 빠져 있으면 설정의
   텔레그램 카드와 서버 로그에 경고가 나옵니다. x86_64와 ARM 모두 미리 빌드된 패키지가 있어 따로 빌드할 필요 없습니다.
+
+## 동영상 캐시
+
+텔레그램 영상과 Plex **원본 재생** 파일(변환 없이 보는 파일)은 512KB 조각으로 나눠 받습니다 (`media_cache.py`).
+
+- **본 부분은 디스크에 남김**: 다시 보거나 이미 본 곳으로 탐색하면 텔레그램/Plex에 다시 가지 않습니다. 서버 변환(ffmpeg)과
+  형식 확인(ffprobe)도 같은 캐시를 읽습니다. 사용자끼리 같이 씁니다.
+- **앞쪽 미리 받기**: 재생 중에는 지금 위치보다 몇 분(기본 3분, 영상 비트레이트로 계산, 4~128MB) 앞까지 뒤에서 여러 조각을
+  동시에 받아 둡니다. 텔레그램은 요청마다 왕복 시간이 있어서 한 줄로 받을 때보다 빠르고 끊김이 줄어듭니다.
+  (텔레그램 계정당 동시 조각 요청 6개, Plex는 파일당 4개)
+- **용량**: 기본 20GB. 넘치면 가장 오래 안 본 영상부터 통째로 지웁니다. 위치는 기본 `data/cache/`.
+- 관리자 **설정 > 캐시**에서 켜고 끄기, 폴더, 최대 용량, 미리 받기 시간을 바꾸고 사용량을 보고 비울 수 있습니다.
+  캐시를 끄면 Plex는 예전처럼 그냥 중계하고, 텔레그램은 미리 받기만 메모리로 합니다.
+- Plex 변환(HLS) 재생과 IPTV 라이브는 캐시하지 않습니다. 소스를 지우면 그 소스의 캐시도 지웁니다.
 
 ## 재생 방식
 

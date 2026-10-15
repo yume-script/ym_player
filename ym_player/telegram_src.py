@@ -21,7 +21,7 @@ import sqlite3
 import time
 from collections import OrderedDict
 
-from . import config_store
+from . import config_store, media_cache
 
 log = logging.getLogger("ym_player.telegram")
 
@@ -31,12 +31,8 @@ SCAN_BATCH = 400          # 한 번에 훑는 메시지 수 (동영상이 아닌
 OLDER_BATCHES_PER_PAGE = 3
 MSG_CACHE_SIZE = 3000     # 훑으면서 받은 메시지 객체를 기억 -> 썸네일/재생 때 다시 요청하지 않음
 THUMB_CONCURRENCY = 4     # 썸네일 동시 다운로드 수 (텔레그램 요청 제한에 안 걸리게)
-THUMB_PREFETCH = 60
-# 파일 앞/뒤 몇 조각은 메모리에 기억한다. ffprobe(형식 확인), 브라우저의 첫 요청, mp4 끝의 moov 읽기가
-# 같은 부분을 되풀이해서 받으므로 두 번째부터는 텔레그램에 다시 가지 않는다.
-HEAD_BLOCKS = 4           # 앞쪽 2MB
-TAIL_BLOCKS = 2           # 뒤쪽 1MB
-BLOCK_CACHE_SIZE = 192    # 조각 수 (512KB씩, 최대 약 96MB)       # 새로 색인한 영상 중 미리 받아 둘 썸네일 수 (채널마다, 한 번 훑을 때)
+THUMB_PREFETCH = 60       # 새로 색인한 영상 중 미리 받아 둘 썸네일 수 (채널마다, 한 번 훑을 때)
+DOWNLOAD_CONCURRENCY = 6  # 텔레그램에 동시에 거는 파일 조각 요청 (재생 + 미리 받기, 모든 영상 합쳐서)
 
 
 def fast_crypto():
@@ -296,6 +292,7 @@ def index_counts(sid):
 
 def forget_source(sid):
     """소스를 지우면 그 색인/진행 기록도 지운다 (세션 파일은 TelegramSource.logout이)."""
+    media_cache.STORE.drop_prefix(f"tg:{sid}:")
     with db() as conn:
         for table in ("videos", "sync_state", "peers", "progress", "user_progress", "probes"):
             conn.execute(f"DELETE FROM {table} WHERE source=?", (sid,))
@@ -319,7 +316,7 @@ class TelegramSource:
         self._tasks = {}            # 뒤에서 도는 작업 (같은 일을 겹쳐 돌리지 않게 이름으로)
         self._thumb_sem = asyncio.Semaphore(THUMB_CONCURRENCY)
         self._thumb_inflight = {}
-        self._blocks = OrderedDict()  # (channel, msg, 조각번호) -> bytes
+        self._dl_sem = asyncio.Semaphore(DOWNLOAD_CONCURRENCY)  # 이 계정으로 동시에 받는 파일 조각 수
         if not fast_crypto():
             log.warning("cryptg가 없어 텔레그램 암호화를 순수 파이썬으로 처리합니다 (느림): pip install cryptg")
 
@@ -598,47 +595,27 @@ class TelegramSource:
                     raise
                 fresh = True
 
-    async def iter_cached(self, channel, msg, start, length, size):
-        """iter_range와 같지만 512KB 경계에 맞춰 받고, 파일 앞/뒤 조각은 기억해 두었다가 다시 쓴다.
-
-        경계에 맞춘 요청은 Telethon이 앞부분을 버리려고 더 받는 일도 없다.
-        """
-        end = start + length
-        pos = start
-        last_block = (size - 1) // STREAM_CHUNK
-        keep = lambda bi: bi < HEAD_BLOCKS or bi > last_block - TAIL_BLOCKS  # noqa: E731
-        while pos < end:
-            bi = pos // STREAM_CHUNK
-            hit = self._blocks.get((channel, msg, bi))
-            if hit is not None:
-                self._blocks.move_to_end((channel, msg, bi))
-                piece = hit[pos - bi * STREAM_CHUNK:end - bi * STREAM_CHUNK]
-                yield piece
-                pos += len(piece)
-                continue
-            # 여기부터 끝까지(또는 기억해 둔 다음 조각 전까지) 텔레그램에서 이어 받는다
-            stop = bi + 1
-            while stop * STREAM_CHUNK < end and (channel, msg, stop) not in self._blocks:
-                stop += 1
-            fetch_start = bi * STREAM_CHUNK
-            fetch_len = min(size, stop * STREAM_CHUNK) - fetch_start
-            buf, cur = b"", bi
-            async for chunk in self.iter_range(channel, msg, fetch_start, fetch_len):
+    async def iter_cached(self, channel, msg, start, length, size, duration=0):
+        """iter_range와 같지만 media_cache를 거친다: 512KB 조각으로 받아 디스크에 남기고(캐시를 켰으면),
+        재생 중에는 앞쪽 몇 분을 여러 조각씩 동시에 미리 받는다. 경계에 맞춘 요청이라 Telethon이 앞부분을
+        버리려고 더 받는 일도 없다."""
+        async def fetch(bi):
+            off = bi * media_cache.BLOCK
+            want = min(media_cache.BLOCK, size - off)
+            buf = bytearray()
+            async for chunk in self.iter_range(channel, msg, off, want):
                 buf += chunk
-                while len(buf) >= STREAM_CHUNK or (buf and cur * STREAM_CHUNK + len(buf) >= fetch_start + fetch_len):
-                    block, buf = buf[:STREAM_CHUNK], buf[STREAM_CHUNK:]
-                    if keep(cur):
-                        self._blocks[(channel, msg, cur)] = block
-                        while len(self._blocks) > BLOCK_CACHE_SIZE:
-                            self._blocks.popitem(last=False)
-                    lo = max(pos, cur * STREAM_CHUNK) - cur * STREAM_CHUNK
-                    piece = block[lo:end - cur * STREAM_CHUNK]
-                    if piece:
-                        yield piece
-                        pos += len(piece)
-                    cur += 1
-            if pos < min(end, size) and cur == bi:
-                raise TgError("텔레그램에서 파일을 받지 못했습니다.")
+            if len(buf) != want:
+                raise TgError("텔레그램에서 파일 조각을 다 받지 못했습니다.")
+            return bytes(buf)
+
+        # 크기까지 키에 넣는다 - 메시지를 고쳐 다른 파일로 바꾸면 다른 캐시
+        st = media_cache.streamer(f"tg:{self.sid}:{int(channel)}:{int(msg)}:{int(size)}", size, fetch,
+                                  meta={"source": self.sid, "title": f"{channel}/{msg}"},
+                                  bytes_per_sec=(size / duration) if duration else 0,
+                                  concurrency=3, limiter=self._dl_sem)
+        async for piece in st.iter_range(start, length):
+            yield piece
 
     def _thumb_path(self, channel, msg):
         return os.path.join(config_store.DATA_DIR, "telegram_thumbs", self.sid, f"{int(channel)}_{int(msg)}.jpg")
