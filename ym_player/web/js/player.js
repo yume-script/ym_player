@@ -66,6 +66,7 @@ class Player {
         this.mpegts = null;
         this.needsRecreate = false;
         this.minimized = false;
+        this.inPip = false; // 브라우저 "화면 속 화면" 창에서 재생 중
         this.lastReport = 0;
         this.uiTimer = null;
         this.osdTimer = null;
@@ -169,7 +170,8 @@ class Player {
 
         this.root = h('div', { class: 'player hidden' }, this.stage, this.top, this.bottom, this.drawer, this.subMenu, this.optMenu);
 
-        this.miniSlot = h('div', { class: 'mini-video', on: { click: () => this.expand() } });
+        this.miniSlot = h('div', { class: 'mini-video', on: { click: () => this.expand() } },
+            h('div', { class: 'mini-pip-note' }, icon('clone'), h('span', { text: '화면 속 화면에서 재생 중' })));
         this.miniTitle = h('b');
         this.miniSub = h('span');
         this.miniPlayBtn = btn('pause', '재생/일시정지', () => this.togglePlay());
@@ -199,6 +201,8 @@ class Player {
         v.addEventListener('volumechange', () => this._syncVolume());
         v.addEventListener('waiting', () => { if (this.pb && !this.msgEl.classList.contains('error')) this._spinner(true); });
         v.addEventListener('playing', () => this._spinner(false));
+        v.addEventListener('enterpictureinpicture', () => this._onPipEnter());
+        v.addEventListener('leavepictureinpicture', () => this._onPipLeave());
         return v;
     }
 
@@ -260,7 +264,7 @@ class Player {
         const token = ++this.token;
         this.lastReport = 0;
 
-        this.expand();
+        if (!this.inPip) this.expand(); // 화면 속 화면에서 채널을 바꾸면 그 창에서 그대로
         this.root.classList.toggle('is-live', !!pb.live);
         this.root.classList.toggle('is-audio', !!pb.audioOnly);
         this.liveBadge.classList.toggle('hidden', !pb.live);
@@ -386,6 +390,8 @@ class Player {
         try { this.video.pause(); } catch (e) { /* 이미 정지 */ }
         this.video.removeAttribute('src');
         this.video.load();
+        this.inPip = false;
+        this.mini.classList.remove('pip');
         if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
         if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
         this.pb = null;
@@ -399,13 +405,19 @@ class Player {
         if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
         this.minimized = true;
         this.toggleDrawer(false);
-        this.miniSlot.appendChild(this.video);
+        if (!this.inPip) this.miniSlot.appendChild(this.video);
         this.root.classList.add('hidden');
         this.mini.classList.remove('hidden');
         document.body.classList.remove('player-open');
     }
 
     expand() {
+        // 사용자가 크게 보기를 누르면 화면 속 화면을 닫고 이 창에서 (닫히면 _onPipLeave가 다시 부르지 않게 먼저 표시)
+        if (this.inPip) {
+            this.inPip = false;
+            this.mini.classList.remove('pip');
+            document.exitPictureInPicture().catch(() => {});
+        }
         this.minimized = false;
         if (this.video.parentNode !== this.stage) this.stage.prepend(this.video);
         this.mini.classList.add('hidden');
@@ -557,6 +569,8 @@ class Player {
                 });
                 // 첫 조각이 실제로 버퍼에 들어가야 성공 - 매니페스트만 읽히고 코덱이 안 맞는 경우를 걸러낸다
                 hls.on(Hls.Events.FRAG_BUFFERED, () => ok('HLS'));
+                // 화면 속 화면 중에 채널을 바꿨으면 새 채널도 화질을 고정 (_lockQuality 참고)
+                hls.on(Hls.Events.LEVEL_SWITCHED, () => { if (this.inPip && this.hls === hls) this._lockQuality(true); });
                 hls.on(Hls.Events.ERROR, (evt, data) => {
                     if (!data.fatal) return;
                     if (data.type === Hls.ErrorTypes.MEDIA_ERROR && !recovered && settled) {
@@ -690,6 +704,47 @@ class Player {
         } catch (e) { toast('이 브라우저는 화면 속 화면을 지원하지 않습니다.', 'error'); }
     }
 
+    /**
+     * 화면 속 화면으로 바뀌면: 큰 재생 화면은 접어서 아래 작은 막대(제목·재생/정지·크게 보기)만 남기고 홈으로 간다.
+     * <video>를 다른 곳으로 옮기면 브라우저가 화면 속 화면 창을 닫아 버려서, 영상은 제자리에 둔 채 화면만 숨긴다.
+     */
+    _onPipEnter() {
+        if (!this.pb) return;
+        this.inPip = true;
+        this._lockQuality(true);
+        if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+        this.minimize();
+        this.mini.classList.add('pip');
+        if (!location.hash.startsWith('#/home')) location.hash = '#/home';
+    }
+
+    /** 화면 속 화면 창을 닫았거나(일시정지됨) "탭으로 돌아가기"를 눌렀을 때 */
+    _onPipLeave() {
+        if (!this.inPip) return; // 크게 보기/재생 종료로 우리가 닫은 경우
+        this.inPip = false;
+        this._lockQuality(false);
+        this.mini.classList.remove('pip');
+        if (!this.pb) return;
+        if (this.video.paused) this.minimize(); // 창을 닫음 -> 작은 막대에서 이어서
+        else this.expand();                     // 탭으로 돌아가기 -> 큰 화면으로
+    }
+
+    /**
+     * 화면 속 화면 창은 영상 해상도가 바뀔 때마다 브라우저가 창 크기를 다시 맞춘다. IPTV(HLS 라이브)는 화질이
+     * 몇 초마다 자동으로 오르내려서, 사용자가 창 크기를 바꿔도 곧 되돌아가 크기를 못 바꾸는 것처럼 보였다.
+     * 화면 속 화면 동안은 지금 화질로 고정하고, 나오면 다시 자동으로.
+     */
+    _lockQuality(on) {
+        const hls = this.hls;
+        if (!hls || !hls.levels || hls.levels.length < 2) return;
+        if (on) {
+            const cur = hls.currentLevel >= 0 ? hls.currentLevel : hls.levels.length - 1;
+            if (hls.loadLevel !== cur || hls.autoLevelEnabled) hls.loadLevel = cur;
+        } else {
+            hls.loadLevel = -1;
+        }
+    }
+
     switchChannel(offset) {
         const pb = this.pb;
         if (!pb || !pb.live || !pb.playlist || !pb.playlist.length) return;
@@ -748,7 +803,7 @@ class Player {
         this.durEl.textContent = fmtClock(0);
         this.playedEl.style.width = '0';
         this.bufEl.style.width = '0';
-        this.expand();
+        if (!this.inPip) this.expand();
         this._showMsg('재생 준비 중...', { spinner: true });
     }
 
