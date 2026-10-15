@@ -127,3 +127,11 @@ export function modal(title, body, actions = []) {
     document.body.appendChild(wrap);
     return { el: wrap, close };
 }
+
+/**
+ * Safari(아이폰·아이패드·Mac Safari)인지. Safari는 Chrome보다 원본으로 여는 형식이 좁다:
+ * MP4 안의 MP3 소리는 처음 몇 초를 못 내고, WebM·VP9·AV1·Opus·FLAC은 기기와 버전마다 되다 안 되다 한다.
+ * 그래서 Safari에서는 H.264 + AAC(또는 소리 없음)만 원본으로 보내고 나머지는 서버 변환으로 연다.
+ */
+export const IS_SAFARI = typeof navigator !== 'undefined' && /safari/i.test(navigator.userAgent)
+    && !/chrome|crios|chromium|android|fxios|edg/i.test(navigator.userAgent);
