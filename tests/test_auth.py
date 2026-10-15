@@ -365,3 +365,57 @@ def test_backup_restore_and_status(data):
             await origin.close()
 
     run(flow)
+
+
+def test_branding_title_and_icon(data):
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+
+    async def flow(c, app):
+        # 로그인 전에도 이름/아이콘은 보인다 (로그인 화면이 씀)
+        b = await (await c.get("/api/branding")).json()
+        assert b["title"] == "Yume Player" and b["icon_url"] is None
+        assert "<title>로그인 · Yume Player</title>" in await (await c.get("/login")).text()
+        assert (await c.get("/brand/icon")).status == 404
+
+        await c.post("/api/auth/setup", json={"username": "admin", "password": "adminpw"})
+        r = await c.put("/api/admin/branding", json={"title": "우리집 <극장>"})
+        assert (await r.json())["title"] == "우리집 <극장>"
+        assert (await c.put("/api/admin/branding", json={"title": "x" * 41})).status == 400
+        page = await (await c.get("/")).text()
+        assert "<title>우리집 &lt;극장&gt;</title>" in page and '<span class="brand-name">우리집 &lt;극장&gt;</span>' in page
+        assert "__BRAND" not in page
+
+        assert (await c.put("/api/admin/branding/icon", data=b"<svg onload=alert(1)>")).status == 400
+        assert (await c.put("/api/admin/branding/icon", data=b"x" * (600 * 1024))).status == 400
+        r = await c.put("/api/admin/branding/icon", data=png)
+        icon = (await r.json())["icon_url"]
+        assert icon.startswith("/brand/icon?v=")
+        r = await c.get("/brand/icon")
+        assert r.status == 200 and r.content_type == "image/png" and await r.read() == png
+        page = await (await c.get("/")).text()
+        assert 'class="brand-mark has-img"' in page and f'<link rel="icon" href="{icon}">' in page
+
+        # 일반 사용자는 못 바꾼다
+        await c.post("/api/users", json={"username": "kim", "password": "kimpass"})
+        await c.post("/api/auth/logout")
+        c.session.cookie_jar.clear()
+        await c.post("/api/auth/login", json={"username": "kim", "password": "kimpass"})
+        assert (await c.put("/api/admin/branding", json={"title": "해킹"})).status == 403
+        assert (await c.delete("/api/admin/branding/icon")).status == 403
+        assert (await (await c.get("/api/branding")).json())["title"] == "우리집 <극장>"
+
+        # 백업에 이름과 아이콘이 들어가고, 복원하면 돌아온다
+        await c.post("/api/auth/logout")
+        c.session.cookie_jar.clear()
+        await c.post("/api/auth/login", json={"username": "admin", "password": "adminpw"})
+        backup = await (await c.get("/api/admin/backup")).json()
+        assert backup["brand_icon"] and backup["config"]["branding"]["title"] == "우리집 <극장>"
+        await c.delete("/api/admin/branding/icon")
+        await c.put("/api/admin/branding", json={"title": ""})
+        assert (await c.post("/api/admin/restore", json={**backup, "brand_icon": "!!"})).status == 400
+        assert (await c.post("/api/admin/restore", json=backup)).status == 200
+        b = await (await c.get("/api/branding")).json()
+        assert b["title"] == "우리집 <극장>" and b["icon_url"]
+        assert await (await c.get("/brand/icon")).read() == png
+
+    run(flow)

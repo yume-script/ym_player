@@ -12,7 +12,8 @@
 - /login, /api/auth/...   로그인 화면, 로그인/로그아웃/첫 관리자 만들기/비밀번호 변경
 - /api/users              사용자 관리 (관리자만)
 - /api/me/prefs           내 즐겨찾기 채널 등 사용자별 작은 설정 (prefs.py)
-- /api/admin/...          상태 점검, 백업 내려받기/복원, 동영상 캐시 설정/비우기 (관리자만)
+- /api/admin/...          상태 점검, 백업 내려받기/복원, 동영상 캐시 설정/비우기, 화면 이름/아이콘 (관리자만)
+- /api/branding, /brand/icon  화면 이름과 아이콘 (로그인 화면도 쓰므로 로그인 없이)
 - /api/config             소스 목록 조회/저장 (Plex 토큰은 브라우저로 안 내보냄)
 - /api/iptv/{id}/channels M3U를 받아 채널 목록 JSON으로
 - /api/iptv/{id}/epg      XMLTV(.gz 포함)를 받아 지금-3시간 ~ +24시간 편성표 JSON으로
@@ -24,7 +25,10 @@
 - /api/plex-auth/...      plex.tv PIN 로그인 (토큰/서버 목록 받아오기)
 """
 import asyncio
+import base64
+import binascii
 import collections
+import html
 import json
 import logging
 import re
@@ -93,7 +97,7 @@ def _json_error(status, message):
 
 
 # 로그인 없이 열리는 경로 (로그인 화면과 그 화면이 쓰는 것만)
-_PUBLIC_PATHS = {"/login", "/api/auth/state", "/api/auth/login", "/api/auth/setup"}
+_PUBLIC_PATHS = {"/login", "/api/auth/state", "/api/auth/login", "/api/auth/setup", "/api/branding", "/brand/icon"}
 
 
 @web.middleware
@@ -1108,7 +1112,7 @@ def _set_session(request, resp, user, remember):
 
 
 async def login_page(request):
-    return web.FileResponse(os.path.join(WEB_DIR, "login.html"), headers={"Cache-Control": "no-cache"})
+    return _render_page("login.html")
 
 
 async def auth_state(request):
@@ -1345,6 +1349,94 @@ async def admin_cache_clear(request):
     return web.json_response({"success": True, "stats": await asyncio.to_thread(media_cache.STORE.stats)})
 
 
+# ---- 화면 이름/아이콘 (관리자가 바꿈) --------------------------------------------
+# 이름은 config.json의 branding.title, 아이콘은 data/brand_icon.<확장자> (그림 파일만 - SVG는 스크립트를 품을 수 있어 받지 않음)
+DEFAULT_TITLE = PRODUCT
+BRAND_ICON_MAX = 512 * 1024
+_ICON_TYPES = {  # 파일 머리 -> (확장자, Content-Type)
+    b"\x89PNG\r\n\x1a\n": ("png", "image/png"),
+    b"\xff\xd8\xff": ("jpg", "image/jpeg"),
+    b"GIF87a": ("gif", "image/gif"),
+    b"GIF89a": ("gif", "image/gif"),
+    b"\x00\x00\x01\x00": ("ico", "image/x-icon"),
+}
+
+
+def _icon_kind(data):
+    for magic, kind in _ICON_TYPES.items():
+        if data.startswith(magic):
+            return kind
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ("webp", "image/webp")
+    return None
+
+
+def _brand_icon_path():
+    for ext, _ct in set(_ICON_TYPES.values()) | {("webp", "image/webp")}:
+        path = os.path.join(config_store.DATA_DIR, f"brand_icon.{ext}")
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def branding_info():
+    b = config_store.load().get("branding") or {}
+    icon = _brand_icon_path()
+    version = int(os.path.getmtime(icon)) if icon else 0
+    return {"title": b.get("title") or DEFAULT_TITLE, "icon_url": f"/brand/icon?v={version}" if icon else None}
+
+
+async def branding_get(request):
+    return web.json_response({"success": True, **branding_info()}, headers={"Cache-Control": "no-cache"})
+
+
+async def brand_icon(request):
+    path = _brand_icon_path()
+    if not path:
+        return web.Response(status=404)
+    ext = path.rsplit(".", 1)[1]
+    ctype = next(ct for e, ct in list(_ICON_TYPES.values()) + [("webp", "image/webp")] if e == ext)
+    return web.FileResponse(path, headers={"Content-Type": ctype, "Cache-Control": "public, max-age=86400",
+                                           "X-Content-Type-Options": "nosniff"})
+
+
+@admin_only
+async def branding_put(request):
+    body = await _json_body(request)
+    title = str(body.get("title") or "").strip()
+    if len(title) > 40:
+        return _json_error(400, "이름은 40자까지 쓸 수 있습니다.")
+    cfg = config_store.load()
+    cfg["branding"] = {"title": title}
+    config_store.save(cfg)
+    return web.json_response({"success": True, **branding_info()})
+
+
+@admin_only
+async def branding_icon_put(request):
+    data = await request.content.read(BRAND_ICON_MAX + 1)
+    if len(data) > BRAND_ICON_MAX:
+        return _json_error(400, "아이콘 파일은 512KB까지 올릴 수 있습니다.")
+    kind = _icon_kind(data)
+    if not kind:
+        return _json_error(400, "PNG, JPG, GIF, WebP, ICO 그림만 올릴 수 있습니다.")
+    old = _brand_icon_path()
+    if old:
+        os.remove(old)
+    os.makedirs(config_store.DATA_DIR, exist_ok=True)
+    with open(os.path.join(config_store.DATA_DIR, f"brand_icon.{kind[0]}"), "wb") as f:
+        f.write(data)
+    return web.json_response({"success": True, **branding_info()})
+
+
+@admin_only
+async def branding_icon_delete(request):
+    old = _brand_icon_path()
+    if old:
+        os.remove(old)
+    return web.json_response({"success": True, **branding_info()})
+
+
 BACKUP_FORMAT = "ym_player-backup"
 
 
@@ -1353,6 +1445,10 @@ async def admin_backup(request):
     """설정(토큰 포함) + 사용자(비밀번호 해시) + 사용자별 즐겨찾기. 텔레그램 로그인/색인은 안 들어감."""
     data = {"format": BACKUP_FORMAT, "version": 1, "created": int(time.time()),
             "config": config_store.load(), "users": auth.load_users(), "prefs": prefs.load_all()}
+    icon = _brand_icon_path()
+    if icon:
+        with open(icon, "rb") as f:
+            data["brand_icon"] = base64.b64encode(f.read()).decode()
     stamp = time.strftime("%Y%m%d-%H%M%S")
     return web.json_response(data, dumps=lambda o: json.dumps(o, ensure_ascii=False, indent=2), headers={
         "Content-Disposition": f'attachment; filename="ym_player-backup-{stamp}.json"', "Cache-Control": "no-store"})
@@ -1371,14 +1467,25 @@ async def admin_restore(request):
             cfg["client_id"] = config_store.load()["client_id"]
         if "cache" in raw_cfg:
             cfg["cache"] = media_cache.clean_settings(raw_cfg.get("cache"))
+        if isinstance(raw_cfg.get("branding"), dict):
+            cfg["branding"] = {"title": str(raw_cfg["branding"].get("title") or "")[:40]}
         users = auth.clean_backup_users(body.get("users"))
-    except (ValueError, auth.AuthError) as e:
+        icon = base64.b64decode(body["brand_icon"], validate=True) if body.get("brand_icon") else None
+        if icon is not None and (len(icon) > BRAND_ICON_MAX or not _icon_kind(icon)):
+            raise ValueError("아이콘 그림이 올바르지 않습니다.")
+    except (ValueError, auth.AuthError, binascii.Error) as e:
         return _json_error(400, f"백업 내용이 올바르지 않습니다: {e}")
     old_tg = {s["id"] for s in config_store.load().get("sources", []) if s.get("type") == "telegram"}
     config_store.save(cfg)
     media_cache.STORE.configure(cfg.get("cache"))
     auth.save_users(users)
     prefs.replace_all(body.get("prefs") if isinstance(body.get("prefs"), dict) else {})
+    old_icon = _brand_icon_path()
+    if old_icon:
+        os.remove(old_icon)
+    if icon is not None:
+        with open(os.path.join(config_store.DATA_DIR, f"brand_icon.{_icon_kind(icon)[0]}"), "wb") as f:
+            f.write(icon)
     request.app[CHANNEL_CACHE].clear()
     request.app[EPG_CACHE].clear()
     request.app[PLEX_SECTIONS].clear()
@@ -1396,8 +1503,28 @@ async def admin_restore(request):
 # 앱
 # ---------------------------------------------------------------------------
 async def index(request):
-    return web.FileResponse(os.path.join(WEB_DIR, "index.html"),
-                            headers={"Cache-Control": "no-cache"})
+    return _render_page("index.html")
+
+
+DEFAULT_FAVICON = ("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' "
+                   "height='32' rx='7' fill='%23e5a00d'/%3E%3Cpath d='M12 9l11 7-11 7z' fill='%23141517'/%3E%3C/svg%3E")
+
+
+def brand_mark_html(icon_url):
+    if icon_url:
+        return f'<span class="brand-mark has-img"><img src="{html.escape(icon_url)}" alt=""></span>'
+    return '<span class="brand-mark"><i class="fa-solid fa-play"></i></span>'
+
+
+def _render_page(name):
+    """index.html/login.html에 관리자가 정한 이름과 아이콘을 넣어서 (처음 그릴 때부터 바른 이름이 보이게)."""
+    with open(os.path.join(WEB_DIR, name), encoding="utf-8") as f:
+        page = f.read()
+    b = branding_info()
+    page = (page.replace("__BRAND_TITLE__", html.escape(b["title"]))
+                .replace("__BRAND_FAVICON__", html.escape(b["icon_url"] or DEFAULT_FAVICON))
+                .replace("__BRAND_MARK__", brand_mark_html(b["icon_url"])))
+    return web.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-cache"})
 
 
 async def _on_startup(app):
@@ -1451,6 +1578,11 @@ def create_app(require_auth=True):
     app.router.add_post("/api/auth/password", auth_password)
     app.router.add_get("/api/me/prefs", prefs_get)
     app.router.add_put("/api/me/prefs", prefs_put)
+    app.router.add_get("/api/branding", branding_get)
+    app.router.add_get("/brand/icon", brand_icon)
+    app.router.add_put("/api/admin/branding", branding_put)
+    app.router.add_put("/api/admin/branding/icon", branding_icon_put)
+    app.router.add_delete("/api/admin/branding/icon", branding_icon_delete)
     app.router.add_get("/api/admin/status", admin_status)
     app.router.add_get("/api/admin/backup", admin_backup)
     app.router.add_get("/api/admin/cache", admin_cache_get)
