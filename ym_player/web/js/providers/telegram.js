@@ -2,6 +2,8 @@
 // 설정에서 고른 채널 하나하나가 라이브러리처럼 보인다. 항목 id는 "채널id:메시지id".
 import { api, fmtDuration } from '../util.js';
 
+const TRANSCODE_NOTE = { remux: '서버 변환(포장만)', audio: '서버 변환(음성)', transcode: '서버 변환(H.264)' };
+
 function fmtSize(bytes) {
     if (!bytes) return '';
     const gb = bytes / 1024 ** 3;
@@ -81,9 +83,9 @@ export class TelegramProvider {
         return data.items.length ? [{ title: `영상 · ${this.name}`, items: data.items.map((v) => this.toItem(v)) }] : [];
     }
 
-    async _video(id) {
+    async _video(id, probe = false) {
         const [channel, msg] = String(id).split(':');
-        const data = await api(`${this.base}/video/${channel}/${msg}`);
+        const data = await api(`${this.base}/video/${channel}/${msg}${probe ? '?probe=1' : ''}`);
         return data.item;
     }
 
@@ -122,19 +124,25 @@ export class TelegramProvider {
         await api(`${this.base}/progress`, { method: 'POST', json: { channel, msg, position: 0, duration: 0, watched } });
     }
 
-    async getPlayback(id, { fromStart = false } = {}) {
-        const v = await this._video(id);
+    /**
+     * 서버가 ffprobe로 형식을 보고 정한 방법(v.play.mode)대로:
+     *   direct  -> 원본 파일 Range 스트림 (탐색도 브라우저가). 그래도 못 열면 fallback으로 서버 변환
+     *   그 밖   -> /transcode (ffmpeg가 만든 조각난 MP4). timeOffset초부터 시작하는 스트림이라
+     *              탐색하면 재생기가 reloadAt(초)으로 그 위치부터 새로 받는다
+     * opts.startAt  이 위치(초)부터 (탐색/다시 시도)
+     */
+    async getPlayback(id, { fromStart = false, startAt = null } = {}) {
+        const v = await this._video(id, true);
         const [channel, msg] = String(id).split(':');
+        const play = v.play || { mode: 'direct' };
         const resumable = v.position > 30 && (!v.duration || v.position < v.duration * 0.95);
+        const begin = startAt != null ? startAt : (!fromStart && resumable ? v.position : 0);
         const report = (position, duration) => fetch(`${this.base}/progress`, {
             method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ channel, msg, position, duration: duration || v.duration }),
         }).catch(() => {});
-        return {
-            url: `${this.base}/stream/${channel}/${msg}`,
-            kind: 'direct',
+        const common = {
             live: false,
-            startTime: !fromStart && resumable ? v.position : 0,
             title: v.title,
             subtitle: this.channelTitle(channel),
             poster: v.has_thumb ? `${this.base}/thumb/${channel}/${msg}` : '',
@@ -142,6 +150,24 @@ export class TelegramProvider {
             onProgress: (state, sec) => report(sec),
             onStop: (sec) => report(sec),
             getNext: null,
+        };
+        const converted = (at, mode) => ({
+            ...common,
+            url: `${this.base}/transcode/${channel}/${msg}?${new URLSearchParams({ start: Math.floor(at), mode })}`,
+            kind: 'direct',
+            startTime: 0,
+            timeOffset: Math.floor(at),
+            engineNote: TRANSCODE_NOTE[mode] || '서버 변환',
+            reloadAt: async (sec) => converted(sec, mode),
+        });
+        if (play.mode !== 'direct') return converted(begin, play.mode);
+        return {
+            ...common,
+            url: `${this.base}/stream/${channel}/${msg}`,
+            kind: 'direct',
+            startTime: begin,
+            // 형식을 몰랐거나(ffprobe 실패) 판단이 틀려 브라우저가 못 열면 다시 압축해서
+            fallback: play.available ? async (at) => converted(at || begin, 'transcode') : null,
         };
     }
 }

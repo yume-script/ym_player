@@ -15,6 +15,7 @@ python3 -m venv .venv                 # Ubuntu/Debian은 시스템 pip 설치를
 ```
 
 `python3 -m venv`가 안 되면 먼저 `sudo apt install python3-venv`.
+텔레그램의 mkv·HEVC·AC-3 영상까지 보려면 **ffmpeg**도 깔아 두세요: `sudo apt install ffmpeg` (없어도 나머지는 그대로 돕니다).
 테스트: `.venv/bin/pip install pytest && .venv/bin/python -m pytest -q`
 
 ### 서버가 켜질 때 자동 실행 (systemd)
@@ -113,6 +114,7 @@ ym_player/                       저장소 루트
     ├── prefs.py                 사용자별 작은 설정(prefs.json) - IPTV 즐겨찾기
     ├── subtitles.py             자막 SRT/SMI/ASS/VTT -> WebVTT 변환 (순수 함수)
     ├── telegram_src.py          텔레그램: Telethon 로그인/채널/색인(SQLite)/Range 스트림/썸네일/이어보기
+    ├── transcode.py             ffprobe로 보낼 방법 정하기 + ffmpeg 명령 (서버 변환)
     └── web/
         ├── index.html
         ├── css/app.css          Plex 다크 테마
@@ -143,6 +145,7 @@ ym_player/                       저장소 루트
 | `/api/tg/{id}/status · code · sign-in · logout` | 텔레그램 로그인 (코드 → 2단계 비밀번호) |
 | `GET /api/tg/{id}/channels · videos · video/{c}/{m} · home` | 채널 목록, 영상 목록(색인·과거 채우기), 영상 하나, 홈 줄 |
 | `GET /api/tg/{id}/stream/{c}/{m}` · `thumb/{c}/{m}` · `POST progress` | Range 스트림, 썸네일, 재생 위치 저장 (설정에서 고른 채널만) |
+| `GET /api/tg/{id}/video/{c}/{m}?probe=1` · `GET /api/tg/{id}/transcode/{c}/{m}?start=초&mode=` | 재생 방법 판단(ffprobe), ffmpeg 서버 변환 스트림 (조각난 MP4) |
 | `GET /api/plex-sub/{id}?path=/library/streams/N&codec=` | Plex 외부 자막 파일을 받아 WebVTT로 바꿔 줌 (자막 스트림 경로만 허용) |
 | `* /api/plex/{id}/...` | Plex API·이미지·스트림 중계. **토큰은 서버가 붙임** (브라우저에 안 보임). 라이브러리 제한이 있는 사용자는 정해 둔 경로만, 허락된 섹션 항목만 |
 | `POST /api/plex-auth/pin`, `GET /api/plex-auth/pin/{id}` | plex.tv PIN 로그인 |
@@ -173,7 +176,20 @@ getPlayback(id|채널)  -> {url, kind: 'hls'|'ts'|'direct', live, proxyUrl?, sta
   메시지를 400개씩 훑는데, 다음 페이지 몫은 미리 뒤에서 훑어 둡니다. 홈 줄은 채널들을 동시에 불러옵니다. 그래서 오래된
   영상이 많은 채널은 처음엔 개수가 "N개+"로 보이다가 내릴수록 늘어납니다. 제목은 캡션 첫 줄 → 파일명 순.
 - **재생**: 브라우저의 Range 요청을 텔레그램 파일의 해당 위치부터 그대로 받아 넘깁니다(탐색 가능, 서버에 파일을 저장하지 않음).
-  mp4(H.264/AAC)는 거의 다 나오고, mkv는 브라우저가 읽을 수 있는 코덱일 때만 나옵니다(변환은 하지 않음).
+- **서버 변환 (ffmpeg)**: 틀기 전에 서버가 `ffprobe`로 그릇·코덱을 보고(영상마다 한 번, 기억해 둠) 브라우저가 못 여는 것만
+  ffmpeg로 바꿔 보냅니다. 재생 화면 아래 표시로 어느 쪽인지 보입니다.
+
+  | 파일 | 보내는 방법 | 표시 | CPU |
+  |---|---|---|---|
+  | mp4 + H.264/AAC, WebM(VP9/Opus) | 원본 그대로 | `DIRECT` | 없음 |
+  | mkv·avi·ts 안의 H.264 + AAC/MP3 | 다시 압축하지 않고 mp4로 포장만 | `서버 변환(포장만)` | 거의 없음 |
+  | H.264 + AC-3/E-AC-3/DTS/FLAC 음성 | 영상은 그대로, 음성만 AAC로 | `서버 변환(음성)` | 적음 |
+  | HEVC(H.265), 10비트, MPEG-4/XviD 등 | H.264로 다시 압축 (1080p까지) | `서버 변환(H.264)` | 많음 |
+
+  변환은 파일을 저장하지 않고 조각난 MP4로 바로 흘려보냅니다. 그래서 변환 중인 영상에서 아직 안 받은 곳으로 탐색하면
+  그 위치부터 새로 변환합니다(1~2초 걸림). 한 사람이 보는 변환은 하나뿐이라 탐색하면 이전 변환은 끄고, 서버 전체로는
+  동시에 3개까지(`MP_MAX_TRANSCODES`). 형식을 알아내지 못한 영상이 원본으로 안 나오면 자동으로 H.264 변환으로 다시 엽니다.
+  ffmpeg가 없으면 예전처럼 원본만 보냅니다(설정 > 상태에 표시). 다른 위치의 ffmpeg는 `MP_FFMPEG` / `MP_FFPROBE`로 지정.
 - **썸네일**: 메시지의 작은 미리보기를 처음 한 번 받아 `data/telegram_thumbs/`에 저장합니다. 목록을 훑을 때 받은 메시지를
   기억해 두었다가 다시 요청하지 않고, 새로 색인한 영상의 썸네일은 화면이 달라기 전에 뒤에서 미리 받습니다(동시에 4개까지).
 - **이어보기**: 텔레그램엔 시청 기록이 없어서 재생 위치를 이 서버 DB에 저장합니다. 30초 넘게 보다 만 영상이 홈 "이어보기"에 나오고,

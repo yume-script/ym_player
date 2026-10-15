@@ -208,7 +208,7 @@ class Player {
         this.seekBar.addEventListener('pointerup', (e) => {
             if (!this.dragging) return;
             this.dragging = false;
-            this.video.currentTime = ratioAt(e) * this._duration();
+            this.seekTo(ratioAt(e) * this._duration());
         });
 
         document.addEventListener('keydown', (e) => this._onKey(e));
@@ -276,6 +276,16 @@ class Player {
             if (token !== this.token) return;
             if (viaProxyOnly) return this._failed(e1);
             if (token !== this.token) return;
+            if (!pb.proxyUrl && pb.fallback) {
+                console.warn('[Player] 원본 재생 실패, 서버 변환으로 다시 시도:', e1.message);
+                this._showMsg('브라우저가 못 여는 형식이라 서버 변환으로 다시 여는 중...', { spinner: true });
+                try {
+                    const next = await pb.fallback(pb.startTime || 0);
+                    if (token !== this.token) return;
+                    if (next) return this.start(next, null, { auto: true });
+                } catch (e3) { console.warn('[Player] 서버 변환 실패:', e3.message); }
+                if (token !== this.token) return;
+            }
             if (!pb.proxyUrl) return this._failed(e1);
             console.warn('[Player] 직접 재생 실패, 서버 중계로 다시 시도:', e1.message);
             this._showMsg('서버 중계로 다시 연결하는 중...', { spinner: true });
@@ -288,7 +298,7 @@ class Player {
             }
         }
         if (token !== this.token) return;
-        this.engineEl.textContent = label;
+        this.engineEl.textContent = pb.engineNote || label;
         this.playingSince = this.video.currentTime || 0;
         this._hideMsg();
         if (pb.channel) channelHealth.set(pb.channel.id, 'online');
@@ -297,8 +307,50 @@ class Player {
 
     retry() {
         if (!this.pb) return;
+        if (this.pb.reloadAt) return this._reloadAt(this.pb, this._pos());
         if (!this.pb.live) this.pb.startTime = this.video.currentTime || this.pb.startTime || 0;
         this.start(this.pb);
+    }
+
+    /**
+     * 지금 재생 위치(초). 서버 변환 스트림은 요청한 위치(timeOffset)부터 시작해서 <video>의 0초가
+     * 실제로는 timeOffset초다. 그 밖에는 video.currentTime 그대로.
+     */
+    _pos() {
+        const pb = this.pb;
+        return ((pb && pb.timeOffset) || 0) + (this.video.currentTime || 0);
+    }
+
+    /** 서버 변환 스트림을 sec초부터 다시 받는다 (탐색, 다시 시도). */
+    async _reloadAt(pb, sec, opts = {}) {
+        const token = this.token;
+        this._showMsg('그 위치부터 다시 불러오는 중...', { spinner: true });
+        try {
+            const next = await pb.reloadAt(Math.max(0, sec));
+            if (this.pb !== pb || this.token !== token) return;
+            await this.start(next, null, { auto: true, ...opts });
+        } catch (e) {
+            if (this.pb === pb) this._showMsg(`다시 불러오지 못했습니다: ${e.message}`, { error: true });
+        }
+    }
+
+    /** sec초로 이동. 서버 변환 스트림은 이미 받아 둔 범위 밖이면 그 위치부터 다시 받는다 */
+    seekTo(sec) {
+        const pb = this.pb;
+        if (!pb || pb.live) return;
+        const d = this._duration();
+        sec = Math.max(0, d ? Math.min(d - 1, sec) : sec);
+        if (!pb.reloadAt) { this.video.currentTime = sec; return; }
+        const v = this.video;
+        const local = sec - (pb.timeOffset || 0);
+        const bufEnd = v.buffered.length ? v.buffered.end(v.buffered.length - 1) : 0;
+        if (local >= 0 && local <= bufEnd) { v.currentTime = local; return; }
+        // 연타(→ 여러 번)는 마지막 위치로 한 번만
+        clearTimeout(this._seekTimer);
+        this._pendingSeek = sec;
+        this.curEl.textContent = fmtClock(sec);
+        if (d) this.playedEl.style.width = `${(sec / d) * 100}%`;
+        this._seekTimer = setTimeout(() => { this._pendingSeek = null; this._reloadAt(pb, sec, { auto: false }); }, 400);
     }
 
     stop() {
@@ -339,7 +391,7 @@ class Player {
     _finishCurrent() {
         const pb = this.pb;
         if (pb && pb.onStop) {
-            try { pb.onStop(this.video.currentTime || 0); } catch (e) { /* 알림 실패는 무시 */ }
+            try { pb.onStop(this._pos()); } catch (e) { /* 알림 실패는 무시 */ }
         }
     }
 
@@ -464,6 +516,14 @@ class Player {
         this._destroyEngines(true);
         this.needsRecreate = true;
         if (!pb) return;
+        if (pb.reloadAt) {
+            // 서버 변환 스트림: 보던 위치부터 새로 받는다 (몇 번까지)
+            if (this.recoverCount >= AUTO_RECOVER_MAX) { this._showMsg('재생이 끊겼습니다. 서버 변환이 멈췄습니다.', { error: true }); return; }
+            this.recoverCount += 1;
+            const at = this._pos();
+            setTimeout(() => { if (this.pb === pb) this._reloadAt(pb, at); }, 800 * this.recoverCount);
+            return;
+        }
         if (!pb.live) pb.startTime = this.video.currentTime || pb.startTime || 0;
 
         const token = this.token;
@@ -527,8 +587,8 @@ class Player {
 
     seekBy(sec) {
         if (!this.pb || this.pb.live) return;
-        const v = this.video;
-        v.currentTime = Math.max(0, Math.min(this._duration() || Infinity, v.currentTime + sec));
+        const base = this._pendingSeek != null ? this._pendingSeek : this._pos();
+        this.seekTo(base + sec);
         this._wakeUi();
     }
 
@@ -587,6 +647,8 @@ class Player {
     // 화면 갱신
     // ------------------------------------------------------------------
     _duration() {
+        // 서버 변환 스트림은 <video>가 아는 길이가 일부뿐이라 원래 길이를 쓴다
+        if (this.pb && this.pb.timeOffset !== undefined && this.pb.durationHint) return this.pb.durationHint;
         const d = this.video.duration;
         if (isFinite(d) && d > 0) return d;
         return (this.pb && this.pb.durationHint) || 0;
@@ -596,15 +658,16 @@ class Player {
         const v = this.video;
         if (!this.pb) return;
         if (this.recoverCount && v.currentTime - (this.playingSince || 0) > AUTO_RECOVER_RESET_SEC) this.recoverCount = 0;
-        if (!this.dragging) {
+        const pos = this._pos();
+        if (!this.dragging && this._pendingSeek == null) {
             const d = this._duration();
-            this.curEl.textContent = fmtClock(v.currentTime);
+            this.curEl.textContent = fmtClock(pos);
             this.durEl.textContent = fmtClock(d);
-            this.playedEl.style.width = d ? `${(v.currentTime / d) * 100}%` : '0';
+            this.playedEl.style.width = d ? `${(pos / d) * 100}%` : '0';
         }
-        if (this.pb.onProgress && !v.paused && Math.abs(v.currentTime - this.lastReport) >= PROGRESS_EVERY_SEC) {
-            this.lastReport = v.currentTime;
-            this.pb.onProgress('playing', v.currentTime);
+        if (this.pb.onProgress && !v.paused && Math.abs(pos - this.lastReport) >= PROGRESS_EVERY_SEC) {
+            this.lastReport = pos;
+            this.pb.onProgress('playing', pos);
         }
     }
 
@@ -617,7 +680,8 @@ class Player {
     _renderBuffered() {
         const v = this.video, d = this._duration();
         if (!d || !v.buffered.length) return;
-        this.bufEl.style.width = `${(v.buffered.end(v.buffered.length - 1) / d) * 100}%`;
+        const off = (this.pb && this.pb.timeOffset) || 0;
+        this.bufEl.style.width = `${Math.min(100, ((off + v.buffered.end(v.buffered.length - 1)) / d) * 100)}%`;
     }
 
     async _onEnded() {
@@ -640,8 +704,8 @@ class Player {
         this.playBtn.firstChild.className = cls;
         this.miniPlayBtn.firstChild.className = cls;
         this.root.classList.toggle('paused', paused);
-        if (paused && this.pb && this.pb.onProgress && !this.pb.live && this.video.currentTime > 0) {
-            this.pb.onProgress('paused', this.video.currentTime);
+        if (paused && this.pb && this.pb.onProgress && !this.pb.live && this._pos() > 0) {
+            this.pb.onProgress('paused', this._pos());
         }
         this._wakeUi();
     }
@@ -760,7 +824,7 @@ class Player {
         const pb = this.pb;
         this.subMenu.classList.add('hidden');
         if (!pb || !pb.selectSubtitle || id === pb.activeSubtitle) return;
-        const at = this.video.currentTime || 0;
+        const at = this._pos();
         try {
             const res = await pb.selectSubtitle(id, at);
             if (this.pb !== pb) return; // 그 사이 다른 걸 틀었으면 무시
@@ -810,7 +874,7 @@ class Player {
         const pb = this.pb;
         this.optMenu.classList.add('hidden');
         if (!pb || !pb[method] || same) return;
-        const at = this.video.currentTime || 0;
+        const at = this._pos();
         try {
             const next = (await pb[method](value, at)).reload;
             if (this.pb !== pb) return;

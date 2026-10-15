@@ -133,7 +133,7 @@ class FakeClient:
         return self.msgs.get(ids)
 
     def iter_download(self, doc, offset=0, request_size=0, chunk_size=0, file_size=None):
-        data = bytes((i * 7) % 256 for i in range(doc.size))
+        data = getattr(doc, "data", None) or bytes((i * 7) % 256 for i in range(doc.size))
 
         async def gen():
             pos = offset
@@ -390,3 +390,65 @@ def test_status_reports_crypto_speedup(env):
         assert st["fast_crypto"] == telegram_src.fast_crypto()
 
     asyncio.run(main())
+
+
+# ----- 서버 변환 (ffmpeg) -----
+def _probe(fmt, *streams):
+    return {"format": {"format_name": fmt}, "streams": [dict(codec_type=t, codec_name=c, **kw) for t, c, kw in streams]}
+
+
+def test_transcode_decide():
+    from ym_player import transcode
+    mp4 = "mov,mp4,m4a,3gp,3g2,mj2"
+    d = transcode.decide
+    assert d(_probe(mp4, ("video", "h264", {"pix_fmt": "yuv420p"}), ("audio", "aac", {})))["mode"] == "direct"
+    assert d(_probe("matroska,webm", ("video", "vp9", {}), ("audio", "opus", {})))["mode"] == "direct"
+    assert d(_probe("matroska,webm", ("video", "h264", {"pix_fmt": "yuv420p"}), ("audio", "aac", {})))["mode"] == "remux"
+    assert d(_probe("avi", ("video", "h264", {"pix_fmt": "yuv420p"}), ("audio", "mp3", {})))["mode"] == "remux"
+    assert d(_probe("matroska,webm", ("video", "h264", {"pix_fmt": "yuv420p"}), ("audio", "ac3", {})))["mode"] == "audio"
+    assert d(_probe(mp4, ("video", "h264", {"pix_fmt": "yuv420p"}), ("audio", "eac3", {})))["mode"] == "audio"
+    assert d(_probe(mp4, ("video", "hevc", {"pix_fmt": "yuv420p10le"}), ("audio", "aac", {})))["mode"] == "transcode"
+    assert d(_probe(mp4, ("video", "h264", {"pix_fmt": "yuv420p10le"}), ("audio", "aac", {})))["mode"] == "transcode"
+    assert d(_probe("matroska,webm", ("video", "mpeg4", {}), ("audio", "dts", {})))["mode"] == "transcode"
+    args = transcode.build_args("http://x/y", "audio", 12.5)
+    assert args[args.index("-ss") + 1] == "12.500" and args.index("-ss") < args.index("-i")
+    assert args[args.index("-c:v") + 1] == "copy" and args[args.index("-c:a") + 1] == "aac"
+    assert "-ss" not in transcode.build_args("http://x/y", "remux", 0)
+    with pytest.raises(ValueError):
+        transcode.build_args("http://x/y", "direct")
+
+
+def test_transcode_stream_end_to_end(env, tmp_path):
+    import shutil
+    import subprocess
+
+    from ym_player import transcode
+    if not transcode.available():
+        pytest.skip("ffmpeg 없음")
+    src = tmp_path / "in.mkv"
+    subprocess.run([shutil.which("ffmpeg"), "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25",
+                    "-f", "lavfi", "-i", "sine=frequency=440", "-t", "6", "-c:v", "libx264", "-preset", "ultrafast",
+                    "-pix_fmt", "yuv420p", "-g", "25", "-c:a", "ac3", str(src)], check=True)
+    data = src.read_bytes()
+    doc = env.msgs[999].document
+    doc.size, doc.data, doc.mime_type = len(data), data, "video/x-matroska"
+
+    async def flow(c):
+        env.authorized = True
+        await c.get("/api/tg/tg/videos?channel=777&limit=5")  # 색인 (크기는 위에서 바꾼 값)
+        item = (await (await c.get("/api/tg/tg/video/777/999?probe=1")).json())["item"]
+        assert item["play"]["mode"] == "audio" and item["play"]["audio"] == "ac3"
+        r = await c.get("/api/tg/tg/transcode/777/999", params={"start": "2", "mode": item["play"]["mode"]})
+        body = await r.read()
+        assert r.status == 200 and r.headers["Content-Type"] == "video/mp4" and body[4:8] == b"ftyp"
+        out = tmp_path / "out.mp4"
+        out.write_bytes(body)
+        info = await transcode.probe(str(out))
+        assert {s["codec_name"] for s in info["streams"]} == {"h264", "aac"}
+        assert float(info["format"]["duration"]) < 5.5  # 2초부터
+        # 내부 주소 토큰은 변환이 끝나면 지워진다
+        from ym_player import server
+        assert c.server.app[server.TG_INTERNAL] == {}
+        assert (await c.get("/internal/tg/nope")).status == 404
+
+    run(flow)
