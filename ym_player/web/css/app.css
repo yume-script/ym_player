@@ -804,3 +804,17 @@ body.viewer-open { overflow: hidden; }
     font-size: 0.85rem; color: #ececec; }
 .lp-range { width: 140px; accent-color: var(--accent); }
 .lp-val { min-width: 2.6rem; text-align: right; font-variant-numeric: tabular-nums; color: #c9cdd2; }
+
+/* 설정 > Thanks to */
+.thanks-card { margin-bottom: 1rem; }
+.thanks-card .pane-title { margin-top: 0; }
+.thanks-list { list-style: none; margin: 0.6rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.75rem; }
+.thanks-name { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; }
+.thanks-name a { color: var(--accent); font-weight: 600; }
+.thanks-name a:hover { text-decoration: underline; }
+.thanks-url { font-size: 0.78rem; color: var(--muted); word-break: break-all; }
+.thanks-note { margin: 0.15rem 0 0; color: var(--text-soft); font-size: 0.88rem; line-height: 1.5; max-width: 70ch; }
+.changelog-day h4 { margin: 1rem 0 0.4rem; font-size: 0.85rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.changelog { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.35rem; }
+.changelog li { display: flex; gap: 0.7rem; align-items: baseline; font-size: 0.9rem; line-height: 1.5; }
+.changelog-pr { flex: 0 0 2.6rem; color: var(--accent); font-variant-numeric: tabular-nums; font-size: 0.82rem; }
