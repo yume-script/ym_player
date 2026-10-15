@@ -4,6 +4,7 @@
 로그인(코드 -> 2단계 비밀번호) / 채널 / 색인(오래된 쪽 채우기) / 스트림 Range / 썸네일 / 이어보기를 확인한다.
 """
 import asyncio
+import base64
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -613,3 +614,47 @@ def test_user_channel_access(env):
             await client.close()
 
     asyncio.run(main())
+
+
+def test_fix_text_repairs_broken_titles():
+    import unicodedata
+    t = "영화 제목 1080p"
+    b = t.encode("utf-8")
+    browser_cp1252 = "".join(bytes([x]).decode("cp1252", "ignore") or chr(x) for x in b)
+    for broken in (b.decode("latin-1"), browser_cp1252, t.encode("cp949").decode("latin-1"),
+                   "%EC%98%81%ED%99%94%20%EC%A0%9C%EB%AA%A9%201080p", unicodedata.normalize("NFD", t)):
+        assert telegram_src.fix_text(broken) == t, repr(broken)
+    # 메일 머리글 방식 (RFC 2047) - 제대로 된 모양, ?가 공백으로 바뀐 모양, 여러 조각, 잘린 것
+    name = "개와 늑대의 시간 2.E38.261014.1080p"
+    b64 = base64.b64encode(name.encode()).decode()
+    assert telegram_src.fix_text(f"=?utf-8?B?{b64}?=.mkv") == name + ".mkv"
+    assert telegram_src.fix_text(f"= utf-8 B {b64} =") == name
+    assert telegram_src.fix_text(f"= utf-8 B {b64}") == name
+    half = base64.b64encode("개와 늑대의 ".encode()).decode(), base64.b64encode("시간".encode()).decode()
+    assert telegram_src.fix_text(f"=?UTF-8?B?{half[0]}?= =?UTF-8?B?{half[1]}?=") == "개와 늑대의 시간"
+    assert telegram_src.fix_text(f"=?euc-kr?B?{base64.b64encode('영화'.encode('cp949')).decode()}?=") == "영화"
+    assert telegram_src.fix_text("=?utf-8?Q?=EC=98=81=ED=99=94_1?=") == "영화 1"
+    assert telegram_src.fix_text("= utf-8 B 6rCc7JmAIOuKkeuMgOydm") == "개와 늑대"  # 잘려서 반쪽 난 끝 글자는 버림
+    for fine in ("Café Amélie (2001)", "🎬 영화 ✨", "100% 진짜 50% 할인", "“Hello” – it’s ok", ""):
+        assert telegram_src.fix_text(fine) == fine
+    assert telegram_src.fix_text("a = b = c") == "a = b = c"
+    # 색인할 때 파일명/캡션에 적용
+    v = telegram_src.message_to_video(video_msg(12, caption="", name=b.decode("latin-1") + ".mp4"))
+    assert v["title"] == t and v["file_name"] == t + ".mp4"
+
+
+def test_existing_index_titles_are_repaired_once(monkeypatch, tmp_path):
+    import sqlite3
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    broken = "영화".encode("utf-8").decode("latin-1")
+    conn = sqlite3.connect(str(tmp_path / "telegram.db"))
+    conn.executescript(telegram_src._SCHEMA)
+    conn.execute("INSERT INTO videos(source,channel,msg,title,caption,file_name,mime,duration,size,width,height,date,has_thumb)"
+                 " VALUES('tg',1,2,?,?,?,'video/mp4',1,1,1,1,'',0)", (broken, broken, broken + ".mkv"))
+    conn.commit()
+    conn.close()
+    telegram_src._migrated.discard(str(tmp_path))
+    row = telegram_src.get_video("tg", 1, 2)
+    assert row["title"] == "영화" and row["file_name"] == "영화.mkv"
+    with telegram_src.db() as c:
+        assert c.execute("PRAGMA user_version").fetchone()[0] == 2
