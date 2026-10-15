@@ -81,6 +81,9 @@ img { display: block; }
     width: 30px; height: 30px; border-radius: 7px; background: var(--accent); color: var(--accent-ink);
     display: flex; align-items: center; justify-content: center; font-size: 0.8rem; padding-left: 2px;
 }
+.brand-mark.has-img { background: none; padding: 0; overflow: hidden; }
+.brand-mark.has-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.brand-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .search { flex: 1; max-width: 520px; position: relative; display: flex; align-items: center; }
 .search i { position: absolute; left: 0.9rem; color: var(--muted); font-size: 0.85rem; }
 .search input {
@@ -662,3 +665,9 @@ body.login-body { overflow: auto; min-height: 100vh; display: flex; align-items:
 .cache-card p { margin: 0; }
 .cache-bar { align-self: stretch; height: 8px; border-radius: 999px; background: var(--bg-elev2); overflow: hidden; }
 .cache-bar div { height: 100%; background: var(--accent); }
+
+.brand-card { margin-bottom: 1rem; display: flex; flex-direction: column; align-items: flex-start; gap: 0.75rem; }
+.brand-card .pane-title { margin-top: 0; }
+.brand-card .field { align-self: stretch; }
+.brand-preview { display: flex; align-items: center; gap: 0.6rem; font-weight: 700; font-size: 1.1rem; padding: 0.75rem 1rem; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
+.brand-row { display: flex; gap: 0.5rem; flex-wrap: wrap; }

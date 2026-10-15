@@ -3,6 +3,7 @@
 import { h, icon, clear, api, toast, modal, storeGet, storeSet } from '../util.js';
 import { registry } from '../providers/index.js';
 import { PlexProvider } from '../providers/plex.js';
+import { applyBranding } from '../brand.js';
 
 function field(label, input, hint) {
     return h('label', { class: 'field' }, h('span', { class: 'field-label', text: label }), input,
@@ -35,9 +36,10 @@ export async function renderSettings(main, _params, _query, ctx) {
         users: h('div', { class: 'settings-pane' }, usersBox()),
         status: h('div', { class: 'settings-pane' }),
         cache: h('div', { class: 'settings-pane' }),
+        look: h('div', { class: 'settings-pane' }),
         backup: h('div', { class: 'settings-pane' }),
     };
-    const TABS = [['sources', 'layer-group', '소스'], ['users', 'users', '사용자'], ['status', 'heart-pulse', '상태'], ['cache', 'hard-drive', '캐시'], ['backup', 'box-archive', '백업']];
+    const TABS = [['sources', 'layer-group', '소스'], ['users', 'users', '사용자'], ['status', 'heart-pulse', '상태'], ['cache', 'hard-drive', '캐시'], ['look', 'palette', '화면'], ['backup', 'box-archive', '백업']];
     const tabBar = h('div', { class: 'tabs', role: 'tablist' });
     const showTab = (key) => {
         if (!panes[key]) key = 'sources';
@@ -46,6 +48,7 @@ export async function renderSettings(main, _params, _query, ctx) {
         Object.entries(panes).forEach(([k, el]) => el.classList.toggle('hidden', k !== key));
         if (key === 'status') renderStatus(panes.status);
         if (key === 'cache') renderCache(panes.cache);
+        if (key === 'look') renderLook(panes.look);
         if (key === 'backup' && !panes.backup.firstChild) renderBackup(panes.backup);
     };
     TABS.forEach(([key, ic, label]) => tabBar.appendChild(h('button', {
@@ -559,6 +562,48 @@ async function renderCache(pane) {
                 field('미리 받기 (분)', aheadIn, '재생 중 지금 위치보다 이만큼 앞까지 미리 받습니다. 0이면 끔.')),
             h('p', { class: 'field-hint', text: '텔레그램 영상과 Plex 원본 재생(변환 없이 보는 파일)에 쓰입니다. Plex 변환(HLS) 재생과 IPTV 라이브는 캐시하지 않습니다. 캐시를 꺼도 텔레그램은 앞쪽 미리 받기를 메모리로 합니다.' }),
             save));
+}
+
+/** 왼쪽 위 이름과 아이콘 (로그인 화면, 브라우저 탭에도 쓰임) */
+async function renderLook(pane) {
+    let b;
+    try { b = await api('/api/branding'); } catch (e) { clear(pane).appendChild(h('p', { class: 'muted error', text: e.message })); return; }
+    const mark = h('span', { class: 'brand-mark' });
+    const name = h('span', { class: 'brand-name' });
+    const preview = h('div', { class: 'brand-preview' }, mark, name);
+    const show = (info) => {
+        b = info;
+        applyBranding(info); // 미리보기도 .brand-mark/.brand-name이라 같이 바뀐다
+    };
+    const titleIn = h('input', { class: 'input', value: b.title, maxlength: '40', placeholder: 'Yume Player' });
+    const saveTitle = h('button', { class: 'btn btn-accent' }, icon('check'), ' 이름 저장');
+    saveTitle.addEventListener('click', async () => {
+        try { show(await api('/api/admin/branding', { method: 'PUT', json: { title: titleIn.value.trim() } })); toast('이름을 바꿨습니다.', 'success'); } catch (e) { toast(e.message, 'error'); }
+    });
+    const fileIn = h('input', { type: 'file', accept: 'image/png,image/jpeg,image/gif,image/webp,image/x-icon,.ico', class: 'hidden' });
+    const upload = h('button', { class: 'btn', on: { click: () => fileIn.click() } }, icon('upload'), ' 아이콘 올리기');
+    const reset = h('button', { class: 'btn' }, icon('rotate-left'), ' 기본 아이콘');
+    fileIn.addEventListener('change', async () => {
+        const f = fileIn.files[0];
+        fileIn.value = '';
+        if (!f) return;
+        if (f.size > 512 * 1024) return toast('아이콘 파일은 512KB까지 올릴 수 있습니다.', 'error');
+        try {
+            show(await api('/api/admin/branding/icon', { method: 'PUT', body: f, headers: { 'Content-Type': f.type || 'application/octet-stream' } }));
+            toast('아이콘을 바꿨습니다.', 'success');
+        } catch (e) { toast(e.message, 'error'); }
+    });
+    reset.addEventListener('click', async () => {
+        try { show(await api('/api/admin/branding/icon', { method: 'DELETE' })); toast('기본 아이콘으로 되돌렸습니다.'); } catch (e) { toast(e.message, 'error'); }
+    });
+    clear(pane).append(h('div', { class: 'src-card brand-card' },
+        h('h3', { class: 'pane-title' }, icon('palette'), ' 이름과 아이콘'),
+        preview,
+        field('이름', titleIn, '왼쪽 위, 로그인 화면, 브라우저 탭에 나옵니다. 비우면 Yume Player.'),
+        saveTitle,
+        h('div', { class: 'brand-row' }, upload, reset, fileIn),
+        h('p', { class: 'field-hint', text: 'PNG, JPG, GIF, WebP, ICO 그림 (512KB까지). 정사각형 그림이 잘 맞습니다. 브라우저 탭 아이콘(favicon)으로도 쓰입니다.' })));
+    show(b);
 }
 
 /** 백업 내려받기 / 백업 파일로 되돌리기 */
