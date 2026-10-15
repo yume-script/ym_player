@@ -19,7 +19,8 @@
 - /api/stream?url=        CORS/혼합콘텐츠로 막힌 스트림 중계 (.m3u8 안 주소까지 바꿔줌)
 - /api/plex/{id}/...      Plex 서버 API/이미지/스트림 중계 - 토큰은 서버가 붙인다
 - /api/plex-sub/{id}      Plex 외부 자막(srt/smi/ass/vtt)을 WebVTT로 바꿔 줌
-- /api/tg/{id}/...        텔레그램 로그인/채널/영상 목록/스트림/썸네일/이어보기 (telegram_src.py)
+- /api/tg/{id}/...        텔레그램 로그인/채널/영상 목록/스트림/썸네일/이어보기 (telegram_src.py),
+                          브라우저가 못 여는 영상은 ffmpeg 서버 변환 (transcode.py)
 - /api/plex-auth/...      plex.tv PIN 로그인 (토큰/서버 목록 받아오기)
 """
 import asyncio
@@ -29,13 +30,14 @@ import logging
 import re
 import os
 import platform
+import secrets
 import time
 from urllib.parse import urlencode
 
 from aiohttp import ClientSession, ClientTimeout, web
 from yarl import URL
 
-from . import auth, config_store, iptv, prefs, subtitles, telegram_src
+from . import auth, config_store, iptv, prefs, subtitles, telegram_src, transcode
 
 log = logging.getLogger("ym_player")
 
@@ -76,7 +78,10 @@ HTTP = web.AppKey("http", ClientSession)
 CHANNEL_CACHE = web.AppKey("channel_cache", dict)
 EPG_CACHE = web.AppKey("epg_cache", dict)
 TELEGRAM = web.AppKey("telegram", dict)
-REQUIRE_AUTH = web.AppKey("require_auth", bool)  # 소스 id -> telegram_src.TelegramSource (연결을 계속 유지)
+REQUIRE_AUTH = web.AppKey("require_auth", bool)
+TG_INTERNAL = web.AppKey("tg_internal", dict)   # ffmpeg용 내부 주소 토큰 -> (소스id, 채널, 메시지, 만료)
+TRANSCODES = web.AppKey("transcodes", dict)     # 사용자명 -> 돌고 있는 ffmpeg 프로세스
+PROBES = web.AppKey("probes", collections.OrderedDict)  # (소스id, 채널, 메시지) -> decide() 결과  # 소스 id -> telegram_src.TelegramSource (연결을 계속 유지)
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +105,7 @@ async def auth_middleware(request, handler):
     if user:
         request["user"] = auth.public_user(user)
         return await handler(request)
-    if request.path in _PUBLIC_PATHS or request.path.startswith("/static/"):
+    if request.path in _PUBLIC_PATHS or request.path.startswith(("/static/", "/internal/tg/")):
         return await handler(request)
     if request.path.startswith("/api/"):
         return web.json_response({"success": False, "error": "로그인이 필요합니다.", "login": True}, status=401)
@@ -159,7 +164,7 @@ async def _pipe_response(request, upstream):
     try:
         async for chunk in upstream.content.iter_chunked(64 * 1024):
             await resp.write(chunk)
-    except (ConnectionResetError, asyncio.CancelledError):
+    except (ConnectionError, asyncio.CancelledError):
         # 브라우저가 채널을 바꾸거나 탐색(seek)하면 연결을 끊는다 - 정상 상황
         pass
     return resp
@@ -311,7 +316,7 @@ async def stream_proxy(request):
                 await resp.write(head)
             async for chunk in upstream.content.iter_chunked(64 * 1024):
                 await resp.write(chunk)
-        except (ConnectionResetError, asyncio.CancelledError):
+        except (ConnectionError, asyncio.CancelledError):
             pass
         return resp
     finally:
@@ -775,16 +780,24 @@ def _ids(request, tg):
 
 @telegram_api
 async def tg_video(request, tg):
+    """?probe=1 이면 어떻게 재생할지(play: direct/remux/audio/transcode)도 같이."""
     channel, msg = _ids(request, tg)
     row = telegram_src.get_video(tg.sid, channel, msg, user=username(request))
     if not row:
         return _json_error(404, "색인에 없는 영상입니다.")
+    if request.query.get("probe"):
+        await tg.authorized_client()
+        row = {**row, "play": await _tg_decision(request, tg, channel, msg)}
     return web.json_response({"success": True, "item": row})
 
 
 @telegram_api
 async def tg_stream(request, tg):
     channel, msg = _ids(request, tg)
+    return await _tg_range_response(request, tg, channel, msg)
+
+
+async def _tg_range_response(request, tg, channel, msg):
     row = telegram_src.get_video(tg.sid, channel, msg)
     if not row or not row["size"]:
         return _json_error(404, "색인에 없는 영상입니다.")
@@ -801,13 +814,147 @@ async def tg_stream(request, tg):
         headers["Content-Range"] = f"bytes {start}-{end}/{size}"
     resp = web.StreamResponse(status=206 if partial else 200, headers=headers)
     await resp.prepare(request)
+    if request.method == "HEAD":
+        return resp
     try:
         async for chunk in tg.iter_range(channel, msg, start, length):
             await resp.write(chunk)
-    except (ConnectionResetError, asyncio.CancelledError):
+    except (ConnectionError, asyncio.CancelledError):
         pass  # 브라우저가 탐색하거나 닫으면 연결을 끊는다 - 정상
     except Exception as e:
         log.warning("telegram 스트림 %s/%s 중단: %s", channel, msg, e)
+    return resp
+
+
+# ---- 서버 변환 (ffmpeg) -----------------------------------------------------------
+# ffmpeg/ffprobe는 이 서버의 내부 주소(/internal/tg/{토큰})로 텔레그램 파일을 Range로 읽는다.
+# 토큰은 추측할 수 없는 값이고 변환이 끝나면(또는 몇 시간 뒤) 지운다. 로그인 없이 열리는 유일한 영상 주소.
+_INTERNAL_TTL = 6 * 3600
+_PROBES_MAX = 3000
+
+
+def _internal_url(request, tg, channel, msg):
+    now = time.time()
+    pool = request.app[TG_INTERNAL]
+    for k in [k for k, v in pool.items() if v[3] < now]:
+        pool.pop(k, None)
+    token = secrets.token_urlsafe(24)
+    pool[token] = (tg.sid, channel, msg, now + _INTERNAL_TTL)
+    # 브라우저가 들어온 바로 그 주소/포트로 (MP_HOST를 LAN 주소 하나로 열어도 맞게)
+    host, port = request.transport.get_extra_info("sockname")[:2]
+    if host in ("0.0.0.0", "::", ""):
+        host = "127.0.0.1"
+    host = f"[{host}]" if ":" in host else host
+    return token, f"http://{host}:{port}/internal/tg/{token}"
+
+
+async def internal_tg(request):
+    item = request.app[TG_INTERNAL].get(request.match_info["token"])
+    if not item or item[3] < time.time():
+        return web.Response(status=404)
+    sid, channel, msg, _ = item
+    tg = request.app[TELEGRAM].get(sid)
+    if tg is None:
+        return web.Response(status=404)
+    return await _tg_range_response(request, tg, channel, msg)
+
+
+async def _tg_decision(request, tg, channel, msg):
+    """ffprobe로 이 영상을 어떻게 보낼지 (결과는 기억). ffmpeg가 없으면 원본 그대로."""
+    if not transcode.available():
+        return {"mode": "direct", "available": False, "reason": "서버에 ffmpeg가 없습니다"}
+    cache = request.app[PROBES]
+    key = (tg.sid, channel, msg)
+    if key in cache:
+        cache.move_to_end(key)
+        return cache[key]
+    token, url = _internal_url(request, tg, channel, msg)
+    try:
+        info = await transcode.probe(url)
+        result = {**transcode.decide(info), "available": True}
+    except Exception as e:
+        log.warning("telegram %s/%s ffprobe 실패: %s", channel, msg, e)
+        return {"mode": "direct", "available": True, "reason": f"형식을 알아내지 못했습니다: {e}"}
+    finally:
+        request.app[TG_INTERNAL].pop(token, None)
+    cache[key] = result
+    while len(cache) > _PROBES_MAX:
+        cache.popitem(last=False)
+    return result
+
+
+@telegram_api
+async def tg_transcode(request, tg):
+    """GET /api/tg/{sid}/transcode/{c}/{m}?start=초&mode=remux|audio|transcode -> 조각난 MP4 스트림."""
+    channel, msg = _ids(request, tg)
+    if not transcode.available():
+        return _json_error(501, "서버에 ffmpeg가 없습니다. sudo apt install ffmpeg 후 다시 시작하세요.")
+    if not telegram_src.get_video(tg.sid, channel, msg):
+        return _json_error(404, "색인에 없는 영상입니다.")
+    mode = request.query.get("mode") or (await _tg_decision(request, tg, channel, msg))["mode"]
+    if mode == "direct":
+        mode = "remux"
+    try:
+        start = max(0.0, float(request.query.get("start") or 0))
+    except ValueError:
+        start = 0.0
+    await tg.authorized_client()
+
+    jobs = request.app[TRANSCODES]
+    me = username(request) or "-"
+    old = jobs.pop(me, None)  # 한 사람이 보는 영상은 하나 - 탐색하면 이전 변환은 끈다
+    if old is not None and old.returncode is None:
+        old.kill()
+    if sum(p.returncode is None for p in jobs.values()) >= transcode.max_jobs():
+        return _json_error(503, "서버 변환이 이미 여러 개 돌고 있습니다. 잠시 뒤에 다시 시도하세요.")
+
+    token, url = _internal_url(request, tg, channel, msg)
+    try:
+        args = transcode.build_args(url, mode, start)
+    except ValueError as e:
+        request.app[TG_INTERNAL].pop(token, None)
+        return _json_error(400, str(e))
+    proc = await asyncio.create_subprocess_exec(*args, stdin=asyncio.subprocess.DEVNULL,
+                                                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    jobs[me] = proc
+    log.info("telegram %s/%s 서버 변환 시작 (%s, %.0f초부터, %s)", channel, msg, mode, start, me)
+    errors = []
+
+    async def read_err():
+        async for line in proc.stderr:
+            errors.append(line.decode("utf-8", "replace").strip())
+            del errors[:-5]
+    err_task = asyncio.ensure_future(read_err())
+
+    resp = web.StreamResponse(status=200, headers={"Content-Type": "video/mp4", "Cache-Control": "no-store",
+                                                   "X-Transcode-Mode": mode})
+    try:
+        first = await proc.stdout.read(64 * 1024)
+        if not first:
+            await proc.wait()
+            await err_task
+            msg_ = errors[-1] if errors else f"ffmpeg 종료 코드 {proc.returncode}"
+            log.warning("telegram %s/%s 서버 변환 실패: %s", channel, msg, msg_)
+            return _json_error(502, f"서버 변환 실패: {msg_}")
+        await resp.prepare(request)
+        await resp.write(first)
+        while True:
+            chunk = await proc.stdout.read(256 * 1024)
+            if not chunk:
+                break
+            await resp.write(chunk)
+    except (ConnectionError, asyncio.CancelledError):
+        pass  # 브라우저가 탐색하거나 닫았다
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+        await proc.wait()
+        err_task.cancel()
+        request.app[TG_INTERNAL].pop(token, None)
+        if jobs.get(me) is proc:
+            jobs.pop(me, None)
+        if proc.returncode not in (0, -9) and errors:
+            log.warning("telegram %s/%s 서버 변환 중단: %s", channel, msg, errors[-1])
     return resp
 
 
@@ -1042,6 +1189,7 @@ async def admin_status(request):
         "data_dir": config_store.DATA_DIR, "users": len(users),
         "admins": sum(u["role"] == "admin" for u in users),
         "cryptg": telegram_src.fast_crypto(), "telethon": telegram_src.available(),
+        "ffmpeg": transcode.available(), "transcoding": sum(p.returncode is None for p in request.app[TRANSCODES].values()),
     }, "sources": sources, "warnings": list(reversed(RECENT.items))})
 
 
@@ -1108,6 +1256,9 @@ async def _on_startup(app):
 
 
 async def _on_cleanup(app):
+    for proc in list(app[TRANSCODES].values()):
+        if proc.returncode is None:
+            proc.kill()
     await app[HTTP].close()
     for tg in list(app[TELEGRAM].values()):
         try:
@@ -1127,6 +1278,9 @@ def create_app(require_auth=True):
     app[EPG_CACHE] = {}
     app[TELEGRAM] = {}
     app[PLEX_SECTIONS] = {}
+    app[TG_INTERNAL] = {}
+    app[TRANSCODES] = {}
+    app[PROBES] = collections.OrderedDict()
     app.on_startup.append(_on_startup)
     app.on_cleanup.append(_on_cleanup)
 
@@ -1164,6 +1318,8 @@ def create_app(require_auth=True):
     app.router.add_get("/api/tg/{sid}/home", tg_home)
     app.router.add_get(r"/api/tg/{sid}/video/{channel:-?\d+}/{msg:\d+}", tg_video)
     app.router.add_get(r"/api/tg/{sid}/stream/{channel:-?\d+}/{msg:\d+}", tg_stream)
+    app.router.add_get(r"/api/tg/{sid}/transcode/{channel:-?\d+}/{msg:\d+}", tg_transcode)
+    app.router.add_get("/internal/tg/{token}", internal_tg)
     app.router.add_get(r"/api/tg/{sid}/thumb/{channel:-?\d+}/{msg:\d+}", tg_thumb)
     app.router.add_post("/api/tg/{sid}/progress", tg_progress)
     app.router.add_route("*", "/api/plex/{sid}/{tail:.*}", plex_proxy)

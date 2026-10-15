@@ -483,6 +483,7 @@ async function renderStatus(pane) {
         ['Python', sv.python],
         ['사용자', `${sv.users}명 (관리자 ${sv.admins})`],
         ['텔레그램', sv.telethon ? (sv.cryptg ? 'Telethon + cryptg (빠름)' : 'Telethon (cryptg 없음 - 느림)') : 'Telethon 없음'],
+        ['서버 변환 (ffmpeg)', sv.ffmpeg ? `있음 · 지금 ${sv.transcoding}개 변환 중` : '없음 - 텔레그램의 mkv·HEVC·AC-3 영상이 안 나올 수 있음 (sudo apt install ffmpeg)'],
         ['데이터 폴더', sv.data_dir],
     ];
     pane.lastChild.replaceWith(h('div', {},
