@@ -21,6 +21,7 @@
 - /api/plex-auth/...      plex.tv PIN 로그인 (토큰/서버 목록 받아오기)
 """
 import asyncio
+import json
 import logging
 import re
 import os
@@ -100,6 +101,12 @@ def username(request):
     return request.get("user", {}).get("username", "")
 
 
+def require_source(request, sid):
+    """이 사용자에게 허락되지 않은 소스면 404 (있다는 것도 모르게)."""
+    if not auth.can_source(request.get("user"), sid):
+        raise web.HTTPNotFound(text="소스를 찾을 수 없습니다.")
+
+
 async def _fetch_bytes(session, url, timeout=30, headers=None, max_bytes=TEXT_MAX_BYTES):
     hdrs = {"User-Agent": DEFAULT_UA, "Accept-Encoding": "gzip, deflate"}
     hdrs.update(headers or {})
@@ -146,8 +153,17 @@ _USER_VISIBLE = ("id", "type", "name", "enabled", "channels", "hidden_libraries"
 async def get_config(request):
     pub = config_store.public_config(config_store.load())
     if not is_admin(request):
-        pub["sources"] = [{**{k: s[k] for k in _USER_VISIBLE if k in s}, "has_epg": bool(s.get("epg"))}
-                          for s in pub["sources"]]
+        user = request.get("user")
+        out = []
+        for s in pub["sources"]:
+            if not auth.can_source(user, s["id"]):
+                continue
+            item = {**{k: s[k] for k in _USER_VISIBLE if k in s}, "has_epg": bool(s.get("epg"))}
+            allowed = auth.allowed_libraries(user, s["id"])
+            if s["type"] == "plex" and allowed is not None:
+                item["allowed_libraries"] = sorted(allowed)
+            out.append(item)
+        pub["sources"] = out
     return web.json_response(pub)
 
 
@@ -183,7 +199,9 @@ async def _forget_telegram(tg):
     telegram_src.forget_source(tg.sid)
 
 
-def _source_or_404(source_id, stype):
+def _source_or_404(source_id, stype, request=None):
+    if request is not None:
+        require_source(request, source_id)
     src = config_store.get_source(config_store.load(), source_id)
     if not src or src.get("type") != stype:
         raise web.HTTPNotFound(text="소스를 찾을 수 없습니다.")
@@ -194,7 +212,7 @@ def _source_or_404(source_id, stype):
 # IPTV
 # ---------------------------------------------------------------------------
 async def iptv_channels(request):
-    src = _source_or_404(request.match_info["sid"], "iptv")
+    src = _source_or_404(request.match_info["sid"], "iptv", request)
     cache = request.app[CHANNEL_CACHE]
     key = (src["id"], src["m3u"])
     hit = cache.get(key)
@@ -213,7 +231,7 @@ async def iptv_channels(request):
 
 
 async def iptv_epg(request):
-    src = _source_or_404(request.match_info["sid"], "iptv")
+    src = _source_or_404(request.match_info["sid"], "iptv", request)
     if not src.get("epg"):
         return web.json_response({"success": True, "names": {}, "icons": {}, "programmes": {}})
     cache = request.app[EPG_CACHE]
@@ -305,8 +323,23 @@ async def plex_proxy(request):
     src = config_store.get_source(cfg, request.match_info["sid"])
     if not src or src.get("type") != "plex":
         return _json_error(404, "Plex 소스를 찾을 수 없습니다.")
+    require_source(request, src["id"])
     if not is_admin(request) and not _plex_allowed_for_user(request):
         return _json_error(403, "이 Plex 요청은 관리자만 할 수 있습니다.")
+    allowed = auth.allowed_libraries(request.get("user"), src["id"])
+    if allowed is not None:
+        return await _plex_restricted(request, cfg, src, allowed)
+    upstream = await _plex_upstream(request, cfg, src)
+    if isinstance(upstream, web.Response):
+        return upstream
+    try:
+        return await _pipe_response(request, upstream)
+    finally:
+        upstream.release()
+
+
+async def _plex_upstream(request, cfg, src, accept=None):
+    """요청을 그대로 Plex로 보내고 원본 응답을 돌려준다 (연결 실패면 502 응답). 호출한 쪽이 release."""
     # 이미 인코딩된 원래 모양 그대로 넘긴다 (match_info/query_string은 디코딩된 값이라
     # /library/parts/.../파일명.mkv 의 %20 같은 게 깨진다)
     raw_path = request.rel_url.raw_path
@@ -320,17 +353,188 @@ async def plex_proxy(request):
     for k in _PASS_REQ_HEADERS:
         if k in request.headers:
             headers[k] = request.headers[k]
+    if accept:
+        headers["Accept"] = accept
     body = await request.read() if request.can_read_body else None
-
     try:
-        upstream = await request.app[HTTP].request(
+        return await request.app[HTTP].request(
             request.method, URL(url, encoded=True), headers=headers, data=body,
             ssl=None if src.get("verify_ssl", True) else False,
             timeout=ClientTimeout(total=None, sock_connect=10, sock_read=60))
     except Exception as e:
         return _json_error(502, f"Plex 서버 연결 실패: {type(e).__name__}: {e}")
+
+
+# ---- 라이브러리 제한이 있는 사용자 ------------------------------------------------
+# 허락된 라이브러리(섹션)의 것만 보이게 한다. 경로마다 정해 둔 것만 통과(나머지는 403):
+#   - 섹션 목록/허브/검색/이어보기 응답은 JSON으로 받아 허락된 섹션 항목만 남긴다
+#   - /library/metadata/{rk}, 이미지 변환, 트랜스코드 시작, timeline/scrobble 은 rk의 섹션을 확인
+#   - 원본 파일(/library/parts/{id})과 자막(/library/streams/{id})은 이 사용자에게 보여준
+#     항목 응답에서 본 id만 (id가 순서대로라 하나씩 넣어 보는 걸 막는다)
+PLEX_SECTIONS = web.AppKey("plex_sections", dict)  # (소스id, "rk"|"part"|"stream", id) -> 섹션 key
+_PLEX_SECTIONS_MAX = 200_000
+_RE_PLEX_SECTION = re.compile(r"^/(?:library|hubs)/sections/([^/]+)(?:/|$)")
+_RE_PLEX_META = re.compile(r"^/library/metadata/(\d+)(?:/|$|\?)")
+_RE_PLEX_PART = re.compile(r"^/library/parts/(\d+)(?:/|$)")
+_RE_PLEX_TRANSCODE = re.compile(r"^/(?:video|audio|music)/:/transcode/universal/")
+_PLEX_FILTER_PATHS = {"/hubs", "/hubs/search", "/hubs/home/continueWatching", "/hubs/continueWatching",
+                      "/hubs/home/onDeck", "/hubs/home/recentlyAdded", "/library/onDeck", "/library/recentlyAdded"}
+_PLEX_PINGS = {"/:/timeline", "/:/scrobble", "/:/unscrobble"}
+
+
+def _remember_sections(cache, sid, data):
+    """Plex JSON 응답 안 항목들의 섹션을 기억하고, 허락 여부 판단 없이 그대로 둔다."""
+    if len(cache) > _PLEX_SECTIONS_MAX:
+        cache.clear()
+    mc = data.get("MediaContainer") if isinstance(data, dict) else None
+    if not isinstance(mc, dict):
+        return
+    for m in _plex_items(mc):
+        sec = m.get("librarySectionID", mc.get("librarySectionID"))
+        if sec is not None:
+            _remember_item(cache, sid, m, str(sec))
+
+
+def _plex_items(mc):
+    for m in mc.get("Metadata") or []:
+        if isinstance(m, dict):
+            yield m
+    for hub in mc.get("Hub") or []:
+        for m in (hub.get("Metadata") or []) if isinstance(hub, dict) else []:
+            if isinstance(m, dict):
+                yield m
+
+
+def _remember_item(cache, sid, m, sec):
+    for k in ("ratingKey", "parentRatingKey", "grandparentRatingKey"):
+        if m.get(k) is not None:
+            cache[(sid, "rk", str(m[k]))] = sec
+    for media in m.get("Media") or []:
+        for part in media.get("Part") or []:
+            if part.get("id") is not None:
+                cache[(sid, "part", str(part["id"]))] = sec
+            for st in part.get("Stream") or []:
+                if st.get("id") is not None:
+                    cache[(sid, "stream", str(st["id"]))] = sec
+    deck = (m.get("OnDeck") or {}).get("Metadata")
+    if isinstance(deck, dict):
+        _remember_item(cache, sid, deck, sec)
+
+
+def filter_plex_json(data, allowed, sections_list=False):
+    """허락된 섹션 항목만 남긴다. 섹션을 알 수 없는 항목도 뺀다."""
+    mc = data.get("MediaContainer") if isinstance(data, dict) else None
+    if not isinstance(mc, dict):
+        return data
+    if sections_list:
+        mc["Directory"] = [d for d in mc.get("Directory") or [] if str(d.get("key")) in allowed]
+        mc["size"] = len(mc["Directory"])
+        return data
+    default = mc.get("librarySectionID")
+
+    def ok(m):
+        sec = m.get("librarySectionID", default)
+        return sec is not None and str(sec) in allowed
+
+    if "Metadata" in mc:
+        mc["Metadata"] = [m for m in mc.get("Metadata") or [] if isinstance(m, dict) and ok(m)]
+    if "Hub" in mc:
+        hubs = []
+        for hub in mc.get("Hub") or []:
+            if not isinstance(hub, dict):
+                continue
+            if "Metadata" in hub:
+                hub["Metadata"] = [m for m in hub.get("Metadata") or [] if isinstance(m, dict) and ok(m)]
+                hub["size"] = len(hub["Metadata"])
+                if not hub["Metadata"]:
+                    continue
+            elif str(hub.get("librarySectionID", "")) not in allowed:
+                continue
+            hubs.append(hub)
+        mc["Hub"] = hubs
+    return data
+
+
+async def _plex_rk_section(request, cfg, src, rk):
+    cache = request.app[PLEX_SECTIONS]
+    hit = cache.get((src["id"], "rk", rk))
+    if hit is not None:
+        return hit
     try:
-        return await _pipe_response(request, upstream)
+        async with request.app[HTTP].get(
+                f"{src['url']}/library/metadata/{rk}",
+                headers={**plex_headers(cfg, src.get("token")), "Accept": "application/json"},
+                ssl=None if src.get("verify_ssl", True) else False, timeout=ClientTimeout(total=20)) as r:
+            if r.status >= 400:
+                return None
+            data = await r.json(content_type=None)
+    except Exception:
+        return None
+    _remember_sections(cache, src["id"], data)
+    return cache.get((src["id"], "rk", rk))
+
+
+def _rk_from(value):
+    m = _RE_PLEX_META.match(value or "")
+    if m:
+        return m.group(1)
+    return value if (value or "").isdigit() else None
+
+
+async def _plex_restricted(request, cfg, src, allowed):
+    sid = src["id"]
+    path = "/" + request.match_info["tail"]
+    q = request.query
+    cache = request.app[PLEX_SECTIONS]
+    denied = _json_error(403, "볼 수 없는 라이브러리입니다.")
+    filtered, sections_list = False, False
+
+    async def rk_ok(rk):
+        return rk is not None and await _plex_rk_section(request, cfg, src, rk) in allowed
+
+    if path == "/library/sections":
+        filtered = sections_list = True
+    elif _RE_PLEX_SECTION.match(path):
+        if _RE_PLEX_SECTION.match(path).group(1) not in allowed:
+            return denied
+        filtered = True
+    elif _RE_PLEX_META.match(path):
+        if not await rk_ok(_RE_PLEX_META.match(path).group(1)):
+            return denied
+        filtered = True
+    elif _RE_PLEX_PART.match(path):
+        if cache.get((sid, "part", _RE_PLEX_PART.match(path).group(1))) not in allowed:
+            return denied
+    elif path in _PLEX_FILTER_PATHS:
+        filtered = True
+    elif path == "/photo/:/transcode":
+        url = q.get("url", "")
+        if not url.startswith(("http://", "https://")) and not await rk_ok(_rk_from(url)):
+            return denied
+    elif _RE_PLEX_TRANSCODE.match(path):
+        # 시작/결정 요청에는 path=/library/metadata/{rk}, 그 뒤 세션 조각 요청은 추측할 수 없는 세션 id
+        if "path" in q and not await rk_ok(_rk_from(q["path"])):
+            return denied
+    elif path in _PLEX_PINGS:
+        if not await rk_ok(_rk_from(q.get("ratingKey") or q.get("key"))):
+            return denied
+    else:
+        return denied
+
+    upstream = await _plex_upstream(request, cfg, src, accept="application/json" if filtered else None)
+    if isinstance(upstream, web.Response):
+        return upstream
+    try:
+        if not filtered or upstream.status >= 400 or "json" not in upstream.headers.get("Content-Type", ""):
+            return await _pipe_response(request, upstream)
+        raw = await upstream.content.read(TEXT_MAX_BYTES)
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return _json_error(502, "Plex 응답을 읽을 수 없습니다.")
+        _remember_sections(cache, sid, data)
+        return web.json_response(filter_plex_json(data, allowed, sections_list),
+                                 headers={"Cache-Control": "no-store"})
     finally:
         upstream.release()
 
@@ -348,6 +552,11 @@ async def plex_subtitle(request):
     # 아무 Plex 경로나 받아오는 통로가 되지 않게 자막 스트림 경로만 허용
     if not path.startswith("/library/streams/") or ".." in path:
         return _json_error(400, "자막 스트림 경로가 아닙니다.")
+    require_source(request, src["id"])
+    allowed = auth.allowed_libraries(request.get("user"), src["id"])
+    stream_id = path[len("/library/streams/"):].split("/")[0].split(".")[0]
+    if allowed is not None and request.app[PLEX_SECTIONS].get((src["id"], "stream", stream_id)) not in allowed:
+        return _json_error(403, "볼 수 없는 라이브러리입니다.")
     try:
         async with request.app[HTTP].get(
                 f"{src['url']}{path}", headers=plex_headers(cfg, src.get("token")),
@@ -429,6 +638,7 @@ def _telegram(request):
     src = config_store.get_source(config_store.load(), request.match_info["sid"])
     if not src or src.get("type") != "telegram":
         raise web.HTTPNotFound(text="텔레그램 소스를 찾을 수 없습니다.")
+    require_source(request, src["id"])
     pool = request.app[TELEGRAM]
     tg = pool.get(src["id"])
     if tg is None or not tg.matches(src):
@@ -696,7 +906,8 @@ async def users_update(request):
     try:
         user = auth.update_user(request.match_info["name"],
                                 password=str(body["password"]) if body.get("password") else None,
-                                role=body.get("role"), acting=username(request))
+                                role=body.get("role"), acting=username(request),
+                                access=body["access"] if "access" in body else False)
     except auth.AuthError as e:
         return _json_error(400, str(e))
     return web.json_response({"success": True, "user": user})
@@ -745,6 +956,7 @@ def create_app(require_auth=True):
     app[CHANNEL_CACHE] = {}
     app[EPG_CACHE] = {}
     app[TELEGRAM] = {}
+    app[PLEX_SECTIONS] = {}
     app.on_startup.append(_on_startup)
     app.on_cleanup.append(_on_cleanup)
 

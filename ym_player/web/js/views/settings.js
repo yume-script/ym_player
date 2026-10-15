@@ -68,6 +68,11 @@ export async function renderSettings(main, _params, _query, ctx) {
                         toast('비밀번호를 바꿨습니다. 그 사용자의 기존 로그인은 끊깁니다.', 'success');
                     } catch (e) { toast(e.message, 'error'); }
                 });
+                const accBtn = h('button', {
+                    class: 'btn btn-sm', disabled: u.role === 'admin',
+                    title: u.role === 'admin' ? '관리자는 항상 전부 봅니다' : '이 사용자가 볼 수 있는 소스와 라이브러리',
+                }, icon('eye'), u.role === 'admin' || !u.access ? ' 전부 보기' : ` ${u.access.sources.length}개 소스만`);
+                accBtn.addEventListener('click', () => accessDialog(u, draw));
                 const delBtn = h('button', { class: 'icon-btn danger', title: '삭제', disabled: u.username === me }, icon('trash'));
                 delBtn.addEventListener('click', async () => {
                     if (!confirm(`사용자 "${u.username}"를 지울까요?`)) return;
@@ -77,7 +82,7 @@ export async function renderSettings(main, _params, _query, ctx) {
                 box.appendChild(h('div', { class: 'user-row' },
                     h('span', { class: 'uname' }, icon(u.role === 'admin' ? 'user-shield' : 'user'), ` ${u.username}`,
                         u.username === me ? h('span', { class: 'me', text: '나' }) : null),
-                    roleSel, pwBtn, delBtn));
+                    roleSel, accBtn, pwBtn, delBtn));
             }
             const nameIn = h('input', { class: 'input', placeholder: '새 아이디', autocomplete: 'off' });
             const pwIn = h('input', { class: 'input', type: 'password', placeholder: '비밀번호 (6자 이상)', autocomplete: 'new-password' });
@@ -91,10 +96,81 @@ export async function renderSettings(main, _params, _query, ctx) {
                 } catch (e) { toast(e.message, 'error'); }
             });
             box.append(h('div', { class: 'user-add' }, nameIn, pwIn, roleIn, addBtn),
-                h('p', { class: 'field-hint', text: '사용자는 보기만 할 수 있고 이 설정 화면에는 들어올 수 없습니다. 이어보기(텔레그램)는 사람마다 따로 기록됩니다.' }));
+                h('p', { class: 'field-hint', text: '사용자는 보기만 할 수 있고 이 설정 화면에는 들어올 수 없습니다. [전부 보기]를 눌러 볼 수 있는 소스·라이브러리를 줄일 수 있습니다 (예: 아이 계정).' }));
         };
         draw();
         return box;
+    }
+
+    /**
+     * 사용자가 볼 수 있는 범위. 서버가 지키므로 고르지 않은 소스/라이브러리는 주소를 알아도 열리지 않는다.
+     * access = null(전부) | { sources: [id], libraries: { plexId: [섹션key] } } (libraries에 없는 Plex 소스는 라이브러리 전부)
+     */
+    function accessDialog(u, done) {
+        const sources = registry.config.sources;
+        const acc = u.access || { sources: sources.map((s) => s.id), libraries: {} };
+        const chosen = new Set(acc.sources);
+        const libs = Object.fromEntries(Object.entries(acc.libraries || {}).map(([k, v]) => [k, new Set(v)]));
+        const allIn = h('input', { type: 'radio', name: 'acc-mode', checked: !u.access });
+        const someIn = h('input', { type: 'radio', name: 'acc-mode', checked: !!u.access });
+        const listBox = h('div', { class: 'acc-list' });
+        const sync = () => listBox.classList.toggle('disabled', allIn.checked);
+        allIn.addEventListener('change', sync);
+        someIn.addEventListener('change', sync);
+
+        sources.forEach((src) => {
+            const chk = h('input', { type: 'checkbox', checked: chosen.has(src.id) });
+            const sub = h('div', { class: 'acc-libs' });
+            chk.addEventListener('change', () => { if (chk.checked) chosen.add(src.id); else chosen.delete(src.id); sub.classList.toggle('hidden', !chk.checked); });
+            sub.classList.toggle('hidden', !chk.checked);
+            listBox.appendChild(h('div', { class: 'acc-src' },
+                h('label', { class: 'check' }, chk, icon(src.type === 'plex' ? 'server' : src.type === 'telegram' ? 'paper-plane' : 'tower-broadcast'), ` ${src.name}`),
+                src.type === 'plex' ? sub : null));
+            if (src.type !== 'plex') return;
+            sub.appendChild(h('span', { class: 'muted' }, icon('circle-notch', 'fa-spin'), ' 라이브러리 불러오는 중...'));
+            new PlexProvider(src, registry.config.client_id).getLibraries({ all: true }).then((items) => {
+                clear(sub);
+                const everyIn = h('input', { type: 'checkbox', checked: !libs[src.id] });
+                const box = h('div', { class: 'acc-lib-items' });
+                const paint = () => box.classList.toggle('hidden', everyIn.checked);
+                everyIn.addEventListener('change', () => {
+                    if (everyIn.checked) delete libs[src.id]; else libs[src.id] = new Set();
+                    box.querySelectorAll('input').forEach((x) => { x.checked = false; });
+                    paint();
+                });
+                items.forEach((lib) => {
+                    const c = h('input', { type: 'checkbox', checked: !!(libs[src.id] && libs[src.id].has(lib.id)) });
+                    c.addEventListener('change', () => {
+                        libs[src.id] = libs[src.id] || new Set();
+                        if (c.checked) libs[src.id].add(lib.id); else libs[src.id].delete(lib.id);
+                    });
+                    box.appendChild(h('label', { class: 'check lib-check' }, c, icon(lib.icon), ` ${lib.title}`));
+                });
+                sub.append(h('label', { class: 'check' }, everyIn, ' 모든 라이브러리 (새로 생기는 것 포함)'), box);
+                paint();
+            }).catch((e) => { clear(sub).appendChild(h('span', { class: 'muted error', text: `라이브러리 목록 실패: ${e.message}` })); });
+        });
+        sync();
+
+        const saveAcc = h('button', { class: 'btn btn-accent' }, icon('check'), ' 저장');
+        const m = modal(`${u.username} - 볼 수 있는 범위`, h('div', { class: 'acc-dialog' },
+            h('label', { class: 'check' }, allIn, ' 전부 (나중에 추가하는 소스도)'),
+            h('label', { class: 'check' }, someIn, ' 고른 것만'),
+            listBox,
+            h('p', { class: 'field-hint', text: '고르지 않은 소스와 라이브러리는 이 사용자의 사이드바·홈·검색에 안 나오고, 서버도 열어 주지 않습니다.' })),
+        [saveAcc]);
+        saveAcc.addEventListener('click', async () => {
+            const access = allIn.checked ? null : {
+                sources: [...chosen],
+                libraries: Object.fromEntries(Object.entries(libs).filter(([k]) => chosen.has(k)).map(([k, v]) => [k, [...v]])),
+            };
+            try {
+                await api(`/api/users/${encodeURIComponent(u.username)}`, { method: 'PUT', json: { access } });
+                toast(`${u.username}: 볼 수 있는 범위를 저장했습니다.`, 'success');
+                m.close();
+                done();
+            } catch (e) { toast(e.message, 'error'); }
+        });
     }
 
     function touch() { dirty = true; saveBtn.classList.add('pulse'); }

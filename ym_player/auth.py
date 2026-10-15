@@ -8,6 +8,8 @@
     * MP_USER/MP_PASSWORD 환경변수가 있으면 그걸로 관리자를 만든다 (예전 기본 인증 설정을 그대로 옮김)
     * 없으면 로그인 화면이 "관리자 계정 만들기"로 바뀐다
 - 로그인 실패가 IP마다 10분에 10번을 넘으면 잠시 막는다.
+- 볼 수 있는 범위(access): None이면 전부. {"sources": [소스id...], "libraries": {plex소스id: [섹션key...]}}
+  libraries에 없는 Plex 소스는 그 소스의 라이브러리 전부. 관리자는 항상 전부.
 """
 import base64
 import hashlib
@@ -89,7 +91,37 @@ def find_user(username):
 
 
 def public_user(u):
-    return {"username": u["username"], "role": u["role"]}
+    return {"username": u["username"], "role": u["role"], "access": u.get("access")}
+
+
+def clean_access(raw):
+    """화면에서 온 access를 믿지 않고 정리. None/빈 값이면 전부 허용."""
+    if not isinstance(raw, dict):
+        return None
+    sources = raw.get("sources")
+    if not isinstance(sources, list):
+        return None
+    libs = raw.get("libraries") if isinstance(raw.get("libraries"), dict) else {}
+    out_sources = [str(s) for s in sources if str(s).strip()]
+    out_libs = {str(k): sorted({str(x) for x in v}) for k, v in libs.items()
+                if str(k) in out_sources and isinstance(v, list)}
+    return {"sources": out_sources, "libraries": out_libs}
+
+
+def can_source(user, sid):
+    if not user or user.get("role") == "admin":
+        return True
+    access = user.get("access")
+    return access is None or str(sid) in access.get("sources", [])
+
+
+def allowed_libraries(user, sid):
+    """None = 이 소스의 라이브러리 전부, set = 이 섹션 key들만."""
+    if not user or user.get("role") == "admin":
+        return None
+    access = user.get("access") or {}
+    libs = (access.get("libraries") or {}).get(str(sid))
+    return None if libs is None else set(map(str, libs))
 
 
 def _hash(password, salt, iterations=ITERATIONS):
@@ -123,7 +155,7 @@ def create_user(username, password, role="user"):
     return public_user(user)
 
 
-def update_user(username, password=None, role=None, acting=None):
+def update_user(username, password=None, role=None, acting=None, access=False):
     """비밀번호/권한 변경. 마지막 관리자를 일반 사용자로 내리는 건 막는다."""
     users = load_users()
     user = next((u for u in users if u["username"].lower() == str(username).lower()), None)
@@ -138,6 +170,8 @@ def update_user(username, password=None, role=None, acting=None):
     if password is not None:
         _check_password_rules(password)
         user.update(_new_secret_fields(password))  # pw_ver가 바뀌어 다른 기기의 기존 로그인은 끊긴다
+    if access is not False:
+        user["access"] = clean_access(access)
     save_users(users)
     return public_user(user)
 

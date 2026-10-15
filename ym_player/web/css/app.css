@@ -615,6 +615,11 @@ body.login-body { overflow: auto; min-height: 100vh; display: flex; align-items:
 .user-row:last-child { border-bottom: none; }
 .user-row .uname { flex: 1; min-width: 120px; font-weight: 500; }
 .user-row .me { font-size: 0.72rem; color: var(--accent); margin-left: 0.4rem; }
+.acc-dialog { display: flex; flex-direction: column; gap: 0.6rem; min-width: min(460px, 80vw); }
+.acc-list { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.6rem 0.75rem; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); max-height: 50vh; overflow: auto; }
+.acc-list.disabled { opacity: 0.4; pointer-events: none; }
+.acc-libs { display: flex; flex-direction: column; gap: 0.35rem; margin: 0.35rem 0 0.25rem 1.6rem; }
+.acc-lib-items { display: flex; flex-wrap: wrap; gap: 0.35rem 1rem; }
 .user-add { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.75rem; }
 .user-add .input { flex: 1; min-width: 140px; }
 .section-title { font-size: 1.1rem; margin: 0 0 0.75rem; display: flex; align-items: center; gap: 0.5rem; }
