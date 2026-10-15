@@ -105,7 +105,7 @@ def test_plex_subtitle_endpoint(monkeypatch, tmp_path):
         config_store.replace_sources(cfg, [
             {"id": "px", "type": "plex", "name": "집", "url": str(origin_srv.make_url("")).rstrip("/"), "token": "TOK"}])
         config_store.save(cfg)
-        client = TestClient(TestServer(server.create_app()))
+        client = TestClient(TestServer(server.create_app(require_auth=False)))
         await client.start_server()
         try:
             r = await client.get("/api/plex-sub/px", params={"path": "/library/streams/31", "codec": "smi"})

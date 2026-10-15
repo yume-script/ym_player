@@ -32,11 +32,70 @@ export async function renderSettings(main, _params, _query, ctx) {
         h('p', { class: 'muted settings-note' },
             'Plex 토큰은 이 서버(data/config.json)에만 저장되고 브라우저로는 내려오지 않습니다. ',
             '토큰 칸을 비워두고 저장하면 기존 토큰을 그대로 씁니다. (텔레그램 API Hash도 같습니다)'),
+        usersBox(),
+        h('h2', { class: 'section-title' }, icon('layer-group'), ' 소스'),
         list);
     main.appendChild(page);
 
     window.onbeforeunload = () => (dirty ? true : undefined);
     ctx.onLeave(() => { window.onbeforeunload = null; });
+
+    /** 사용자 관리 (바로 적용 - 아래 소스의 [저장]과 상관없음) */
+    function usersBox() {
+        const box = h('div', { class: 'src-card users-box' });
+        const draw = async () => {
+            clear(box).appendChild(h('h2', {}, icon('users'), ' 사용자'));
+            let users = [];
+            try { users = (await api('/api/users')).users; } catch (e) { box.appendChild(h('p', { class: 'muted error', text: e.message })); return; }
+            const me = registry.user.username;
+            for (const u of users) {
+                const roleSel = h('select', { class: 'select' },
+                    h('option', { value: 'admin', text: '관리자', selected: u.role === 'admin' }),
+                    h('option', { value: 'user', text: '사용자', selected: u.role === 'user' }));
+                roleSel.addEventListener('change', async () => {
+                    try {
+                        await api(`/api/users/${encodeURIComponent(u.username)}`, { method: 'PUT', json: { role: roleSel.value } });
+                        toast(`${u.username}: ${roleSel.value === 'admin' ? '관리자' : '사용자'}로 바꿨습니다.`, 'success');
+                    } catch (e) { toast(e.message, 'error'); }
+                    draw();
+                });
+                const pwBtn = h('button', { class: 'btn btn-sm', title: '이 사용자의 비밀번호를 새로 정하기' }, icon('key'), ' 비밀번호');
+                pwBtn.addEventListener('click', async () => {
+                    const pw = prompt(`${u.username}의 새 비밀번호 (6자 이상)`);
+                    if (!pw) return;
+                    try {
+                        await api(`/api/users/${encodeURIComponent(u.username)}`, { method: 'PUT', json: { password: pw } });
+                        toast('비밀번호를 바꿨습니다. 그 사용자의 기존 로그인은 끊깁니다.', 'success');
+                    } catch (e) { toast(e.message, 'error'); }
+                });
+                const delBtn = h('button', { class: 'icon-btn danger', title: '삭제', disabled: u.username === me }, icon('trash'));
+                delBtn.addEventListener('click', async () => {
+                    if (!confirm(`사용자 "${u.username}"를 지울까요?`)) return;
+                    try { await api(`/api/users/${encodeURIComponent(u.username)}`, { method: 'DELETE' }); toast('지웠습니다.'); } catch (e) { toast(e.message, 'error'); }
+                    draw();
+                });
+                box.appendChild(h('div', { class: 'user-row' },
+                    h('span', { class: 'uname' }, icon(u.role === 'admin' ? 'user-shield' : 'user'), ` ${u.username}`,
+                        u.username === me ? h('span', { class: 'me', text: '나' }) : null),
+                    roleSel, pwBtn, delBtn));
+            }
+            const nameIn = h('input', { class: 'input', placeholder: '새 아이디', autocomplete: 'off' });
+            const pwIn = h('input', { class: 'input', type: 'password', placeholder: '비밀번호 (6자 이상)', autocomplete: 'new-password' });
+            const roleIn = h('select', { class: 'select' }, h('option', { value: 'user', text: '사용자' }), h('option', { value: 'admin', text: '관리자' }));
+            const addBtn = h('button', { class: 'btn btn-accent' }, icon('user-plus'), ' 추가');
+            addBtn.addEventListener('click', async () => {
+                try {
+                    await api('/api/users', { method: 'POST', json: { username: nameIn.value.trim(), password: pwIn.value, role: roleIn.value } });
+                    toast(`${nameIn.value.trim()} 사용자를 추가했습니다.`, 'success');
+                    draw();
+                } catch (e) { toast(e.message, 'error'); }
+            });
+            box.append(h('div', { class: 'user-add' }, nameIn, pwIn, roleIn, addBtn),
+                h('p', { class: 'field-hint', text: '사용자는 보기만 할 수 있고 이 설정 화면에는 들어올 수 없습니다. 이어보기(텔레그램)는 사람마다 따로 기록됩니다.' }));
+        };
+        draw();
+        return box;
+    }
 
     function touch() { dirty = true; saveBtn.classList.add('pulse'); }
 

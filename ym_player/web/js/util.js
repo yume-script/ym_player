@@ -104,6 +104,11 @@ export async function api(path, opts = {}) {
     const res = await fetch(path, init);
     let data = null;
     try { data = await res.json(); } catch (e) { /* 본문 없음 */ }
+    if (res.status === 401 && data && data.login) {
+        // 로그인이 풀렸으면(만료, 비밀번호 변경, 계정 삭제) 로그인 화면으로
+        location.href = '/login';
+        throw new Error('로그인이 필요합니다.');
+    }
     if (!res.ok || (data && data.success === false)) {
         throw new Error((data && (data.error || data.message)) || `HTTP ${res.status}`);
     }

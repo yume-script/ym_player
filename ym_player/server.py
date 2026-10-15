@@ -3,11 +3,14 @@
 실행:  python -m ym_player            (기본 http://127.0.0.1:8899)
 환경변수:
     MP_HOST / MP_PORT        듣는 주소/포트 (기본 127.0.0.1 / 8899)
-    MP_USER / MP_PASSWORD    둘 다 넣으면 HTTP 기본 인증을 건다 (LAN/외부에 열 때 꼭)
+    MP_USER / MP_PASSWORD    사용자가 아직 없을 때 이 아이디/비밀번호로 첫 관리자를 만든다
+                             (없으면 첫 접속 화면에서 관리자 계정을 만든다 - auth.py)
     MP_DATA_DIR              설정 폴더 (기본 ym_player/data)
 
 하는 일:
-- /                       web/index.html (단일 페이지 앱)
+- /                       web/index.html (단일 페이지 앱) - 로그인해야 열림, 아니면 /login
+- /login, /api/auth/...   로그인 화면, 로그인/로그아웃/첫 관리자 만들기/비밀번호 변경
+- /api/users              사용자 관리 (관리자만)
 - /api/config             소스 목록 조회/저장 (Plex 토큰은 브라우저로 안 내보냄)
 - /api/iptv/{id}/channels M3U를 받아 채널 목록 JSON으로
 - /api/iptv/{id}/epg      XMLTV(.gz 포함)를 받아 지금-3시간 ~ +24시간 편성표 JSON으로
@@ -18,9 +21,8 @@
 - /api/plex-auth/...      plex.tv PIN 로그인 (토큰/서버 목록 받아오기)
 """
 import asyncio
-import base64
-import hmac
 import logging
+import re
 import os
 import time
 from urllib.parse import urlencode
@@ -28,7 +30,7 @@ from urllib.parse import urlencode
 from aiohttp import ClientSession, ClientTimeout, web
 from yarl import URL
 
-from . import config_store, iptv, subtitles, telegram_src
+from . import auth, config_store, iptv, subtitles, telegram_src
 
 log = logging.getLogger("ym_player")
 
@@ -50,7 +52,8 @@ _PASS_REQ_HEADERS = ("Range", "Accept", "Accept-Language", "Content-Type", "If-N
 HTTP = web.AppKey("http", ClientSession)
 CHANNEL_CACHE = web.AppKey("channel_cache", dict)
 EPG_CACHE = web.AppKey("epg_cache", dict)
-TELEGRAM = web.AppKey("telegram", dict)  # 소스 id -> telegram_src.TelegramSource (연결을 계속 유지)
+TELEGRAM = web.AppKey("telegram", dict)
+REQUIRE_AUTH = web.AppKey("require_auth", bool)  # 소스 id -> telegram_src.TelegramSource (연결을 계속 유지)
 
 
 # ---------------------------------------------------------------------------
@@ -60,21 +63,41 @@ def _json_error(status, message):
     return web.json_response({"success": False, "error": message}, status=status)
 
 
+# 로그인 없이 열리는 경로 (로그인 화면과 그 화면이 쓰는 것만)
+_PUBLIC_PATHS = {"/login", "/api/auth/state", "/api/auth/login", "/api/auth/setup"}
+
+
 @web.middleware
-async def basic_auth_middleware(request, handler):
-    user, pw = os.environ.get("MP_USER"), os.environ.get("MP_PASSWORD")
-    if user and pw:
-        header = request.headers.get("Authorization", "")
-        ok = False
-        if header.startswith("Basic "):
-            try:
-                got_user, _, got_pw = base64.b64decode(header[6:]).decode("utf-8").partition(":")
-                ok = hmac.compare_digest(got_user, user) and hmac.compare_digest(got_pw, pw)
-            except (ValueError, UnicodeDecodeError):
-                ok = False
-        if not ok:
-            return web.Response(status=401, headers={"WWW-Authenticate": f'Basic realm="{PRODUCT}"'})
-    return await handler(request)
+async def auth_middleware(request, handler):
+    """로그인한 사용자를 request["user"]에 넣는다. 안 했으면 API는 401, 화면은 /login으로."""
+    if not request.app[REQUIRE_AUTH]:
+        request["user"] = {"username": "", "role": "admin"}
+        return await handler(request)
+    user = auth.user_from_token(request.cookies.get(auth.COOKIE))
+    if user:
+        request["user"] = auth.public_user(user)
+        return await handler(request)
+    if request.path in _PUBLIC_PATHS or request.path.startswith("/static/"):
+        return await handler(request)
+    if request.path.startswith("/api/"):
+        return web.json_response({"success": False, "error": "로그인이 필요합니다.", "login": True}, status=401)
+    raise web.HTTPFound("/login")
+
+
+def is_admin(request):
+    return request.get("user", {}).get("role") == "admin"
+
+
+def admin_only(handler):
+    async def wrapped(request, *args):
+        if not is_admin(request):
+            return _json_error(403, "관리자만 할 수 있습니다.")
+        return await handler(request, *args)
+    return wrapped
+
+
+def username(request):
+    return request.get("user", {}).get("username", "")
 
 
 async def _fetch_bytes(session, url, timeout=30, headers=None, max_bytes=TEXT_MAX_BYTES):
@@ -116,10 +139,19 @@ async def _pipe_response(request, upstream):
 # ---------------------------------------------------------------------------
 # 설정
 # ---------------------------------------------------------------------------
+# 관리자가 아닌 사용자에게는 서버 주소/M3U 주소(키가 들어 있기도 함)/API ID 등을 안 보여준다
+_USER_VISIBLE = ("id", "type", "name", "enabled", "channels", "hidden_libraries")
+
+
 async def get_config(request):
-    return web.json_response(config_store.public_config(config_store.load()))
+    pub = config_store.public_config(config_store.load())
+    if not is_admin(request):
+        pub["sources"] = [{**{k: s[k] for k in _USER_VISIBLE if k in s}, "has_epg": bool(s.get("epg"))}
+                          for s in pub["sources"]]
+    return web.json_response(pub)
 
 
+@admin_only
 async def put_config(request):
     try:
         body = await request.json()
@@ -273,6 +305,8 @@ async def plex_proxy(request):
     src = config_store.get_source(cfg, request.match_info["sid"])
     if not src or src.get("type") != "plex":
         return _json_error(404, "Plex 소스를 찾을 수 없습니다.")
+    if not is_admin(request) and not _plex_allowed_for_user(request):
+        return _json_error(403, "이 Plex 요청은 관리자만 할 수 있습니다.")
     # 이미 인코딩된 원래 모양 그대로 넘긴다 (match_info/query_string은 디코딩된 값이라
     # /library/parts/.../파일명.mkv 의 %20 같은 게 깨진다)
     raw_path = request.rel_url.raw_path
@@ -329,6 +363,17 @@ async def plex_subtitle(request):
                         headers={"Cache-Control": "private, max-age=3600"})
 
 
+_PLEX_USER_PUT = re.compile(r"^/api/plex/[^/]+/library/parts/\d+$")
+
+
+def _plex_allowed_for_user(request):
+    """일반 사용자는 서버 토큰으로 읽기(GET)만. 쓰기는 재생기가 쓰는 자막 선택 저장(PUT parts)뿐."""
+    if request.method in ("GET", "HEAD"):
+        return True
+    return request.method == "PUT" and bool(_PLEX_USER_PUT.match(request.path))
+
+
+@admin_only
 async def plex_pin_create(request):
     cfg = config_store.load()
     async with request.app[HTTP].post("https://plex.tv/api/v2/pins?strong=true",
@@ -343,6 +388,7 @@ async def plex_pin_create(request):
     return web.json_response({"success": True, "id": pin["id"], "auth_url": auth_url})
 
 
+@admin_only
 async def plex_pin_check(request):
     """PIN이 승인됐으면 계정 토큰으로 서버 목록(각 서버 접속 주소 + 서버용 토큰)을 돌려준다."""
     cfg = config_store.load()
@@ -419,29 +465,34 @@ async def _json_body(request):
     return body if isinstance(body, dict) else {}
 
 
+@admin_only
 @telegram_api
 async def tg_status(request, tg):
     return web.json_response({"success": True, **await tg.status()})
 
 
+@admin_only
 @telegram_api
 async def tg_code(request, tg):
     body = await _json_body(request)
     return web.json_response({"success": True, **await tg.send_code(str(body.get("phone") or ""))})
 
 
+@admin_only
 @telegram_api
 async def tg_sign_in(request, tg):
     body = await _json_body(request)
     return web.json_response({"success": True, **await tg.sign_in(str(body.get("code") or ""), str(body.get("password") or ""))})
 
 
+@admin_only
 @telegram_api
 async def tg_logout(request, tg):
     await tg.logout()
     return web.json_response({"success": True, "authorized": False})
 
 
+@admin_only
 @telegram_api
 async def tg_channels(request, tg):
     return web.json_response({"success": True, "channels": await tg.list_channels()})
@@ -459,7 +510,8 @@ async def tg_videos(request, tg):
     channel = request.query.get("channel")
     channels = [int(channel)] if channel and channel.lstrip("-").isdigit() else list(tg.channels)
     data = await tg.videos(channels, offset=_int_arg(request, "offset"), limit=_int_arg(request, "limit", 40, 1, 200),
-                           q=request.query.get("q", "").strip(), sort=request.query.get("sort", "latest"))
+                           q=request.query.get("q", "").strip(), sort=request.query.get("sort", "latest"),
+                           user=username(request))
     return web.json_response({"success": True, **data})
 
 
@@ -468,7 +520,7 @@ async def tg_home(request, tg):
     """홈 줄: 이어보기 + 채널마다 최신 영상 몇 개. 채널들을 동시에, 오래된 쪽 채우기 없이."""
     async def one(ch):
         try:
-            data = await tg.videos([ch], limit=12, fill=False)
+            data = await tg.videos([ch], limit=12, fill=False, user=username(request))
         except telegram_src.TgError:
             raise
         except Exception as e:
@@ -477,7 +529,8 @@ async def tg_home(request, tg):
         return {"channel": ch, "items": data["items"]}
 
     rows = [r for r in await asyncio.gather(*(one(ch) for ch in tg.channels)) if r]
-    return web.json_response({"success": True, "continue": telegram_src.continue_watching(tg.sid, tg.channels),
+    return web.json_response({"success": True,
+                              "continue": telegram_src.continue_watching(tg.sid, tg.channels, user=username(request)),
                               "channels": rows})
 
 
@@ -491,7 +544,7 @@ def _ids(request, tg):
 @telegram_api
 async def tg_video(request, tg):
     channel, msg = _ids(request, tg)
-    row = telegram_src.get_video(tg.sid, channel, msg)
+    row = telegram_src.get_video(tg.sid, channel, msg, user=username(request))
     if not row:
         return _json_error(404, "색인에 없는 영상입니다.")
     return web.json_response({"success": True, "item": row})
@@ -547,7 +600,114 @@ async def tg_progress(request, tg):
         return _json_error(404, "설정에서 고르지 않은 채널입니다.")
     watched = body.get("watched")
     telegram_src.save_progress(tg.sid, channel, msg, body.get("position"), body.get("duration"),
-                               None if watched is None else bool(watched))
+                               None if watched is None else bool(watched), user=username(request))
+    return web.json_response({"success": True})
+
+
+# ---------------------------------------------------------------------------
+# 로그인 / 사용자
+# ---------------------------------------------------------------------------
+def _set_session(request, resp, user, remember):
+    resp.set_cookie(auth.COOKIE, auth.make_token(user, remember), httponly=True, samesite="Lax",
+                    secure=request.secure, path="/", max_age=auth.REMEMBER_SEC if remember else None)
+    return resp
+
+
+async def login_page(request):
+    return web.FileResponse(os.path.join(WEB_DIR, "login.html"), headers={"Cache-Control": "no-cache"})
+
+
+async def auth_state(request):
+    user = auth.user_from_token(request.cookies.get(auth.COOKIE))
+    return web.json_response({"success": True, "setup": auth.needs_setup(),
+                              "user": auth.public_user(user) if user else None})
+
+
+async def auth_login(request):
+    ip = request.remote or "?"
+    if auth.throttled(ip):
+        return _json_error(429, "로그인 실패가 너무 많습니다. 10분 뒤에 다시 시도하세요.")
+    body = await _json_body(request)
+    user = auth.verify_password(body.get("username"), str(body.get("password") or ""))
+    if not user:
+        auth.record_failure(ip)
+        await asyncio.sleep(0.5)  # 무작위 대입을 느리게
+        return _json_error(401, "아이디 또는 비밀번호가 틀렸습니다.")
+    auth.clear_failures(ip)
+    return _set_session(request, web.json_response({"success": True, "user": auth.public_user(user)}),
+                        user, bool(body.get("remember")))
+
+
+async def auth_setup(request):
+    """사용자가 하나도 없을 때만: 첫 관리자 만들기."""
+    if not auth.needs_setup():
+        return _json_error(403, "이미 관리자 계정이 있습니다.")
+    body = await _json_body(request)
+    try:
+        auth.create_user(body.get("username"), str(body.get("password") or ""), "admin")
+    except auth.AuthError as e:
+        return _json_error(400, str(e))
+    user = auth.find_user(body.get("username"))
+    return _set_session(request, web.json_response({"success": True, "user": auth.public_user(user)}),
+                        user, bool(body.get("remember")))
+
+
+async def auth_logout(request):
+    resp = web.json_response({"success": True})
+    resp.del_cookie(auth.COOKIE, path="/")
+    return resp
+
+
+async def auth_me(request):
+    return web.json_response({"success": True, "user": request.get("user")})
+
+
+async def auth_password(request):
+    """내 비밀번호 바꾸기 (지금 비밀번호 확인). 바꾸면 다른 기기의 로그인은 끊기고 이 기기는 새 쿠키."""
+    body = await _json_body(request)
+    name = username(request)
+    if not auth.verify_password(name, str(body.get("current") or "")):
+        return _json_error(400, "지금 비밀번호가 틀렸습니다.")
+    try:
+        auth.update_user(name, password=str(body.get("new") or ""))
+    except auth.AuthError as e:
+        return _json_error(400, str(e))
+    return _set_session(request, web.json_response({"success": True}), auth.find_user(name), True)
+
+
+@admin_only
+async def users_list(request):
+    return web.json_response({"success": True, "users": [auth.public_user(u) for u in auth.load_users()]})
+
+
+@admin_only
+async def users_create(request):
+    body = await _json_body(request)
+    try:
+        user = auth.create_user(body.get("username"), str(body.get("password") or ""), body.get("role") or "user")
+    except auth.AuthError as e:
+        return _json_error(400, str(e))
+    return web.json_response({"success": True, "user": user})
+
+
+@admin_only
+async def users_update(request):
+    body = await _json_body(request)
+    try:
+        user = auth.update_user(request.match_info["name"],
+                                password=str(body["password"]) if body.get("password") else None,
+                                role=body.get("role"), acting=username(request))
+    except auth.AuthError as e:
+        return _json_error(400, str(e))
+    return web.json_response({"success": True, "user": user})
+
+
+@admin_only
+async def users_delete(request):
+    try:
+        auth.delete_user(request.match_info["name"], acting=username(request))
+    except auth.AuthError as e:
+        return _json_error(400, str(e))
     return web.json_response({"success": True})
 
 
@@ -561,6 +721,12 @@ async def index(request):
 
 async def _on_startup(app):
     app[HTTP] = ClientSession(auto_decompress=True)
+    if app[REQUIRE_AUTH]:
+        made = auth.bootstrap_from_env()
+        if made:
+            log.info("MP_USER로 첫 관리자 '%s'를 만들었습니다.", made["username"])
+        admins = [u["username"] for u in auth.load_users() if u["role"] == "admin"]
+        telegram_src.MIGRATE_USER = admins[0] if admins else ""
 
 
 async def _on_cleanup(app):
@@ -572,8 +738,10 @@ async def _on_cleanup(app):
             pass
 
 
-def create_app():
-    app = web.Application(middlewares=[basic_auth_middleware], client_max_size=8 * 1024 * 1024)
+def create_app(require_auth=True):
+    """require_auth=False는 테스트용 (모든 요청을 관리자로 본다)."""
+    app = web.Application(middlewares=[auth_middleware], client_max_size=8 * 1024 * 1024)
+    app[REQUIRE_AUTH] = require_auth
     app[CHANNEL_CACHE] = {}
     app[EPG_CACHE] = {}
     app[TELEGRAM] = {}
@@ -581,6 +749,17 @@ def create_app():
     app.on_cleanup.append(_on_cleanup)
 
     app.router.add_get("/", index)
+    app.router.add_get("/login", login_page)
+    app.router.add_get("/api/auth/state", auth_state)
+    app.router.add_post("/api/auth/login", auth_login)
+    app.router.add_post("/api/auth/setup", auth_setup)
+    app.router.add_post("/api/auth/logout", auth_logout)
+    app.router.add_get("/api/auth/me", auth_me)
+    app.router.add_post("/api/auth/password", auth_password)
+    app.router.add_get("/api/users", users_list)
+    app.router.add_post("/api/users", users_create)
+    app.router.add_put("/api/users/{name}", users_update)
+    app.router.add_delete("/api/users/{name}", users_delete)
     app.router.add_get("/api/config", get_config)
     app.router.add_put("/api/config", put_config)
     app.router.add_get("/api/iptv/{sid}/channels", iptv_channels)
@@ -609,9 +788,10 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     host = os.environ.get("MP_HOST", "127.0.0.1")
     port = int(os.environ.get("MP_PORT", "8899"))
-    if host not in ("127.0.0.1", "localhost", "::1") and not (os.environ.get("MP_USER") and os.environ.get("MP_PASSWORD")):
-        log.warning("MP_HOST=%s 로 열지만 MP_USER/MP_PASSWORD가 없습니다 - 같은 네트워크의 누구나 "
-                    "스트림 중계/설정 변경을 할 수 있습니다.", host)
+    if host not in ("127.0.0.1", "localhost", "::1") and auth.needs_setup() and not (
+            os.environ.get("MP_USER") and os.environ.get("MP_PASSWORD")):
+        log.warning("MP_HOST=%s 로 열었고 아직 사용자가 없습니다 - 가장 먼저 접속한 사람이 관리자 계정을 만들게 됩니다. "
+                    "바로 접속해서 관리자를 만들거나 MP_USER/MP_PASSWORD를 넣고 시작하세요.", host)
     web.run_app(create_app(), host=host, port=port, print=lambda *_: log.info("Yume Player: http://%s:%d", host, port))
 
 

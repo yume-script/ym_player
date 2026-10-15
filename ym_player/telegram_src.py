@@ -137,7 +137,12 @@ CREATE TABLE IF NOT EXISTS peers(source TEXT, channel INTEGER, access_hash TEXT,
     PRIMARY KEY(source, channel));
 CREATE TABLE IF NOT EXISTS progress(source TEXT, channel INTEGER, msg INTEGER, position REAL,
     duration REAL, watched INTEGER DEFAULT 0, updated REAL, PRIMARY KEY(source, channel, msg));
+CREATE TABLE IF NOT EXISTS user_progress(source TEXT, user TEXT, channel INTEGER, msg INTEGER, position REAL,
+    duration REAL, watched INTEGER DEFAULT 0, updated REAL, PRIMARY KEY(source, user, channel, msg));
 """
+# 이어보기는 사용자마다 따로 (user_progress). 예전 progress(사용자 구분 없음)는 처음 한 번 MIGRATE_USER 몫으로 옮긴다.
+MIGRATE_USER = ""
+_migrated = set()
 
 
 def db():
@@ -145,6 +150,14 @@ def db():
     conn = sqlite3.connect(os.path.join(config_store.DATA_DIR, "telegram.db"))
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA)
+    path = config_store.DATA_DIR
+    if path not in _migrated:
+        _migrated.add(path)
+        if MIGRATE_USER and not conn.execute("SELECT 1 FROM user_progress LIMIT 1").fetchone():
+            with conn:
+                conn.execute("""INSERT OR IGNORE INTO user_progress(source,user,channel,msg,position,duration,watched,updated)
+                                SELECT source,?,channel,msg,position,duration,watched,updated FROM progress""",
+                             (MIGRATE_USER,))
     return conn
 
 
@@ -186,15 +199,16 @@ def _row(r, prog):
     return d
 
 
-def _progress_map(conn, sid, rows):
+def _progress_map(conn, sid, rows, user=""):
     keys = {(r["channel"], r["msg"]) for r in rows}
     if not keys:
         return {}
-    got = conn.execute("SELECT channel,msg,position,duration,watched FROM progress WHERE source=?", (sid,)).fetchall()
+    got = conn.execute("SELECT channel,msg,position,duration,watched FROM user_progress WHERE source=? AND user=?",
+                       (sid, user)).fetchall()
     return {(p["channel"], p["msg"]): dict(p) for p in got if (p["channel"], p["msg"]) in keys}
 
 
-def query_videos(sid, channels, offset=0, limit=40, q="", sort="latest"):
+def query_videos(sid, channels, offset=0, limit=40, q="", sort="latest", user=""):
     if not channels:
         return [], 0
     marks = ",".join("?" * len(channels))
@@ -209,47 +223,47 @@ def query_videos(sid, channels, offset=0, limit=40, q="", sort="latest"):
         total = conn.execute(f"SELECT COUNT(*) FROM videos WHERE {where}", args).fetchone()[0]
         rows = conn.execute(f"SELECT * FROM videos WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
                             [*args, int(limit), int(offset)]).fetchall()
-        prog = _progress_map(conn, sid, rows)
+        prog = _progress_map(conn, sid, rows, user)
     return [_row(r, prog) for r in rows], total
 
 
-def get_video(sid, channel, msg):
+def get_video(sid, channel, msg, user=""):
     with db() as conn:
         r = conn.execute("SELECT * FROM videos WHERE source=? AND channel=? AND msg=?", (sid, channel, msg)).fetchone()
         if not r:
             return None
-        return _row(r, _progress_map(conn, sid, [r]))
+        return _row(r, _progress_map(conn, sid, [r], user))
 
 
-def continue_watching(sid, channels, limit=20):
+def continue_watching(sid, channels, limit=20, user=""):
     if not channels:
         return []
     marks = ",".join("?" * len(channels))
     with db() as conn:
         rows = conn.execute(
-            f"""SELECT v.*, p.position, p.watched FROM progress p JOIN videos v
+            f"""SELECT v.*, p.position, p.watched FROM user_progress p JOIN videos v
                 ON v.source=p.source AND v.channel=p.channel AND v.msg=p.msg
-                WHERE p.source=? AND p.channel IN ({marks}) AND p.watched=0 AND p.position > 30
-                ORDER BY p.updated DESC LIMIT ?""", [sid, *channels, limit]).fetchall()
+                WHERE p.source=? AND p.user=? AND p.channel IN ({marks}) AND p.watched=0 AND p.position > 30
+                ORDER BY p.updated DESC LIMIT ?""", [sid, user, *channels, limit]).fetchall()
     return [dict(r) for r in rows]
 
 
-def save_progress(sid, channel, msg, position, duration, watched=None):
+def save_progress(sid, channel, msg, position, duration, watched=None, user=""):
     position, duration = float(position or 0), float(duration or 0)
     if watched is None:
         watched = 1 if duration and position >= duration * 0.95 else 0
     with db() as conn:
         conn.execute(
-            """INSERT INTO progress(source,channel,msg,position,duration,watched,updated) VALUES(?,?,?,?,?,?,?)
-               ON CONFLICT(source,channel,msg) DO UPDATE SET position=excluded.position, duration=excluded.duration,
+            """INSERT INTO user_progress(source,user,channel,msg,position,duration,watched,updated) VALUES(?,?,?,?,?,?,?,?)
+               ON CONFLICT(source,user,channel,msg) DO UPDATE SET position=excluded.position, duration=excluded.duration,
                  watched=excluded.watched, updated=excluded.updated""",
-            (sid, channel, msg, 0 if watched else position, duration, int(bool(watched)), time.time()))
+            (sid, user, channel, msg, 0 if watched else position, duration, int(bool(watched)), time.time()))
 
 
 def forget_source(sid):
     """소스를 지우면 그 색인/진행 기록도 지운다 (세션 파일은 TelegramSource.logout이)."""
     with db() as conn:
-        for table in ("videos", "sync_state", "peers", "progress"):
+        for table in ("videos", "sync_state", "peers", "progress", "user_progress"):
             conn.execute(f"DELETE FROM {table} WHERE source=?", (sid,))
 
 
@@ -463,7 +477,7 @@ class TelegramSource:
             save_sync_state(self.sid, channel, oldest=min(ids + [st["oldest"]]), complete=int(len(ids) < SCAN_BATCH))
             return bool(ids)
 
-    async def videos(self, channels, offset=0, limit=40, q="", sort="latest", fill=True):
+    async def videos(self, channels, offset=0, limit=40, q="", sort="latest", fill=True, user=""):
         """목록. 이미 색인한 채널은 DB에서 바로 돌려주고 새 영상 받기는 뒤에서 한다 (기다리지 않음).
 
         - 처음 보는 채널만 첫 SCAN_BATCH개를 받을 때까지 기다린다 (보여줄 게 없으니까)
@@ -485,13 +499,13 @@ class TelegramSource:
             elif time.time() - st["latest_at"] >= LATEST_SYNC_SEC:
                 self.background(("latest", c), lambda c=c: self.sync_latest(c))
                 syncing = True
-        rows, total = query_videos(self.sid, channels, offset, limit, q, sort)
+        rows, total = query_videos(self.sid, channels, offset, limit, q, sort, user)
         if fill and len(channels) == 1 and not q and sort == "latest":
             ch = channels[0]
             for _ in range(OLDER_BATCHES_PER_PAGE):
                 if len(rows) >= limit or not await self.sync_older(ch):
                     break
-                rows, total = query_videos(self.sid, channels, offset, limit, q, sort)
+                rows, total = query_videos(self.sid, channels, offset, limit, q, sort, user)
             ahead = total - (offset + len(rows))
             if ahead < limit * 2 and not sync_state(self.sid, ch)["complete"]:
                 self.background(("older", ch), lambda: self.sync_older(ch))

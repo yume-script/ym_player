@@ -9,6 +9,8 @@ const TYPES = { plex: PlexProvider, iptv: IptvProvider, telegram: TelegramProvid
 
 export const registry = {
     config: { client_id: '', sources: [] },
+    user: { username: '', role: 'user' },   // 로그인한 사람 (app.js가 채움)
+    isAdmin() { return this.user && this.user.role === 'admin'; },
     providers: [],
 
     async load() {

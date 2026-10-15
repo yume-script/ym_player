@@ -37,10 +37,25 @@ sudo systemctl enable --now ym_player
 | 환경변수 | 기본값 | 설명 |
 |---|---|---|
 | `MP_HOST` / `MP_PORT` | `127.0.0.1` / `8899` | 집 안 TV·폰에서 보려면 `MP_HOST=0.0.0.0` |
-| `MP_USER` / `MP_PASSWORD` | (없음) | 둘 다 넣으면 HTTP 기본 인증. **127.0.0.1 밖으로 열 땐 꼭 넣으세요** |
+| `MP_USER` / `MP_PASSWORD` | (없음) | 사용자가 아직 없을 때 이 아이디/비밀번호로 **첫 관리자**를 만듭니다 (없으면 첫 접속 화면에서 만듦) |
 | `MP_DATA_DIR` | `ym_player/data` | 설정 파일(`config.json`) 위치. git에 안 올라감 |
 
-처음 열면 소스가 없으니 오른쪽 위 ⚙️ **설정**에서 추가합니다.
+### 로그인과 사용자
+
+- 처음 접속하면 **관리자 계정 만들기** 화면이 나옵니다. 이후로는 로그인 화면에서 아이디/비밀번호로 들어옵니다
+  ("로그인 유지"를 켜면 30일, 끄면 브라우저를 닫을 때까지).
+- **관리자**: 사이드바 맨 아래 ⚙️ **설정**에서 소스를 관리하고, 설정 맨 위 **사용자**에서 사용자를 추가/삭제하고 권한(관리자/사용자)과
+  비밀번호를 바꿉니다.
+- **사용자**: 보기만 합니다. 설정 메뉴가 안 보이고 주소로 들어가도 막힙니다. 서버도 설정 저장/사용자 관리/Plex 로그인/텔레그램 로그인을
+  관리자만 하게 막고, 사용자에게는 M3U 주소·Plex 서버 주소·API ID 같은 값을 내려주지 않습니다. Plex 중계도 읽기와 재생기의
+  자막 선택 저장만 허용합니다.
+- 모두 사이드바 맨 아래에서 **비밀번호 변경**과 **로그아웃**을 할 수 있습니다. 비밀번호를 바꾸면 그 사람의 다른 기기 로그인은 끊깁니다.
+- 텔레그램 **이어보기는 사람마다 따로** 기록합니다. Plex는 서버 하나의 토큰으로 보기 때문에 시청 기록을 모두가 같이 씁니다.
+- 계정은 `data/users.json`(비밀번호는 PBKDF2 해시만), 로그인 쿠키 서명 키는 `data/secret.key`에 있습니다. 로그인 실패가 IP마다
+  10분에 10번을 넘으면 잠시 막습니다.
+- 예전처럼 `MP_USER`/`MP_PASSWORD`를 넣어 두었다면, 처음 시작할 때 그 계정이 관리자로 만들어집니다.
+
+처음 열면 소스가 없으니 사이드바 맨 아래 ⚙️ **설정**에서 추가합니다.
 
 - **Plex 계정으로 추가**: plex.tv 로그인 창이 뜨고, 허용하면 계정에 연결된 서버와 접속 주소(로컬/원격/릴레이)
   목록이 나옵니다. 하나 고르고 **[저장]**.
@@ -83,11 +98,12 @@ sudo systemctl enable --now ym_player
 ```
 ym_player/                       저장소 루트
 ├── requirements.txt
-├── tests/                       test_ym_player.py, test_subtitles.py, test_telegram.py
+├── tests/                       test_ym_player.py, test_subtitles.py, test_telegram.py, test_auth.py
 └── ym_player/                   파이썬 패키지 (python -m ym_player)
     ├── server.py                aiohttp 서버 - 정적 파일 + 아래 API
     ├── iptv.py                  M3U 파싱, XMLTV 파싱(iterparse, gzip), HLS 재생목록 주소 바꾸기 (순수 함수)
     ├── config_store.py          data/config.json 읽기/쓰기, 토큰 숨기기
+    ├── auth.py                  사용자(users.json)·비밀번호 해시·로그인 쿠키·실패 제한
     ├── subtitles.py             자막 SRT/SMI/ASS/VTT -> WebVTT 변환 (순수 함수)
     ├── telegram_src.py          텔레그램: Telethon 로그인/채널/색인(SQLite)/Range 스트림/썸네일/이어보기
     └── web/
@@ -113,6 +129,8 @@ ym_player/                       저장소 루트
 | `GET /api/iptv/{id}/channels` | M3U를 받아 채널 JSON으로 (10분 캐시, `?refresh=1`) |
 | `GET /api/iptv/{id}/epg` | XMLTV를 받아 **지금 −3시간 ~ +24시간**만 JSON으로 (30분 캐시) |
 | `GET /api/stream?url=&ua=&ref=` | CORS·혼합콘텐츠로 막힌 스트림 중계. `.m3u8`이면 안의 주소(세그먼트·키·하위 목록)도 전부 중계 주소로 바꿈 |
+| `/login`, `/api/auth/state · login · setup · logout · me · password` | 로그인 화면, 로그인/로그아웃, 첫 관리자 만들기, 내 비밀번호 변경 |
+| `GET/POST /api/users`, `PUT/DELETE /api/users/{name}` | 사용자 관리 (관리자만) |
 | `/api/tg/{id}/status · code · sign-in · logout` | 텔레그램 로그인 (코드 → 2단계 비밀번호) |
 | `GET /api/tg/{id}/channels · videos · video/{c}/{m} · home` | 채널 목록, 영상 목록(색인·과거 채우기), 영상 하나, 홈 줄 |
 | `GET /api/tg/{id}/stream/{c}/{m}` · `thumb/{c}/{m}` · `POST progress` | Range 스트림, 썸네일, 재생 위치 저장 (설정에서 고른 채널만) |
@@ -180,9 +198,10 @@ getPlayback(id|채널)  -> {url, kind: 'hls'|'ts'|'direct', live, proxyUrl?, sta
 
 ## 주의할 점
 
-- `/api/stream`과 `/api/plex/…`는 서버가 대신 접속하는 중계라, 아무나 접근할 수 있으면 남의 요청을 대신 보내주는
-  통로가 됩니다. 집 안 네트워크(사설 IP) IPTV 서버도 틀 수 있게 일부러 사설 IP를 막지 않았으니,
-  `127.0.0.1` 밖으로 열 때는 **`MP_USER`/`MP_PASSWORD`를 꼭** 설정하세요.
+- `/api/stream`과 `/api/plex/…`는 서버가 대신 접속하는 중계라 로그인한 사람만 쓸 수 있습니다. 집 안 네트워크(사설 IP)
+  IPTV 서버도 틀 수 있게 일부러 사설 IP를 막지 않았으니, 사용자는 믿을 수 있는 사람만 추가하세요.
+- `127.0.0.1` 밖으로 열었는데 아직 관리자가 없으면 **가장 먼저 접속한 사람이 관리자가 됩니다.** 서버를 띄우자마자 직접
+  접속해서 관리자를 만들거나, `MP_USER`/`MP_PASSWORD`를 넣고 시작하세요.
 - 재생 엔진(hls.js 1.5.8, mpegts.js 1.7.3)과 아이콘은 CDN(jsDelivr, cdnjs)에서 받습니다. 인터넷이 안 되는 곳에서는
   이 파일들을 `web/` 아래에 두고 `index.html`의 주소를 바꾸세요.
 - 브라우저가 모르는 코덱(HEVC, AC3/DTS 음성 등)은 Plex가 트랜스코딩해 주지만, IPTV 스트림은 서버가 변환하지 않으므로

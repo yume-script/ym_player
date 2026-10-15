@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ko">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#141517">
+    <title>로그인 · Yume Player</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23e5a00d'/%3E%3Cpath d='M12 9l11 7-11 7z' fill='%23141517'/%3E%3C/svg%3E">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+    <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body class="login-body">
+    <main class="login-wrap">
+        <div class="login-brand"><span class="brand-mark"><i class="fa-solid fa-play"></i></span> Yume Player</div>
+        <form id="loginForm" class="login-card" autocomplete="on" novalidate>
+            <h1 id="loginTitle">로그인</h1>
+            <p id="setupNote" class="login-note hidden">처음 실행했습니다. 관리자 계정을 만들어 주세요.<br>관리자만 설정을 바꾸고 다른 사용자를 추가할 수 있습니다.</p>
+            <label class="login-field">
+                <i class="fa-solid fa-user"></i>
+                <input id="username" name="username" type="text" placeholder="아이디" autocomplete="username" autocapitalize="off" spellcheck="false" required>
+            </label>
+            <label class="login-field">
+                <i class="fa-solid fa-lock"></i>
+                <input id="password" name="password" type="password" placeholder="비밀번호" autocomplete="current-password" required>
+            </label>
+            <label class="login-field hidden" id="confirmField">
+                <i class="fa-solid fa-lock"></i>
+                <input id="confirm" type="password" placeholder="비밀번호 확인" autocomplete="new-password">
+            </label>
+            <div id="loginError" class="login-error hidden" role="alert"></div>
+            <button id="loginBtn" class="login-btn" type="submit">로그인</button>
+            <label class="login-remember"><input id="remember" type="checkbox" checked> 로그인 유지</label>
+        </form>
+    </main>
+    <script type="module" src="/static/js/login.js"></script>
+</body>
+</html>

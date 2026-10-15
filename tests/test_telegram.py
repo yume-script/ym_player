@@ -175,7 +175,7 @@ def run(coro_fn):
     from ym_player import server
 
     async def main():
-        client = TestClient(TestServer(server.create_app()))
+        client = TestClient(TestServer(server.create_app(require_auth=False)))
         await client.start_server()
         try:
             await coro_fn(client)
