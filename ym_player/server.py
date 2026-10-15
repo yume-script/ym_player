@@ -35,6 +35,7 @@ import re
 import os
 import platform
 import secrets
+import shutil
 import time
 from urllib.parse import urlencode
 
@@ -86,6 +87,8 @@ REQUIRE_AUTH = web.AppKey("require_auth", bool)
 TG_INTERNAL = web.AppKey("tg_internal", dict)   # ffmpeg용 내부 주소 토큰 -> (소스id, 채널, 메시지, 만료)
 TRANSCODES = web.AppKey("transcodes", dict)     # 사용자명 -> 돌고 있는 ffmpeg 프로세스
 PLEX_FILES = web.AppKey("plex_files", dict)  # 캐시 키 -> (크기, Content-Type) - Plex 원본 파일
+HLS_JOBS = web.AppKey("hls_jobs", dict)  # HLS 변환 id -> HlsJob (Safari용 서버 변환)
+HLS_SWEEPER = web.AppKey("hls_sweeper", asyncio.Task)
 PROBES = web.AppKey("probes", dict)  # (소스id, 채널, 메시지) -> 돌고 있는 ffprobe (같은 영상을 겹쳐 보지 않게)  # 소스 id -> telegram_src.TelegramSource (연결을 계속 유지)
 
 
@@ -1060,6 +1063,149 @@ async def tg_probe(request, tg):
     return web.json_response({"success": True})
 
 
+# ---- Safari용 서버 변환 (HLS) ------------------------------------------------------
+# Safari(아이폰/아이패드)는 길이를 모르는 스트림(tg_transcode)을 <video>로 열지 못하고, MP4 안의 MP3 소리는
+# 처음 몇 초를 못 낸다. 그래서 Safari에서는 같은 ffmpeg 변환을 HLS(fMP4 조각 + 재생목록)로 data/hls_tmp에 쓰고
+# 그 파일을 내준다. 탐색은 fMP4 스트림처럼 재생기가 ?start=초 로 새 변환을 시작한다.
+HLS_IDLE_SEC = 120
+_HLS_NAME_RE = re.compile(r"^(index\.m3u8|init\.mp4|seg\d{5}\.m4s)$")
+
+
+class HlsJob:
+    def __init__(self, job_id, owner, proc, folder, token, label):
+        self.id, self.owner, self.proc, self.dir, self.token, self.label = job_id, owner, proc, folder, token, label
+        self.last = time.monotonic()
+        self.errors = []
+        self.err_task = None
+
+    def playlist(self):
+        try:
+            with open(os.path.join(self.dir, "index.m3u8"), encoding="utf-8") as f:
+                return f.read()
+        except OSError:
+            return ""
+
+
+def _hls_root():
+    return os.path.join(config_store.DATA_DIR, "hls_tmp")
+
+
+async def _hls_stop(app, job):
+    app[HLS_JOBS].pop(job.id, None)
+    if job.proc.returncode is None:
+        job.proc.kill()
+    await job.proc.wait()
+    if job.err_task:
+        job.err_task.cancel()
+    app[TG_INTERNAL].pop(job.token, None)
+    jobs = app[TRANSCODES]
+    for k, v in list(jobs.items()):
+        if v is job.proc:
+            jobs.pop(k, None)
+    await asyncio.to_thread(shutil.rmtree, job.dir, True)
+
+
+async def _hls_sweeper(app):
+    """아무도 안 받아 가는 HLS 변환(창을 닫았거나 다른 영상으로 감)을 끄고 파일을 지운다."""
+    while True:
+        await asyncio.sleep(30)
+        now = time.monotonic()
+        for job in list(app[HLS_JOBS].values()):
+            if now - job.last > HLS_IDLE_SEC:
+                log.info("%s HLS 변환 정리 (%d초 동안 요청 없음)", job.label, HLS_IDLE_SEC)
+                await _hls_stop(app, job)
+
+
+@telegram_api
+async def tg_hls_start(request, tg):
+    """POST /api/tg/{sid}/hls/{c}/{m}?start=초&mode=remux|audio|transcode -> {"url": 재생목록 주소}."""
+    channel, msg = _ids(request, tg)
+    if not transcode.available():
+        return _json_error(501, "서버에 ffmpeg가 없습니다. sudo apt install ffmpeg 후 다시 시작하세요.")
+    if not telegram_src.get_video(tg.sid, channel, msg):
+        return _json_error(404, "색인에 없는 영상입니다.")
+    mode = request.query.get("mode") or (await _tg_decision(request, tg, channel, msg))["mode"]
+    if mode == "direct":
+        mode = "remux"
+    try:
+        start = max(0.0, float(request.query.get("start") or 0))
+    except ValueError:
+        start = 0.0
+    await tg.authorized_client()
+
+    app, me = request.app, username(request) or "-"
+    # 한 사람이 보는 영상은 하나 - 이전 변환(스트림이든 HLS든)은 끈다
+    old = app[TRANSCODES].pop(me, None)
+    if old is not None and old.returncode is None:
+        old.kill()
+    for job in [j for j in app[HLS_JOBS].values() if j.owner == me]:
+        await _hls_stop(app, job)
+    if sum(p.returncode is None for p in app[TRANSCODES].values()) >= transcode.max_jobs():
+        return _json_error(503, "서버 변환이 이미 여러 개 돌고 있습니다. 잠시 뒤에 다시 시도하세요.")
+
+    job_id = secrets.token_urlsafe(12)
+    folder = os.path.join(_hls_root(), job_id)
+    os.makedirs(folder, exist_ok=True)
+    token, url = _internal_url(request, tg, channel, msg)
+    try:
+        args = transcode.build_hls_args(url, mode, start, folder)
+    except ValueError as e:
+        app[TG_INTERNAL].pop(token, None)
+        await asyncio.to_thread(shutil.rmtree, folder, True)
+        return _json_error(400, str(e))
+    proc = await asyncio.create_subprocess_exec(*args, stdin=asyncio.subprocess.DEVNULL,
+                                                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+    label = f"telegram {channel}/{msg}"
+    job = HlsJob(job_id, me, proc, folder, token, label)
+    app[TRANSCODES][me] = proc
+    app[HLS_JOBS][job_id] = job
+
+    async def read_err():
+        async for line in proc.stderr:
+            job.errors.append(line.decode("utf-8", "replace").strip())
+            del job.errors[:-5]
+    job.err_task = asyncio.ensure_future(read_err())
+    log.info("%s HLS 변환 시작 (%s, %.0f초부터, %s)", label, mode, start, me)
+
+    # 첫 조각이 나올 때까지 기다렸다가 주소를 준다 (재생기가 빈 재생목록을 받고 실패하지 않게)
+    deadline = time.monotonic() + 45
+    while "#EXTINF" not in job.playlist():
+        if proc.returncode is not None or time.monotonic() > deadline:
+            reason = job.errors[-1] if job.errors else (
+                f"ffmpeg 종료 코드 {proc.returncode}" if proc.returncode is not None else "첫 조각을 만들지 못했습니다 (시간 초과)")
+            log.warning("%s HLS 변환 실패: %s", label, reason)
+            await _hls_stop(app, job)
+            return _json_error(502, f"서버 변환 실패: {reason}")
+        await asyncio.sleep(0.2)
+    job.last = time.monotonic()
+    return web.json_response({"success": True, "mode": mode, "url": f"/api/tg-hls/{job_id}/index.m3u8"})
+
+
+async def tg_hls_file(request):
+    """HLS 변환의 재생목록/조각. 변환을 시작한 사람만 받을 수 있다."""
+    job = request.app[HLS_JOBS].get(request.match_info["job"])
+    name = request.match_info["name"]
+    if not job or not _HLS_NAME_RE.match(name) or (request.app[REQUIRE_AUTH] and job.owner != (username(request) or "-")):
+        return web.Response(status=404)
+    job.last = time.monotonic()
+    if name == "index.m3u8":
+        text = job.playlist()
+        # 계속 늘어나는(EVENT) 재생목록이라도 맨 앞부터 재생하게
+        if "#EXT-X-START" not in text:
+            text = text.replace("#EXTM3U\n", "#EXTM3U\n#EXT-X-START:TIME-OFFSET=0,PRECISE=YES\n", 1)
+        return web.Response(text=text, content_type="application/vnd.apple.mpegurl", headers={"Cache-Control": "no-store"})
+    # 다 쓰인 조각만 (재생목록에 올라간 것). 아직이면 조금 기다린다
+    for _ in range(100):
+        if name in job.playlist() or job.proc.returncode is not None:
+            break
+        await asyncio.sleep(0.15)
+    path = os.path.join(job.dir, name)
+    if not os.path.exists(path):
+        return web.Response(status=404)
+    return web.FileResponse(path, headers={"Content-Type": "video/mp4" if name.endswith(".mp4") else "video/iso.segment",
+                                           "Cache-Control": "no-store"})
+
+
 @telegram_api
 async def tg_transcode(request, tg):
     """GET /api/tg/{sid}/transcode/{c}/{m}?start=초&mode=remux|audio|transcode -> 조각난 MP4 스트림."""
@@ -1633,6 +1779,8 @@ def _render_page(name):
 async def _on_startup(app):
     app[HTTP] = ClientSession(auto_decompress=True)
     media_cache.STORE.configure(config_store.load().get("cache"))
+    shutil.rmtree(_hls_root(), ignore_errors=True)  # 지난번에 남은 HLS 변환 파일
+    app[HLS_SWEEPER] = asyncio.ensure_future(_hls_sweeper(app))
     if app[REQUIRE_AUTH]:
         made = auth.bootstrap_from_env()
         if made:
@@ -1642,6 +1790,11 @@ async def _on_startup(app):
 
 
 async def _on_cleanup(app):
+    sweeper = app.get(HLS_SWEEPER)
+    if sweeper:
+        sweeper.cancel()
+    for job in list(app[HLS_JOBS].values()):
+        await _hls_stop(app, job)
     for proc in list(app[TRANSCODES].values()):
         if proc.returncode is None:
             proc.kill()
@@ -1667,6 +1820,7 @@ def create_app(require_auth=True):
     app[TG_INTERNAL] = {}
     app[TRANSCODES] = {}
     app[PROBES] = {}
+    app[HLS_JOBS] = {}
     app[PLEX_FILES] = {}
     app.on_startup.append(_on_startup)
     app.on_cleanup.append(_on_cleanup)
@@ -1714,6 +1868,8 @@ def create_app(require_auth=True):
     app.router.add_get(r"/api/tg/{sid}/video/{channel:-?\d+}/{msg:\d+}", tg_video)
     app.router.add_get(r"/api/tg/{sid}/stream/{channel:-?\d+}/{msg:\d+}", tg_stream)
     app.router.add_get(r"/api/tg/{sid}/transcode/{channel:-?\d+}/{msg:\d+}", tg_transcode)
+    app.router.add_post(r"/api/tg/{sid}/hls/{channel:-?\d+}/{msg:\d+}", tg_hls_start)
+    app.router.add_get("/api/tg-hls/{job}/{name}", tg_hls_file)
     app.router.add_post(r"/api/tg/{sid}/probe/{channel:-?\d+}/{msg:\d+}", tg_probe)
     app.router.add_get("/internal/tg/{token}", internal_tg)
     app.router.add_get(r"/api/tg/{sid}/thumb/{channel:-?\d+}/{msg:\d+}", tg_thumb)

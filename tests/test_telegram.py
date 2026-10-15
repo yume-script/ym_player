@@ -680,3 +680,50 @@ def test_split_parts_are_grouped(monkeypatch, tmp_path):
     assert telegram_src.video_parts("tg", 1, 13) == []      # 하나뿐이면 묶음이 아님
     assert telegram_src.split_part("Movie.part2.mp4") == ("movie", 2)
     assert telegram_src.split_part("Movie.2026") is None
+
+
+def test_hls_transcode_for_safari(env, tmp_path):
+    import os
+    import shutil
+    import subprocess
+
+    from ym_player import server, transcode
+    if not transcode.available():
+        pytest.skip("ffmpeg 없음")
+    src = tmp_path / "in.mp4"
+    subprocess.run([shutil.which("ffmpeg"), "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25",
+                    "-f", "lavfi", "-i", "sine=frequency=440", "-t", "10", "-c:v", "libx264", "-preset", "ultrafast",
+                    "-pix_fmt", "yuv420p", "-g", "25", "-c:a", "libmp3lame", str(src)], check=True)
+    data = src.read_bytes()
+    doc = env.msgs[999].document
+    doc.size, doc.data, doc.mime_type = len(data), data, "video/mp4"
+
+    async def flow(c):
+        env.authorized = True
+        await c.get("/api/tg/tg/videos?channel=777&limit=5")
+        item = (await (await c.get("/api/tg/tg/video/777/999?probe=1")).json())["item"]
+        assert item["play"]["mode"] == "direct" and item["play"]["audio"] == "mp3"
+        # Safari: MP3 소리는 AAC로 바꿔 HLS로
+        r = await c.post("/api/tg/tg/hls/777/999", params={"start": "0", "mode": "audio"})
+        j = await r.json()
+        assert r.status == 200 and j["url"].startswith("/api/tg-hls/")
+        playlist = await (await c.get(j["url"])).text()
+        assert "#EXT-X-START:TIME-OFFSET=0" in playlist and "#EXTINF" in playlist
+        base = j["url"].rsplit("/", 1)[0]
+        init = await (await c.get(f"{base}/init.mp4")).read()
+        seg = await c.get(f"{base}/seg00000.m4s")
+        assert init[4:8] == b"ftyp" and seg.status == 200 and len(await seg.read()) > 1000
+        assert (await c.get(f"{base}/../../etc")).status == 404
+        assert (await c.get(f"{base}/evil.txt")).status == 404
+        out = tmp_path / "init_plus_seg.mp4"
+        out.write_bytes(init + (await (await c.get(f"{base}/seg00000.m4s")).read()))
+        info = await transcode.probe(str(out))
+        assert {s["codec_name"] for s in info["streams"]} == {"h264", "aac"}
+        # 새 변환을 시작하면 이전 것은 끄고 파일도 지운다
+        app = c.server.app
+        old = next(iter(app[server.HLS_JOBS].values()))
+        r2 = await (await c.post("/api/tg/tg/hls/777/999", params={"start": "4", "mode": "audio"})).json()
+        assert r2["url"] != j["url"] and len(app[server.HLS_JOBS]) == 1
+        assert not os.path.exists(old.dir) and (await c.get(j["url"])).status == 404
+
+    run(flow)
