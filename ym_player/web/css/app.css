@@ -793,3 +793,14 @@ body.viewer-open { overflow: hidden; }
 /* 라디오 */
 .src-type.radio { color: #d2a8ff; }
 .grid-channels { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+
+/* 라디오 시각화 / LP 잡음 */
+.player:not(.is-radio) .radio-only { display: none !important; }
+.viz-canvas { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 1; cursor: pointer; }
+.player.is-radio .player-poster { background-size: min(38vh, 52vw); background-position: center 32%; }
+.pbtn.on { color: var(--accent); }
+.lp-menu { position: absolute; right: 1.5rem; bottom: 6.5rem; z-index: 8; display: flex; align-items: center; gap: 0.6rem;
+    padding: 0.6rem 0.9rem; border-radius: 10px; background: rgba(20, 21, 23, 0.94); border: 1px solid rgba(255, 255, 255, 0.1);
+    font-size: 0.85rem; color: #ececec; }
+.lp-range { width: 140px; accent-color: var(--accent); }
+.lp-val { min-width: 2.6rem; text-align: right; font-variant-numeric: tabular-nums; color: #c9cdd2; }
