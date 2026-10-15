@@ -478,6 +478,10 @@ body.player-open { overflow: hidden; }
 }
 .mini-video { aspect-ratio: 16 / 9; background: #000; cursor: pointer; }
 .mini-video video { width: 100%; height: 100%; object-fit: contain; display: block; }
+.mini-video { position: relative; }
+.mini-pip-note { display: none; position: absolute; inset: 0; align-items: center; justify-content: center; gap: 0.5rem;
+    color: #c9cdd2; font-size: 0.82rem; }
+.mini.pip .mini-pip-note { display: flex; }
 .mini-bar { display: flex; align-items: center; gap: 0.25rem; padding: 0.4rem 0.4rem 0.4rem 0.8rem; }
 .mini-info { flex: 1; min-width: 0; display: flex; flex-direction: column; cursor: pointer; line-height: 1.3; }
 .mini-info b { font-size: 0.88rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
