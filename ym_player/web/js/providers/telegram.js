@@ -1,12 +1,19 @@
 // 텔레그램 채널 소스. 서버(/api/tg/{id}/...)가 Telethon으로 채널 영상을 색인하고 스트림을 이어 준다.
 // 설정에서 고른 채널 하나하나가 라이브러리처럼 보인다. 항목 id는 "채널id:메시지id".
-import { api, fmtDuration, h, modal } from '../util.js';
+import { api, fmtDuration, h, modal, IS_SAFARI } from '../util.js';
 
 const TRANSCODE_NOTE = { remux: '서버 변환(포장만)', audio: '서버 변환(음성)', transcode: '서버 변환(H.264)' };
 
-// Safari(아이폰/아이패드, Mac Safari)는 길이를 모르는 변환 스트림을 못 열고, MP4 안의 MP3 소리는 처음 몇 초를 못 낸다.
-// 그래서 Safari에서는 서버 변환을 HLS로 받고, MP3 소리 영상도 소리만 AAC로 바꿔 본다.
-const IS_SAFARI = /safari/i.test(navigator.userAgent) && !/chrome|crios|chromium|android|fxios|edg/i.test(navigator.userAgent);
+// Safari는 길이를 모르는 변환 스트림을 못 열어서 서버 변환을 HLS로 받는다. 원본으로 보낼 형식도 좁게 본다 (util.js IS_SAFARI).
+
+/** 서버가 "원본 그대로(direct)"라고 한 영상을 Safari에서 어떻게 볼지. 원본으로 못 믿을 조합은 미리 서버 변환으로 */
+function safariMode(play) {
+    if (play.mode !== 'direct' || !play.available || !play.container) return play.mode;
+    const video = String(play.video || '').split(' ')[0];
+    if (play.container !== 'mp4' || video !== 'h264') return 'transcode';  // WebM, VP9, AV1 등
+    if (play.audio && play.audio !== 'aac') return 'audio';                // MP3, Opus, FLAC 등 -> 소리만 AAC로
+    return 'direct';
+}
 
 // 나눠 올린 파일의 조각 이름 ("이름_0001", "이름.002", "이름 part2", "이름 CD2"). 서버 telegram_src._PART_RE와 같은 규칙
 const PART_RE = /^(.*?)[\s._-]*(?:(?:part|pt|cd|disc|disk)[\s._-]*0*(\d{1,3})|[._-](0\d{2,3}))(?:\.\w{2,4})?$/i;
@@ -206,6 +213,7 @@ export class TelegramProvider {
         const v = await this._video(id, true);
         const [channel, msg] = String(id).split(':');
         const play = v.play || { mode: 'direct' };
+        if (IS_SAFARI) play.mode = safariMode(play);
         const resumable = v.position > 30 && (!v.duration || v.position < v.duration * 0.95);
         const begin = startAt != null ? startAt : (!fromStart && resumable ? v.position : 0);
         const report = (position, duration) => fetch(`${this.base}/progress`, {
@@ -253,7 +261,6 @@ export class TelegramProvider {
         };
         const converted = (at, mode) => (IS_SAFARI ? viaHls(at, mode) : streamed(at, mode));
         if (play.mode !== 'direct') return converted(begin, play.mode);
-        if (IS_SAFARI && play.audio === 'mp3' && play.available) return converted(begin, 'audio');
         return {
             ...common,
             url: `${this.base}/stream/${channel}/${msg}`,

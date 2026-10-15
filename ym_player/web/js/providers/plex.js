@@ -6,7 +6,7 @@
 //              playable, viewOffset, duration, children[], childrenTitle, childrenStyle, parent }
 //   playback = { url, kind, live, startTime, title, subtitle, poster, audioOnly,
 //                onProgress(state, sec), onStop(sec), getNext() }
-import { fmtDuration, uuid, storeGet, storeSet } from '../util.js';
+import { fmtDuration, uuid, storeGet, storeSet, IS_SAFARI } from '../util.js';
 
 const PRODUCT = 'Yume Player';
 const LIB_ICONS = { movie: 'film', show: 'tv', artist: 'music' };
@@ -67,6 +67,8 @@ function canDirectPlay(media, audioOnly) {
     const a = (media.audioCodec || '').toLowerCase();
     if (audioOnly) return ['mp3', 'aac', 'flac', 'ogg', 'opus', 'm4a', 'wav'].includes(c) || ['mp3', 'aac', 'flac'].includes(a);
     const v = (media.videoCodec || '').toLowerCase();
+    // Safari는 MP4 안의 MP3 소리를 처음 몇 초 못 내고 WebM은 믿기 어렵다 -> H.264 + AAC만 원본으로 (util.js IS_SAFARI)
+    if (IS_SAFARI) return ['mp4', 'mov', 'm4v'].includes(c) && v === 'h264' && (!a || a === 'aac');
     if (['mp4', 'mov', 'm4v'].includes(c)) return v === 'h264' && (!a || ['aac', 'mp3'].includes(a));
     if (c === 'webm') return ['vp8', 'vp9', 'av1'].includes(v) && (!a || ['opus', 'vorbis'].includes(a));
     return false;
