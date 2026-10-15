@@ -8,6 +8,7 @@
      transcode : 영상 코덱이 안 됨 (HEVC, MPEG-4, 10비트 H.264 등) - H.264로 다시 압축 (CPU 많이 씀)
 3) ffmpeg가 조각난 MP4(fMP4)를 stdout으로 흘리고 서버가 그대로 브라우저로 보낸다 (build_args)
    탐색은 재생기가 ?start=초 로 새로 요청한다 (조각난 MP4는 Range 탐색이 안 됨).
+   Safari는 길이를 모르는 스트림을 못 열어서, 같은 변환을 HLS 파일로 써서 내준다 (build_hls_args).
 
 환경변수: MP_FFMPEG / MP_FFPROBE (실행 파일 경로, 기본은 PATH에서 찾음),
          MP_MAX_TRANSCODES (동시에 돌릴 ffmpeg 수, 기본 3)
@@ -111,8 +112,7 @@ def decide(info):
     return {**out, "mode": "transcode", "reason": f"영상({out['video']})을 H.264로 다시 압축합니다"}
 
 
-def build_args(url, mode, start=0.0):
-    """ffmpeg 명령. 결과는 stdout으로 나오는 조각난 MP4."""
+def _codec_args(url, mode, start):
     if mode not in ("remux", "audio", "transcode"):
         raise ValueError(f"알 수 없는 변환 방법: {mode}")
     args = [ffmpeg_path() or "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin"]
@@ -128,5 +128,19 @@ def build_args(url, mode, start=0.0):
         args += ["-c:a", "copy"]
     else:
         args += ["-c:a", "aac", "-b:a", "192k", "-ac", "2"]
-    args += ["-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
     return args
+
+
+def build_args(url, mode, start=0.0):
+    """ffmpeg 명령. 결과는 stdout으로 나오는 조각난 MP4 (Chrome 등)."""
+    return _codec_args(url, mode, start) + [
+        "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
+
+
+def build_hls_args(url, mode, start, outdir):
+    """같은 변환을 HLS(fMP4 조각 + 재생목록 파일)로 outdir에 쓴다.
+    Safari(아이폰/아이패드)는 길이를 모르는 스트림(build_args)을 못 열어서 이쪽으로 본다."""
+    return _codec_args(url, mode, start) + [
+        "-f", "hls", "-hls_time", "4", "-hls_list_size", "0", "-hls_playlist_type", "event",
+        "-hls_segment_type", "fmp4", "-hls_fmp4_init_filename", "init.mp4",
+        "-hls_segment_filename", os.path.join(outdir, "seg%05d.m4s"), os.path.join(outdir, "index.m3u8")]

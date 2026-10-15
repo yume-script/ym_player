@@ -4,6 +4,10 @@ import { api, fmtDuration, h, modal } from '../util.js';
 
 const TRANSCODE_NOTE = { remux: '서버 변환(포장만)', audio: '서버 변환(음성)', transcode: '서버 변환(H.264)' };
 
+// Safari(아이폰/아이패드, Mac Safari)는 길이를 모르는 변환 스트림을 못 열고, MP4 안의 MP3 소리는 처음 몇 초를 못 낸다.
+// 그래서 Safari에서는 서버 변환을 HLS로 받고, MP3 소리 영상도 소리만 AAC로 바꿔 본다.
+const IS_SAFARI = /safari/i.test(navigator.userAgent) && !/chrome|crios|chromium|android|fxios|edg/i.test(navigator.userAgent);
+
 // 나눠 올린 파일의 조각 이름 ("이름_0001", "이름.002", "이름 part2", "이름 CD2"). 서버 telegram_src._PART_RE와 같은 규칙
 const PART_RE = /^(.*?)[\s._-]*(?:(?:part|pt|cd|disc|disk)[\s._-]*0*(\d{1,3})|[._-](0\d{2,3}))(?:\.\w{2,4})?$/i;
 
@@ -224,16 +228,32 @@ export class TelegramProvider {
         if (parts.length && nextPart && parts.some((p) => p.msg === v.msg)) {
             common.getNext = async () => ({ pid: this.id, id: `${channel}:${nextPart.msg}`, title: nextPart.title });
         }
-        const converted = (at, mode) => ({
+        const streamed = (at, mode) => ({
             ...common,
             url: `${this.base}/transcode/${channel}/${msg}?${new URLSearchParams({ start: Math.floor(at), mode })}`,
             kind: 'direct',
             startTime: 0,
             timeOffset: Math.floor(at),
             engineNote: TRANSCODE_NOTE[mode] || '서버 변환',
-            reloadAt: async (sec) => converted(sec, mode),
+            reloadAt: async (sec) => streamed(sec, mode),
         });
+        // Safari: 서버가 HLS 조각을 만들기 시작하고 첫 조각이 나오면 재생목록 주소를 준다
+        const viaHls = async (at, mode) => {
+            const j = await api(`${this.base}/hls/${channel}/${msg}?${new URLSearchParams({ start: Math.floor(at), mode })}`,
+                { method: 'POST' });
+            return {
+                ...common,
+                url: j.url,
+                kind: 'hls',
+                startTime: 0,
+                timeOffset: Math.floor(at),
+                engineNote: `${TRANSCODE_NOTE[j.mode] || '서버 변환'} · HLS`,
+                reloadAt: async (sec) => viaHls(sec, mode),
+            };
+        };
+        const converted = (at, mode) => (IS_SAFARI ? viaHls(at, mode) : streamed(at, mode));
         if (play.mode !== 'direct') return converted(begin, play.mode);
+        if (IS_SAFARI && play.audio === 'mp3' && play.available) return converted(begin, 'audio');
         return {
             ...common,
             url: `${this.base}/stream/${channel}/${msg}`,

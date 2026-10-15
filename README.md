@@ -159,6 +159,7 @@ ym_player/                       저장소 루트
 | `GET /api/tg/{id}/channels · videos · video/{c}/{m} · home` | 채널 목록, 영상 목록(색인·과거 채우기), 영상 하나, 홈 줄 |
 | `GET /api/tg/{id}/stream/{c}/{m}` · `thumb/{c}/{m}` · `POST progress` | Range 스트림, 썸네일, 재생 위치 저장 (설정에서 고른 채널만) |
 | `GET /api/tg/{id}/video/{c}/{m}?probe=1` · `GET /api/tg/{id}/transcode/{c}/{m}?start=초&mode=` | 재생 방법 판단(ffprobe), ffmpeg 서버 변환 스트림 (조각난 MP4) |
+| `POST /api/tg/{id}/hls/{c}/{m}?start=초&mode=` · `GET /api/tg-hls/{변환id}/{파일}` | Safari용 서버 변환 (HLS 재생목록·조각, 시작한 사람만) |
 | `GET /api/plex-sub/{id}?path=/library/streams/N&codec=` | Plex 외부 자막 파일을 받아 WebVTT로 바꿔 줌 (자막 스트림 경로만 허용) |
 | `* /api/plex/{id}/...` | Plex API·이미지·스트림 중계. **토큰은 서버가 붙임** (브라우저에 안 보임). 라이브러리 제한이 있는 사용자는 정해 둔 경로만, 허락된 섹션 항목만 |
 | `POST /api/plex-auth/pin`, `GET /api/plex-auth/pin/{id}` | plex.tv PIN 로그인 |
@@ -204,6 +205,10 @@ getPlayback(id|채널)  -> {url, kind: 'hls'|'ts'|'direct', live, proxyUrl?, sta
   그 위치부터 새로 변환합니다(1~2초 걸림). 한 사람이 보는 변환은 하나뿐이라 탐색하면 이전 변환은 끄고, 서버 전체로는
   동시에 3개까지(`MP_MAX_TRANSCODES`). 형식을 알아내지 못한 영상이 원본으로 안 나오면 자동으로 H.264 변환으로 다시 엽니다.
   ffmpeg가 없으면 예전처럼 원본만 보냅니다(설정 > 상태에 표시). 다른 위치의 ffmpeg는 `MP_FFMPEG` / `MP_FFPROBE`로 지정.
+- **Safari(아이폰·아이패드·Mac)**: Safari는 길이를 모르는 변환 스트림을 열지 못해서, 같은 변환을 **HLS**(조각 파일 +
+  재생목록, `data/hls_tmp/`)로 만들어 보냅니다(재생 화면 표시 `서버 변환(…) · HLS`). 또 MP4 안의 **MP3 소리**는 Safari가
+  처음 몇 초를 못 내므로, Safari에서는 소리만 AAC로 바꿔 봅니다(Chrome 등은 그대로 원본). 조각 파일은 2분 동안
+  요청이 없거나 다른 영상을 틀면 지웁니다.
 - **썸네일**: 메시지의 작은 미리보기를 처음 한 번 받아 `data/telegram_thumbs/`에 저장합니다. 목록을 훑을 때 받은 메시지를
   기억해 두었다가 다시 요청하지 않고, 새로 색인한 영상의 썸네일은 화면이 달라기 전에 뒤에서 미리 받습니다(동시에 4개까지).
 - **이어보기**: 텔레그램엔 시청 기록이 없어서 재생 위치를 이 서버 DB에 저장합니다. 30초 넘게 보다 만 영상이 홈 "이어보기"에 나오고,
