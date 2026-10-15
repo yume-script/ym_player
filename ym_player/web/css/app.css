@@ -570,3 +570,52 @@ body[data-cue-size="l"] .player video::cue { font-size: 2.2rem; }
 @media (max-width: 900px) { .grid-wide { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); } }
 .row-2 { display: grid; grid-template-columns: 1fr 2fr; gap: 0.75rem; }
 @media (max-width: 900px) { .row-2 { grid-template-columns: 1fr; } }
+
+/* ---------- 로그인 화면 ---------- */
+body.login-body { overflow: auto; min-height: 100vh; display: flex; align-items: flex-start; justify-content: center;
+    background: radial-gradient(ellipse at 50% -20%, #2a2418 0%, var(--bg) 55%); }
+.login-wrap { width: 100%; max-width: 420px; padding: 9vh 1rem 2rem; }
+.login-brand { display: flex; align-items: center; justify-content: center; gap: 0.6rem; font-weight: 700; font-size: 1.15rem; margin-bottom: 1.25rem; }
+.login-card { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px; padding: 1.75rem 1.5rem 1.25rem;
+    display: flex; flex-direction: column; gap: 0.85rem; box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45); }
+.login-card h1 { margin: 0 0 0.35rem; text-align: center; color: var(--accent); font-size: 1.9rem; font-weight: 700; }
+.login-note { margin: -0.2rem 0 0.25rem; text-align: center; color: var(--muted); font-size: 0.85rem; line-height: 1.5; }
+.login-field { display: flex; align-items: center; gap: 0.7rem; }
+.login-field i { width: 1rem; text-align: center; color: var(--muted); }
+.login-field input {
+    flex: 1; min-width: 0; padding: 0.75rem 0.9rem; font: inherit; font-size: 1rem; color: var(--text);
+    background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); outline: none;
+}
+.login-field input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(229, 160, 13, 0.18); }
+.login-btn { margin-top: 0.35rem; padding: 0.8rem; border: none; border-radius: var(--radius); cursor: pointer;
+    background: var(--accent); color: var(--accent-ink); font: inherit; font-size: 1.05rem; font-weight: 700; }
+.login-btn:hover { background: var(--accent-hover); }
+.login-btn:disabled { opacity: 0.6; cursor: default; }
+.login-remember { display: flex; align-items: center; gap: 0.45rem; color: var(--muted); font-size: 0.88rem; cursor: pointer; user-select: none; }
+.login-remember input { accent-color: var(--accent); }
+.login-error { background: rgba(229, 72, 77, 0.12); border: 1px solid rgba(229, 72, 77, 0.4); color: #ff8a8e;
+    border-radius: var(--radius); padding: 0.55rem 0.75rem; font-size: 0.88rem; }
+
+/* ---------- 사이드바 아래: 설정 / 내 계정 ---------- */
+.sidebar { display: flex; flex-direction: column; }
+.nav-footer { margin-top: auto; padding-top: 1rem; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 0.15rem; }
+.nav-account { display: flex; align-items: center; gap: 0.6rem; padding: 0.5rem 0.9rem; }
+.nav-account .avatar { width: 30px; height: 30px; border-radius: 50%; background: var(--bg-hover); display: flex; align-items: center;
+    justify-content: center; font-weight: 700; color: var(--accent); flex-shrink: 0; }
+.nav-account .who { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
+.nav-account .who b { font-size: 0.88rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nav-account .who span { font-size: 0.72rem; color: var(--muted); }
+.nav-account .icon-btn { width: 32px; height: 32px; font-size: 0.9rem; }
+
+/* 설정: 사용자 관리 */
+.users-box { max-width: 900px; margin-bottom: 1.5rem; }
+.users-box h2 { font-size: 1.1rem; margin: 0 0 0.75rem; display: flex; align-items: center; gap: 0.5rem; }
+.users-box h2 i { color: var(--accent); }
+.user-row { display: flex; align-items: center; gap: 0.6rem; padding: 0.6rem 0.75rem; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.user-row:last-child { border-bottom: none; }
+.user-row .uname { flex: 1; min-width: 120px; font-weight: 500; }
+.user-row .me { font-size: 0.72rem; color: var(--accent); margin-left: 0.4rem; }
+.user-add { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.75rem; }
+.user-add .input { flex: 1; min-width: 140px; }
+.section-title { font-size: 1.1rem; margin: 0 0 0.75rem; display: flex; align-items: center; gap: 0.5rem; }
+.section-title i { color: var(--accent); }

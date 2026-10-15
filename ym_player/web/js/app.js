@@ -1,5 +1,5 @@
 // 앱 뼈대: 왼쪽 사이드바(홈 / 라이브 TV / Plex 라이브러리 / 설정) + 위쪽 검색창 + 해시 라우터.
-import { h, icon, clear, toast, storeGet, storeSet } from './util.js';
+import { h, icon, clear, toast, storeGet, storeSet, api, modal } from './util.js';
 import { registry } from './providers/index.js';
 import { emptyState } from './cards.js';
 import './player.js';
@@ -47,10 +47,15 @@ async function render() {
     document.body.classList.remove('nav-open');
     if (path === '/search') searchInput.value = query.get('q') || '';
 
-    for (const [re, view] of ROUTES) {
+    for (const [re, view, name] of ROUTES) {
         const m = path.match(re);
         if (!m) continue;
         highlightNav();
+        if (name === 'settings' && !registry.isAdmin()) {
+            // 관리자가 아니면 설정 화면 자체를 열지 않는다 (서버도 설정 저장/조회 상세를 막는다)
+            main.appendChild(emptyState('lock', '관리자만 들어갈 수 있습니다', null, h('a', { class: 'btn', href: '#/home', text: '홈으로' })));
+            return;
+        }
         try {
             await view(main, m.slice(1).map((x) => (x === undefined ? x : decodeURIComponent(x))), query, ctx);
         } catch (e) {
@@ -141,7 +146,49 @@ async function buildNav() {
         const ids = registry.providers.map((p) => p.id);
         openGroup(saved === null || ids.includes(saved) ? saved : ids[0]);
     }
+    nav.appendChild(navFooter());
     highlightNav();
+}
+
+/** 사이드바 맨 아래: (관리자만) 설정, 그리고 내 계정 (비밀번호 변경 / 로그아웃) */
+function navFooter() {
+    const u = registry.user || {};
+    const foot = h('div', { class: 'nav-footer' });
+    if (registry.isAdmin()) foot.appendChild(navLink('#/settings', 'gear', '설정'));
+    foot.appendChild(h('div', { class: 'nav-account' },
+        h('span', { class: 'avatar', text: (u.username || '?').slice(0, 1).toUpperCase() }),
+        h('div', { class: 'who' }, h('b', { text: u.username || '' }), h('span', { text: u.role === 'admin' ? '관리자' : '사용자' })),
+        h('button', { class: 'icon-btn', title: '비밀번호 변경', on: { click: changePassword } }, icon('key')),
+        h('button', { class: 'icon-btn', title: '로그아웃', on: { click: logout } }, icon('right-from-bracket'))));
+    return foot;
+}
+
+async function logout() {
+    try { await api('/api/auth/logout', { method: 'POST' }); } catch (e) { /* 이미 풀렸어도 로그인 화면으로 */ }
+    location.href = '/login';
+}
+
+function changePassword() {
+    const cur = h('input', { class: 'input', type: 'password', placeholder: '지금 비밀번호', autocomplete: 'current-password' });
+    const next = h('input', { class: 'input', type: 'password', placeholder: '새 비밀번호 (6자 이상)', autocomplete: 'new-password' });
+    const again = h('input', { class: 'input', type: 'password', placeholder: '새 비밀번호 확인', autocomplete: 'new-password' });
+    const save = h('button', { class: 'btn btn-accent', text: '바꾸기' });
+    const m = modal('비밀번호 변경', h('div', { class: 'src-fields' }, cur, next, again,
+        h('span', { class: 'field-hint', text: '바꾸면 다른 기기의 로그인은 끊깁니다.' })), [save]);
+    save.addEventListener('click', async () => {
+        if (next.value !== again.value) return toast('새 비밀번호 확인이 다릅니다.', 'error');
+        save.disabled = true;
+        try {
+            await api('/api/auth/password', { method: 'POST', json: { current: cur.value, new: next.value } });
+            m.close();
+            toast('비밀번호를 바꿨습니다.', 'success');
+        } catch (e) {
+            toast(e.message, 'error');
+        } finally {
+            save.disabled = false;
+        }
+    });
+    cur.focus();
 }
 
 async function boot() {
@@ -160,6 +207,7 @@ async function boot() {
         }
     });
     try {
+        registry.user = (await api('/api/auth/me')).user;
         await registry.load();
     } catch (e) {
         toast(`설정을 불러오지 못했습니다: ${e.message}`, 'error', 8000);
