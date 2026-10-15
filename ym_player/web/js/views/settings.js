@@ -142,13 +142,16 @@ export async function renderSettings(main, _params, _query, ctx) {
             const sub = h('div', { class: 'acc-libs' });
             chk.addEventListener('change', () => { if (chk.checked) chosen.add(src.id); else chosen.delete(src.id); sub.classList.toggle('hidden', !chk.checked); });
             sub.classList.toggle('hidden', !chk.checked);
+            const hasItems = src.type === 'plex' || src.type === 'telegram';
             listBox.appendChild(h('div', { class: 'acc-src' },
                 h('label', { class: 'check' }, chk, icon(src.type === 'plex' ? 'server' : src.type === 'telegram' ? 'paper-plane' : 'tower-broadcast'), ` ${src.name}`),
-                src.type === 'plex' ? sub : null));
-            if (src.type !== 'plex') return;
-            sub.appendChild(h('span', { class: 'muted' }, icon('circle-notch', 'fa-spin'), ' 라이브러리 불러오는 중...'));
-            new PlexProvider(src, registry.config.client_id).getLibraries({ all: true }).then((items) => {
+                hasItems ? sub : null));
+            if (!hasItems) return;
+            // 그 소스 안에서 볼 것: Plex는 라이브러리, 텔레그램은 설정에서 고른 채널
+            const what = src.type === 'plex' ? '라이브러리' : '채널';
+            const fill = (items) => {
                 clear(sub);
+                if (!items.length) { sub.appendChild(h('span', { class: 'muted', text: `고를 ${what}이 없습니다.` })); return; }
                 const everyIn = h('input', { type: 'checkbox', checked: !libs[src.id] });
                 const box = h('div', { class: 'acc-lib-items' });
                 const paint = () => box.classList.toggle('hidden', everyIn.checked);
@@ -157,17 +160,24 @@ export async function renderSettings(main, _params, _query, ctx) {
                     box.querySelectorAll('input').forEach((x) => { x.checked = false; });
                     paint();
                 });
-                items.forEach((lib) => {
-                    const c = h('input', { type: 'checkbox', checked: !!(libs[src.id] && libs[src.id].has(lib.id)) });
+                items.forEach((it) => {
+                    const c = h('input', { type: 'checkbox', checked: !!(libs[src.id] && libs[src.id].has(it.id)) });
                     c.addEventListener('change', () => {
                         libs[src.id] = libs[src.id] || new Set();
-                        if (c.checked) libs[src.id].add(lib.id); else libs[src.id].delete(lib.id);
+                        if (c.checked) libs[src.id].add(it.id); else libs[src.id].delete(it.id);
                     });
-                    box.appendChild(h('label', { class: 'check lib-check' }, c, icon(lib.icon), ` ${lib.title}`));
+                    box.appendChild(h('label', { class: 'check lib-check' }, c, icon(it.icon), ` ${it.title}`));
                 });
-                sub.append(h('label', { class: 'check' }, everyIn, ' 모든 라이브러리 (새로 생기는 것 포함)'), box);
+                sub.append(h('label', { class: 'check' }, everyIn, ` 모든 ${what} (새로 추가하는 것 포함)`), box);
                 paint();
-            }).catch((e) => { clear(sub).appendChild(h('span', { class: 'muted error', text: `라이브러리 목록 실패: ${e.message}` })); });
+            };
+            if (src.type === 'telegram') {
+                fill((src.channels || []).map((c) => ({ id: String(c.id), title: c.title, icon: 'bullhorn' })));
+                return;
+            }
+            sub.appendChild(h('span', { class: 'muted' }, icon('circle-notch', 'fa-spin'), ' 라이브러리 불러오는 중...'));
+            new PlexProvider(src, registry.config.client_id).getLibraries({ all: true }).then(fill)
+                .catch((e) => { clear(sub).appendChild(h('span', { class: 'muted error', text: `라이브러리 목록 실패: ${e.message}` })); });
         });
         sync();
 
@@ -176,7 +186,7 @@ export async function renderSettings(main, _params, _query, ctx) {
             h('label', { class: 'check' }, allIn, ' 전부 (나중에 추가하는 소스도)'),
             h('label', { class: 'check' }, someIn, ' 고른 것만'),
             listBox,
-            h('p', { class: 'field-hint', text: '고르지 않은 소스와 라이브러리는 이 사용자의 사이드바·홈·검색에 안 나오고, 서버도 열어 주지 않습니다.' })),
+            h('p', { class: 'field-hint', text: '고르지 않은 소스, Plex 라이브러리, 텔레그램 채널은 이 사용자의 사이드바·홈·검색·이어보기에 안 나오고, 서버도 열어 주지 않습니다.' })),
         [saveAcc]);
         saveAcc.addEventListener('click', async () => {
             const access = allIn.checked ? null : {

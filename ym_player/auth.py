@@ -8,8 +8,9 @@
     * MP_USER/MP_PASSWORD 환경변수가 있으면 그걸로 관리자를 만든다 (예전 기본 인증 설정을 그대로 옮김)
     * 없으면 로그인 화면이 "관리자 계정 만들기"로 바뀐다
 - 로그인 실패가 IP마다 10분에 10번을 넘으면 잠시 막는다.
-- 볼 수 있는 범위(access): None이면 전부. {"sources": [소스id...], "libraries": {plex소스id: [섹션key...]}}
-  libraries에 없는 Plex 소스는 그 소스의 라이브러리 전부. 관리자는 항상 전부.
+- 볼 수 있는 범위(access): None이면 전부. {"sources": [소스id...], "libraries": {소스id: [key...]}}
+  key는 Plex면 라이브러리 섹션 key, 텔레그램이면 채널 id. libraries에 없는 소스는 그 소스의 전부.
+  관리자는 항상 전부.
 """
 import base64
 import hashlib

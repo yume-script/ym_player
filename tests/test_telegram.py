@@ -570,3 +570,46 @@ def test_probe_is_shared_and_remembered(env, monkeypatch):
         assert (await c.post("/api/tg/tg/probe/777/12345")).status == 404
 
     run(flow)
+
+
+def test_user_channel_access(env):
+    """사용자마다 볼 수 있는 텔레그램 채널 - 설정 목록, 영상 목록, 홈, 영상/스트림/이어보기를 서버가 막는다."""
+    from aiohttp import CookieJar
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from ym_player import auth, server
+    cfg = config_store.load()
+    cfg["sources"][0]["channels"] = [{"id": 777, "title": "영화 채널"}, {"id": 888, "title": "수다방"}]
+    config_store.save(cfg)
+    env.authorized = True
+
+    async def main():
+        client = TestClient(TestServer(server.create_app()), cookie_jar=CookieJar(unsafe=True))
+        await client.start_server()
+        c = client
+        try:
+            auth.create_user("admin", "adminpw", "admin")
+            auth.create_user("kid", "kidpass", "user")
+            auth.update_user("kid", access={"sources": ["tg"], "libraries": {"tg": ["888"]}})
+            # 관리자가 먼저 777을 색인해 둔다
+            await c.post("/api/auth/login", json={"username": "admin", "password": "adminpw"})
+            assert len((await (await c.get("/api/tg/tg/videos?channel=777&limit=5")).json())["items"]) == 5
+            await c.post("/api/auth/logout")
+            c.session.cookie_jar.clear()
+
+            await c.post("/api/auth/login", json={"username": "kid", "password": "kidpass"})
+            src = (await (await c.get("/api/config")).json())["sources"][0]
+            assert [ch["id"] for ch in src["channels"]] == [888]
+            assert (await (await c.get("/api/tg/tg/videos?channel=777")).json())["items"] == []
+            assert all(it["channel"] != 777 for it in (await (await c.get("/api/tg/tg/videos?q=영상")).json())["items"])
+            home = await (await c.get("/api/tg/tg/home")).json()
+            assert all(r["channel"] != 777 for r in home["channels"]) and home["continue"] == []
+            for path in ("video/777/999", "stream/777/999", "thumb/777/999", "transcode/777/999"):
+                assert (await c.get(f"/api/tg/tg/{path}")).status == 404, path
+            assert (await c.post("/api/tg/tg/probe/777/999")).status == 404
+            r = await c.post("/api/tg/tg/progress", json={"channel": 777, "msg": 999, "position": 10})
+            assert r.status == 404
+        finally:
+            await client.close()
+
+    asyncio.run(main())
