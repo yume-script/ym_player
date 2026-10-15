@@ -500,6 +500,7 @@ async function renderStatus(pane) {
         h('span', { class: 'status-detail', text: s.detail }),
         s.ms ? h('span', { class: 'status-ms', text: `${s.ms}ms` }) : null));
     const facts = [
+        ['버전', sv.version || '-'],
         ['가동 시간', fmtUptime(sv.uptime)],
         ['Python', sv.python],
         ['사용자', `${sv.users}명 (관리자 ${sv.admins})`],
@@ -608,7 +609,13 @@ async function renderLook(pane) {
         field('이름', titleIn, '왼쪽 위, 로그인 화면, 브라우저 탭에 나옵니다. 비우면 Yume Player.'),
         saveTitle,
         h('div', { class: 'brand-row' }, upload, reset, fileIn),
-        h('p', { class: 'field-hint', text: 'PNG, JPG, GIF, WebP, ICO 그림 (512KB까지). 정사각형 그림이 잘 맞습니다. 브라우저 탭 아이콘(favicon)으로도 쓰입니다.' })),
+        h('p', { class: 'field-hint', text: 'PNG, JPG, GIF, WebP, ICO 그림 (512KB까지). 정사각형 그림이 잘 맞습니다. 브라우저 탭 아이콘(favicon)으로도 쓰입니다.' }),
+        h('label', { class: 'check' }, h('input', {
+            type: 'checkbox', id: 'brandShowVersion', checked: b.show_version !== false,
+            on: { change: async (e) => {
+                try { show(await api('/api/admin/branding', { method: 'PUT', json: { show_version: e.target.checked } })); } catch (err) { toast(err.message, 'error'); }
+            } },
+        }), ` 아이콘에 버전 표시 (지금 ${b.version || '?'})`)),
     h('div', { class: 'src-card brand-card' },
         h('h3', { class: 'pane-title' }, icon('swatchbook'), ' 기본 테마'),
         h('p', { class: 'field-hint', text: '모든 사용자와 로그인 화면의 기본 테마입니다. 사용자는 사이드바 아래 [테마] 버튼으로 자기 테마를 따로 고를 수 있습니다.' }),
