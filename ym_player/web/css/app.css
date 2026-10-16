@@ -433,6 +433,8 @@ body.player-open { overflow: hidden; }
 .pbtn-lg { width: 54px; height: 54px; font-size: 1.5rem; }
 .pbtn.on { color: var(--accent); }
 .player:not(.is-live) .live-only { display: none !important; }
+/* 라디오 PiP용 그림 영상 (pipart.js) - 화면에는 안 보이고 PiP 창에만 */
+.pip-art-video { position: fixed; left: 0; bottom: 0; width: 2px; height: 2px; opacity: 0; pointer-events: none; }
 .player.is-live .vod-only { display: none !important; }
 .player:not(.is-shuffle) .shuffle-only, .player.is-live .shuffle-only { display: none !important; }
 
