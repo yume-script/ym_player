@@ -661,7 +661,7 @@ def test_existing_index_titles_are_repaired_once(monkeypatch, tmp_path):
     row = telegram_src.get_video("tg", 1, 2)
     assert row["title"] == "영화" and row["file_name"] == "영화.mkv"
     with telegram_src.db() as c:
-        assert c.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert c.execute("PRAGMA user_version").fetchone()[0] == 4
 
 
 def test_split_parts_are_grouped(monkeypatch, tmp_path):
@@ -809,3 +809,60 @@ def test_random_video_skips_photos_watched_and_middle_parts(monkeypatch, tmp_pat
     assert telegram_src.random_video("tg", [1], unwatched=True, exclude=[(1, 1), (1, 2)])["msg"] == 1
     assert telegram_src.random_video("tg", [2])["msg"] == 5
     assert telegram_src.random_video("tg", []) is None
+
+
+def _insert(rows, channel=1):
+    """rows: (msg, kind, title, file_name, 분)"""
+    with telegram_src.db() as conn:
+        conn.executemany(
+            "INSERT INTO videos(source,channel,msg,title,caption,file_name,mime,duration,size,width,height,date,has_thumb,kind)"
+            " VALUES('tg',?,?,?,'',?,'video/mp4',60,1,1,1,?,0,?)",
+            [(channel, m, t, f, f"2026-10-14T{10 + mi // 60:02d}:{mi % 60:02d}:00+00:00", k) for m, k, t, f, mi in rows])
+
+
+def test_posters_are_paired_and_hidden_from_all(monkeypatch, tmp_path):
+    """스크린샷 모양: 포스터 사진 -> 그 회차 영상, 영화는 "호프 [2026]" 사진 -> Hope.2026 조각 둘."""
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    telegram_src._migrated.discard(str(tmp_path))
+    hope = "Hope.2026.1080p.AMZN.WEB-DL.DDP5.1.H.264-KyoGo"
+    _insert([
+        (10, "image", "로또 1등도 출근합니다 S01E04 [2026]", "", 1),
+        (11, "video", "로또_1등도_출근합니다_S01E04_1080p", "로또_1등도_출근합니다_S01E04_1080p.mkv", 2),
+        (12, "image", "로또 1등도 출근합니다 S01E05 [2026]", "", 3),
+        (13, "video", "로또 1등도 출근합니다.E05.260924.1080p", "x.mkv", 4),
+        (14, "image", "고양이 사진", "", 5),                                   # 짝 없는 사진은 그대로
+        (15, "video", "로또 1등도 출근합니다.E06.260924.1080p", "y.mkv", 6),   # E05 포스터와는 회차가 달라 짝 아님
+        (16, "image", "호프 [2026]", "", 7),
+        (17, "video", f"{hope}_0000", f"{hope}_0000.mkv", 8),
+        (18, "video", f"{hope}_0001", f"{hope}_0001.mkv", 9),
+        (19, "image", "다른 영화 [2019]", "", 50),                             # 30분 넘게 떨어짐
+        (20, "video", "Other.2019.1080p", "Other.2019.1080p.mkv", 95),
+    ])
+    telegram_src.link_posters("tg", 1)
+    rows, total = telegram_src.query_videos("tg", [1], limit=50)
+    by = {r["msg"]: r for r in rows}
+    assert {11: 10, 13: 12, 17: 16, 18: 16} == {m: r["poster"] for m, r in by.items() if r["poster"]}
+    assert set(by) == {11, 13, 14, 15, 17, 18, 19, 20} and total == 8       # 포스터 사진(10,12,16)은 전체에서 빠짐
+    photos, _ = telegram_src.query_videos("tg", [1], kind="image", limit=50)
+    assert {r["msg"] for r in photos} == {10, 12, 14, 16, 19}               # 사진 보기에는 다 나옴
+    assert telegram_src.get_video("tg", 1, 13)["poster"] == 12
+    assert telegram_src._poster_score(telegram_src._media_key("영화 3 포스터"), telegram_src._media_key("영화 2")) == 0
+    assert telegram_src._poster_score(telegram_src._media_key("로또 1등도 출근합니다"), telegram_src._media_key("로또 1등도 출근함")) > 0
+
+
+def test_channel_kind_limits_lists(monkeypatch, tmp_path):
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    telegram_src._migrated.discard(str(tmp_path))
+    _insert([(1, "image", "사진", "", 1), (2, "video", "영상", "a.mp4", 30)], channel=1)
+    _insert([(1, "image", "사진2", "", 1), (2, "video", "영상2", "b.mp4", 30)], channel=2)
+    kinds = {1: "video", 2: "image"}
+    rows, total = telegram_src.query_videos("tg", [1, 2], limit=50, kinds=kinds)
+    assert {(r["channel"], r["kind"]) for r in rows} == {(1, "video"), (2, "image")} and total == 2
+    rows, _ = telegram_src.query_videos("tg", [1], kind="image", limit=50, kinds=kinds)
+    assert rows == []                                                       # 영상만 채널은 사진 보기도 비어 있음
+    assert telegram_src.random_video("tg", [2], kinds=kinds) is None        # 사진만 채널은 랜덤 재생에서 빠짐
+    assert telegram_src.random_video("tg", [1, 2], kinds=kinds)["channel"] == 1
+    # 설정 저장: kind는 video/image만 남긴다
+    src = config_store._clean_source({"id": "t", "type": "telegram", "name": "t", "channels": [
+        {"id": 1, "title": "a", "kind": "video"}, {"id": 2, "title": "b", "kind": "bogus"}]}, None)
+    assert src["channels"] == [{"id": 1, "title": "a", "kind": "video"}, {"id": 2, "title": "b"}]

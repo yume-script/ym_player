@@ -90,6 +90,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 41,
+        "version": "1.1.4",
+        "date": "2026-10-16",
+        "title": "텔레그램: 채널마다 영상만/사진만/둘 다 고르기, 영상 옆에 올린 포스터 사진을 그 영상의 썸네일·포스터로 (목록에서는 숨김)"
+    },
+    {
         "pr": 40,
         "version": "1.1.3",
         "date": "2026-10-16",

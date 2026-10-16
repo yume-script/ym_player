@@ -313,14 +313,26 @@ export async function renderSettings(main, _params, query, ctx) {
                 if (!channels.length) { list.appendChild(say('들어가 있는 채널/그룹이 없습니다.')); return; }
                 const chosen = new Map((src.channels || []).map((c) => [String(c.id), c]));
                 channels.forEach((c) => {
-                    const chk = h('input', { type: 'checkbox', checked: chosen.has(String(c.id)) });
-                    chk.addEventListener('change', () => {
-                        if (chk.checked) chosen.set(String(c.id), { id: c.id, title: c.title }); else chosen.delete(String(c.id));
+                    const id = String(c.id);
+                    const chk = h('input', { type: 'checkbox', checked: chosen.has(id) });
+                    // 채널 종류: 영상만 보이게(사진 숨김) / 사진만 / 둘 다
+                    const kindSel = h('select', { class: 'select select-sm', title: '이 채널에서 보여 줄 것' },
+                        [['', '영상+사진'], ['video', '영상만'], ['image', '사진만']].map(([v, label]) =>
+                            h('option', { value: v, text: label, selected: ((chosen.get(id) || {}).kind || '') === v })));
+                    kindSel.disabled = !chk.checked;
+                    const save = () => {
+                        if (chk.checked) chosen.set(id, { id: c.id, title: c.title, ...(kindSel.value ? { kind: kindSel.value } : {}) });
+                        else chosen.delete(id);
+                        kindSel.disabled = !chk.checked;
                         src.channels = [...chosen.values()];
                         touch();
-                    });
-                    list.appendChild(h('label', { class: 'check lib-check', title: c.username ? `@${c.username}` : '' },
-                        chk, icon(c.kind === 'group' ? 'users' : 'bullhorn'), ` ${c.title}`));
+                    };
+                    chk.addEventListener('change', save);
+                    kindSel.addEventListener('change', save);
+                    list.appendChild(h('div', { class: 'lib-check-row' },
+                        h('label', { class: 'check lib-check', title: c.username ? `@${c.username}` : '' },
+                            chk, icon(c.kind === 'group' ? 'users' : 'bullhorn'), ` ${c.title}`),
+                        kindSel));
                 });
             } catch (e) {
                 clear(list).appendChild(say(`채널 목록 실패: ${e.message}`, 'muted error'));
