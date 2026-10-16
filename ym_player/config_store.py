@@ -5,7 +5,7 @@
      "url": "http://192.168.0.10:32400", "token": "...", "verify_ssl": true,
      "hidden_libraries": ["3"]}       <- 가져오지 않을 Plex 라이브러리(섹션 key). 새 라이브러리는 기본으로 보임
     {"id": "tg1", "type": "telegram", "name": "텔레그램", "enabled": true, "api_id": "123456",
-     "api_hash": "...", "phone": "+8210...", "channels": [{"id": 1234567890, "title": "영화 채널"}]}
+     "api_hash": "...", "phone": "+8210...", "channels": [{"id": 1234567890, "title": "영화 채널", "kind": "video"}]}
     {"id": "def456", "type": "iptv", "name": "개인", "enabled": true,
      "m3u": "http://.../playlist.m3u", "epg": "http://.../epg.xml.gz"}
         m3u/epg에는 주소를 한 줄에 하나씩 여러 개 넣을 수 있다 (합쳐서 한 채널 목록/편성표로 보여 줌)
@@ -100,7 +100,10 @@ def _clean_source(raw, old):
         channels = []
         for c in raw.get("channels") or []:
             if isinstance(c, dict) and str(c.get("id", "")).lstrip("-").isdigit():
-                channels.append({"id": int(c["id"]), "title": str(c.get("title") or c["id"])[:200]})
+                ch = {"id": int(c["id"]), "title": str(c.get("title") or c["id"])[:200]}
+                if c.get("kind") in ("video", "image"):   # 영상만 / 사진만 (없으면 둘 다)
+                    ch["kind"] = c["kind"]
+                channels.append(ch)
         src["channels"] = channels
     elif stype == "radio":
         stations = raw.get("stations")

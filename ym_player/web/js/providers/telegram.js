@@ -39,7 +39,8 @@ export class TelegramProvider {
         this.id = src.id;
         this.name = src.name;
         this.kind = 'telegram';
-        this.channels = (src.channels || []).map((c) => ({ id: String(c.id), title: c.title }));
+        // kind: 관리자가 정한 채널 종류 ("video" 영상만 / "image" 사진만 / "" 둘 다)
+        this.channels = (src.channels || []).map((c) => ({ id: String(c.id), title: c.title, kind: c.kind || '' }));
         this.base = `/api/tg/${encodeURIComponent(src.id)}`;
         this._warmed = new Set();
         this._seen = new Map(); // 항목 id -> 목록에서 받은 영상 정보 (조각 파일인지 미리 보려고)
@@ -53,7 +54,9 @@ export class TelegramProvider {
     toItem(v) {
         const id = `${v.channel}:${v.msg}`;
         this._seen.set(id, v);
-        const thumb = v.has_thumb ? `${this.base}/thumb/${v.channel}/${v.msg}` : '';
+        // 영상 옆에 올린 포스터 사진(서버가 짝지음)이 있으면: 영상 썸네일이 없을 때 대신, 상세 화면 포스터로
+        const posterImg = v.poster ? `${this.base}/thumb/${v.channel}/${v.poster}` : '';
+        const thumb = v.has_thumb ? `${this.base}/thumb/${v.channel}/${v.msg}` : posterImg;
         if (v.kind === 'image') {
             // 사진: 누르면 뷰어로 (cards.js). 원본은 처음 열 때 서버가 텔레그램에서 받아 둔다
             const sub = [this.channelTitle(v.channel), (v.date || '').slice(0, 10), v.width ? `${v.width}×${v.height}` : '']
@@ -83,6 +86,7 @@ export class TelegramProvider {
             watched: !!v.watched,
             route: `#/item/${this.id}/${id}`,
             ts: v.updated || 0,
+            posterImg,
             raw: v,
         };
     }
@@ -111,8 +115,10 @@ export class TelegramProvider {
         return [['latest', '최신순'], ['oldest', '오래된 순'], ['title', '제목']];
     }
 
-    /** 라이브러리 화면의 보기 고르기 (영상/사진) */
-    libraryKinds() {
+    /** 라이브러리 화면의 보기 고르기 (영상/사진). 관리자가 채널 종류를 정해 두었으면 고를 것 없음(null) */
+    libraryKinds(channel) {
+        const c = this.channels.find((x) => x.id === String(channel));
+        if (c && c.kind) return null;
         return [['', '전체'], ['video', '영상'], ['image', '사진']];
     }
 
@@ -174,8 +180,8 @@ export class TelegramProvider {
         return {
             ...item,
             subtitle: '',
-            poster: item.thumb,
-            posterShape: 'wide',
+            poster: item.posterImg || item.thumb,
+            posterShape: item.posterImg ? 'poster' : 'wide',
             art: '',
             metaLine,
             rating: null,

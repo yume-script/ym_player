@@ -275,6 +275,9 @@ CREATE TABLE IF NOT EXISTS probes(source TEXT, channel INTEGER, msg INTEGER, dat
     PRIMARY KEY(source, channel, msg));
 CREATE TABLE IF NOT EXISTS user_progress(source TEXT, user TEXT, channel INTEGER, msg INTEGER, position REAL,
     duration REAL, watched INTEGER DEFAULT 0, updated REAL, PRIMARY KEY(source, user, channel, msg));
+CREATE TABLE IF NOT EXISTS posters(source TEXT, channel INTEGER, video INTEGER, image INTEGER,
+    PRIMARY KEY(source, channel, video));
+CREATE INDEX IF NOT EXISTS posters_by_image ON posters(source, channel, image);
 """
 # 이어보기는 사용자마다 따로 (user_progress). 예전 progress(사용자 구분 없음)는 처음 한 번 MIGRATE_USER 몫으로 옮긴다.
 MIGRATE_USER = ""
@@ -304,6 +307,11 @@ def db():
             with conn:
                 conn.execute("DELETE FROM sync_state")
             conn.execute("PRAGMA user_version = 3")
+        if conn.execute("PRAGMA user_version").fetchone()[0] < 4:
+            # 영상 옆에 올린 포스터 사진 찾기 (예전에 색인한 채널도 한 번)
+            for sid, ch in conn.execute("SELECT DISTINCT source, channel FROM videos").fetchall():
+                _link_posters(conn, sid, ch)
+            conn.execute("PRAGMA user_version = 4")
     return conn
 
 
@@ -336,6 +344,113 @@ def upsert_videos(sid, channel, items):
               it["size"], it["width"], it["height"], it["date"], it["has_thumb"], it.get("kind", "video")) for it in items])
 
 
+# ---------------------------------------------------------------------------
+# 포스터 짝짓기: "포스터 사진 -> 그 영상 파일" 순서로 올리는 채널이 많다.
+# 영상 바로 앞(또는 뒤) 몇 개 안에, 몇 분 안에 올라온 사진이 같은 작품·회차면 그 영상의 포스터로 본다.
+# 포스터가 된 사진은 [전체] 목록에서 빠지고(사진 보기에는 나옴), 영상 카드의 썸네일/상세 포스터로 쓰인다.
+# ---------------------------------------------------------------------------
+POSTER_WINDOW_SEC = 30 * 60
+POSTER_BEFORE = 4    # 영상 앞쪽으로 볼 메시지 수 (나눠진 조각들 사이에 끼어 있어도 찾게)
+POSTER_AFTER = 2     # 영상 뒤에 포스터를 올리는 채널도 있다
+
+_B, _E = r"(?<![A-Za-z0-9])", r"(?![A-Za-z0-9])"   # 밑줄(_)도 구분자로 ("이름_S01E04_1080p")
+_EP_RE = re.compile(_B + r"S(\d{1,2})[\s._-]*E(\d{1,4})" + _E + "|" + _B + r"EP?(\d{1,4})" + _E
+                    + r"|(\d{1,4})\s*(?:화|회)(?![가-힣A-Za-z0-9])", re.I)
+_YEAR_RE = re.compile(r"(?<!\d)(19\d{2}|20\d{2})(?!\d)")
+_CUT_RE = re.compile(_B + r"S\d{1,2}[\s._-]*E\d|" + _B + r"EP?\d{1,4}" + _E + r"|\d{1,4}\s*(?:화|회)(?![가-힣A-Za-z0-9])"
+                     r"|(?<!\d)(?:19|20)\d{2}(?!\d)|" + _B + r"\d{3,4}p" + _E + r"|[\[(]", re.I)
+
+
+def _media_key(title, file_name=""):
+    """제목/파일명 -> (작품 이름, 회차, 연도). "로또 1등도 출근합니다.E09.261008.1080p" -> ("로또1등도출근합니다", 9, "")"""
+    best = ("", None, "")
+    for text in (title or "", os.path.splitext(file_name or "")[0]):
+        if not text:
+            continue
+        m = _EP_RE.search(text)
+        ep = int(next(g for g in m.groups()[1:] if g)) if m else None   # S01E09 -> 9 (시즌 번호는 안 봄)
+        y = _YEAR_RE.search(text)
+        cut = _CUT_RE.search(text)
+        name = text[:cut.start()] if cut and cut.start() > 0 else text
+        name = re.sub(r"[\W_]+", "", unicodedata.normalize("NFKC", name).casefold())
+        key = (name, ep, y.group(1) if y else "")
+        if not best[0] or (ep is not None and best[1] is None):
+            best = (best[0] or key[0], key[1] if key[1] is not None else best[1], best[2] or key[2])
+    return best
+
+
+def _poster_score(img, vid):
+    """0이면 짝 아님. 작품 이름이 맞으면 높게, 이름이 달라도(호프 / Hope) 연도가 같고 가까우면 낮게."""
+    (iname, iep, iyear), (vname, vep, vyear) = img, vid
+    if iep is not None and vep is not None and iep != vep:
+        return 0
+    # 비슷한 이름은 숫자가 같을 때만 ("영화2" / "영화3"은 다른 작품)
+    if iname and vname and (iname in vname or vname in iname
+                            or (re.findall(r"\d+", iname) == re.findall(r"\d+", vname) and _similar(iname, vname) >= 0.6)):
+        return 3 + (1 if iep is not None and iep == vep else 0)
+    if iyear and iyear == vyear and iep is None:
+        return 1
+    return 0
+
+
+def _similar(a, b):
+    from difflib import SequenceMatcher
+    return SequenceMatcher(None, a, b).ratio()
+
+
+def _ts(date):
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(date).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def _link_posters(conn, sid, channel):
+    rows = conn.execute("SELECT msg, kind, title, file_name, date FROM videos WHERE source=? AND channel=? ORDER BY msg",
+                        (sid, channel)).fetchall()
+    keys = [_media_key(r["title"], r["file_name"]) for r in rows]
+    times = [_ts(r["date"]) for r in rows]
+    links = []
+    for i, r in enumerate(rows):
+        if r["kind"] != "video":
+            continue
+        best, best_score = None, 0
+        for j in [*range(i - 1, i - 1 - POSTER_BEFORE, -1), *range(i + 1, i + 1 + POSTER_AFTER)]:
+            if not 0 <= j < len(rows) or rows[j]["kind"] != "image":
+                continue
+            if times[i] is not None and times[j] is not None and abs(times[i] - times[j]) > POSTER_WINDOW_SEC:
+                continue
+            score = _poster_score(keys[j], keys[i])
+            if score == 1 and abs(i - j) > 2:     # 연도만 같으면 아주 가까울 때만
+                continue
+            score -= 0.01 * abs(i - j) + (0.005 if j > i else 0)   # 같으면 가깝고 앞에 있는 것
+            if score > best_score:
+                best, best_score = rows[j]["msg"], score
+        if best is not None:
+            links.append((sid, channel, r["msg"], best))
+    with conn:
+        conn.execute("DELETE FROM posters WHERE source=? AND channel=?", (sid, channel))
+        conn.executemany("INSERT INTO posters(source,channel,video,image) VALUES(?,?,?,?)", links)
+    return len(links)
+
+
+def link_posters(sid, channel):
+    with db() as conn:
+        return _link_posters(conn, sid, channel)
+
+
+def _poster_map(conn, sid, rows):
+    """영상 (채널, 메시지) -> 포스터 사진 메시지"""
+    chans = {r["channel"] for r in rows if r["kind"] == "video"}
+    if not chans:
+        return {}
+    marks = ",".join("?" * len(chans))
+    got = conn.execute(f"SELECT channel, video, image FROM posters WHERE source=? AND channel IN ({marks})",
+                       [sid, *chans]).fetchall()
+    return {(p["channel"], p["video"]): p["image"] for p in got}
+
+
 def sync_state(sid, channel):
     with db() as conn:
         row = conn.execute("SELECT * FROM sync_state WHERE source=? AND channel=?", (sid, channel)).fetchone()
@@ -352,11 +467,12 @@ def save_sync_state(sid, channel, **values):
             (sid, channel, state["newest"], state["oldest"], state["complete"], state["latest_at"]))
 
 
-def _row(r, prog):
+def _row(r, prog, posters=None):
     d = dict(r)
     p = prog.get((d["channel"], d["msg"]))
     d["position"] = p["position"] if p else 0
     d["watched"] = bool(p and p["watched"])
+    d["poster"] = (posters or {}).get((d["channel"], d["msg"]), 0)
     return d
 
 
@@ -369,16 +485,32 @@ def _progress_map(conn, sid, rows, user=""):
     return {(p["channel"], p["msg"]): dict(p) for p in got if (p["channel"], p["msg"]) in keys}
 
 
-def query_videos(sid, channels, offset=0, limit=40, q="", sort="latest", user="", kind=""):
-    """kind: "video" / "image" / ""(둘 다)"""
+def _channel_clause(channels, kinds, col=""):
+    """채널마다 정한 종류(영상만/사진만)를 지키는 WHERE 조각. kinds: {채널: "video"|"image"|""}"""
+    groups = {}
+    for c in channels:
+        groups.setdefault((kinds or {}).get(c, "") if (kinds or {}).get(c, "") in ("video", "image") else "", []).append(c)
+    parts, args = [], []
+    for k, chans in groups.items():
+        marks = ",".join("?" * len(chans))
+        parts.append(f"({col}channel IN ({marks})" + (f" AND {col}kind=?)" if k else ")"))
+        args += [*chans, *([k] if k else [])]
+    return "(" + " OR ".join(parts) + ")", args
+
+
+def query_videos(sid, channels, offset=0, limit=40, q="", sort="latest", user="", kind="", kinds=None):
+    """kind: "video" / "image" / ""(둘 다 - 영상의 포스터로 짝지은 사진은 뺌). kinds: 채널마다 정한 종류"""
     if not channels:
         return [], 0
-    marks = ",".join("?" * len(channels))
-    where = f"source=? AND channel IN ({marks})"
-    args = [sid, *channels]
+    clause, cargs = _channel_clause(channels, kinds)
+    where = f"source=? AND {clause}"
+    args = [sid, *cargs]
     if kind in ("video", "image"):
         where += " AND kind=?"
         args.append(kind)
+    else:
+        where += (" AND NOT (kind='image' AND EXISTS (SELECT 1 FROM posters p WHERE p.source=videos.source"
+                  " AND p.channel=videos.channel AND p.image=videos.msg))")
     if q:
         where += " AND (title LIKE ? OR caption LIKE ? OR file_name LIKE ?)"
         like = f"%{q}%"
@@ -389,7 +521,8 @@ def query_videos(sid, channels, offset=0, limit=40, q="", sort="latest", user=""
         rows = conn.execute(f"SELECT * FROM videos WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
                             [*args, int(limit), int(offset)]).fetchall()
         prog = _progress_map(conn, sid, rows, user)
-    return [_row(r, prog) for r in rows], total
+        posters = _poster_map(conn, sid, rows)
+    return [_row(r, prog, posters) for r in rows], total
 
 
 # 큰 영상을 여러 파일로 나눠 올린 경우: "이름_0000", "이름_0001" / "이름.001" / "이름 part2" / "이름 CD2"
@@ -440,12 +573,13 @@ def video_parts(sid, channel, msg, user=""):
     return out
 
 
-def random_video(sid, channels, user="", unwatched=False, exclude=()):
+def random_video(sid, channels, user="", unwatched=False, exclude=(), kinds=None):
     """랜덤 재생: 고른 채널들의 영상 중 하나 (사진 제외). 없으면 None.
 
     unwatched=True면 다 본 영상은 뺀다. exclude는 방금 틀었던 (채널, 메시지)들 (연달아 같은 게 안 나오게).
     나눠 올린 영상의 중간 조각이 뽑히면 그 묶음의 첫 조각으로 바꾼다 (다음 조각은 이어서 재생됨).
     """
+    channels = [c for c in channels if (kinds or {}).get(c, "") != "image"]  # 사진만 보는 채널은 빼고
     if not channels:
         return None
     marks = ",".join("?" * len(channels))
@@ -474,7 +608,7 @@ def get_video(sid, channel, msg, user=""):
         r = conn.execute("SELECT * FROM videos WHERE source=? AND channel=? AND msg=?", (sid, channel, msg)).fetchone()
         if not r:
             return None
-        return _row(r, _progress_map(conn, sid, [r], user))
+        return _row(r, _progress_map(conn, sid, [r], user), _poster_map(conn, sid, [r]))
 
 
 def continue_watching(sid, channels, limit=20, user=""):
@@ -487,7 +621,8 @@ def continue_watching(sid, channels, limit=20, user=""):
                 ON v.source=p.source AND v.channel=p.channel AND v.msg=p.msg
                 WHERE p.source=? AND p.user=? AND p.channel IN ({marks}) AND p.watched=0 AND p.position > 30
                 ORDER BY p.updated DESC LIMIT ?""", [sid, user, *channels, limit]).fetchall()
-    return [dict(r) for r in rows]
+        posters = _poster_map(conn, sid, rows)
+    return [{**dict(r), "poster": posters.get((r["channel"], r["msg"]), 0)} for r in rows]
 
 
 def save_progress(sid, channel, msg, position, duration, watched=None, user=""):
@@ -546,7 +681,7 @@ class TelegramSource:
         self.api_id = str(src.get("api_id") or "").strip()
         self.api_hash = str(src.get("api_hash") or "").strip()
         self.phone = str(src.get("phone") or "").strip()
-        self.channels = [int(c["id"]) for c in src.get("channels") or []]
+        self.set_channels(src)
         self.client = None
         self._connect_lock = asyncio.Lock()
         self._sync_locks = {}
@@ -558,6 +693,12 @@ class TelegramSource:
         self._dl_sem = asyncio.Semaphore(DOWNLOAD_CONCURRENCY)  # 이 계정으로 동시에 받는 파일 조각 수
         if not fast_crypto():
             log.warning("cryptg가 없어 텔레그램 암호화를 순수 파이썬으로 처리합니다 (느림): pip install cryptg")
+
+    def set_channels(self, src):
+        """설정에서 고른 채널과 채널마다 정한 종류 (영상만 "video" / 사진만 "image" / 둘 다 "")"""
+        chans = src.get("channels") or []
+        self.channels = [int(c["id"]) for c in chans]
+        self.kinds = {int(c["id"]): c.get("kind", "") for c in chans if c.get("kind") in ("video", "image")}
 
     def matches(self, src):
         return (str(src.get("api_id") or "").strip(), str(src.get("api_hash") or "").strip()) == (self.api_id, self.api_hash)
@@ -718,6 +859,8 @@ class TelegramSource:
                 items.append(item)
                 self._remember(channel, msg)
         upsert_videos(self.sid, channel, items)
+        if items:
+            link_posters(self.sid, channel)
         # 새로 찾은 영상의 썸네일은 화면이 달라고 하기 전에 뒤에서 미리 받아 둔다
         wanted = [it["msg"] for it in items if it["has_thumb"]][:THUMB_PREFETCH]
         if wanted:
@@ -770,13 +913,13 @@ class TelegramSource:
             elif time.time() - st["latest_at"] >= LATEST_SYNC_SEC:
                 self.background(("latest", c), lambda c=c: self.sync_latest(c))
                 syncing = True
-        rows, total = query_videos(self.sid, channels, offset, limit, q, sort, user, kind)
+        rows, total = query_videos(self.sid, channels, offset, limit, q, sort, user, kind, self.kinds)
         if fill and len(channels) == 1 and not q and sort == "latest":
             ch = channels[0]
             for _ in range(OLDER_BATCHES_PER_PAGE):
                 if len(rows) >= limit or not await self.sync_older(ch):
                     break
-                rows, total = query_videos(self.sid, channels, offset, limit, q, sort, user, kind)
+                rows, total = query_videos(self.sid, channels, offset, limit, q, sort, user, kind, self.kinds)
             ahead = total - (offset + len(rows))
             if ahead < limit * 2 and not sync_state(self.sid, ch)["complete"]:
                 self.background(("older", ch), lambda: self.sync_older(ch))

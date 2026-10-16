@@ -48,9 +48,10 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
     const sortSel = h('select', { class: 'select' },
         p.librarySorts().map(([v, label]) => h('option', { value: v, text: label, selected: v === pref.sort })));
     const unwatchedChk = h('input', { type: 'checkbox', checked: !!pref.unwatched });
-    // 텔레그램: 영상/사진 골라 보기
-    const kindSel = p.libraryKinds ? h('select', { class: 'select' },
-        p.libraryKinds().map(([v, label]) => h('option', { value: v, text: label, selected: v === (pref.kind || '') }))) : null;
+    // 텔레그램: 영상/사진 골라 보기 (관리자가 "영상만/사진만"으로 정한 채널은 없음)
+    const kindOpts = p.libraryKinds ? p.libraryKinds(libId) : null;
+    const kindSel = kindOpts ? h('select', { class: 'select' },
+        kindOpts.map(([v, label]) => h('option', { value: v, text: label, selected: v === (pref.kind || '') }))) : null;
     const countEl = h('span', { class: 'muted' });
     // 고르기 귀찮을 때: 이 라이브러리(채널)에서 아무거나 틀고, 끝나면 또 아무거나 (Plex는 [안 본 것만]을 따름)
     const randomBtn = p.randomPick ? h('button', {

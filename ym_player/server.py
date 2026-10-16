@@ -878,7 +878,7 @@ def _telegram(request):
         if tg is not None:
             asyncio.ensure_future(tg.close())
         tg = pool[src["id"]] = telegram_src.TelegramSource(src)
-    tg.channels = [int(c["id"]) for c in src.get("channels") or []]
+    tg.set_channels(src)
     tg.phone = tg.phone if tg._code_hash else str(src.get("phone") or "").strip()
     return tg
 
@@ -983,7 +983,7 @@ async def tg_random(request, tg):
         if c.lstrip("-").isdigit() and m.isdigit():
             exclude.append((int(c), int(m)))
     item = telegram_src.random_video(tg.sid, channels, user=username(request),
-                                     unwatched=request.query.get("unwatched") == "1", exclude=exclude)
+                                     unwatched=request.query.get("unwatched") == "1", exclude=exclude, kinds=tg.kinds)
     return web.json_response({"success": True, "item": item})
 
 
@@ -1609,7 +1609,7 @@ async def _check_telegram(request, src):
     tg = pool.get(src["id"])
     if tg is None or not tg.matches(src):
         tg = pool[src["id"]] = telegram_src.TelegramSource(src)
-    tg.channels = [int(c["id"]) for c in src.get("channels") or []]
+    tg.set_channels(src)
     st = await asyncio.wait_for(tg.status(), 15)
     counts = telegram_src.index_counts(src["id"])
     total = sum(counts.values())
