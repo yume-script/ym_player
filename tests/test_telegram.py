@@ -610,6 +610,10 @@ def test_user_channel_access(env):
             assert (await c.post("/api/tg/tg/probe/777/999")).status == 404
             r = await c.post("/api/tg/tg/progress", json={"channel": 777, "msg": 999, "position": 10})
             assert r.status == 404
+            # 랜덤 재생도 볼 수 없는 채널에서는 뽑지 않는다
+            for q in ("", "?channel=777"):
+                item = (await (await c.get(f"/api/tg/tg/random{q}")).json())["item"]
+                assert item is None or item["channel"] == 888, q
         finally:
             await client.close()
 
@@ -784,3 +788,24 @@ def test_image_endpoint_and_kind_filter(env):
         assert (await c.get("/api/tg/tg/image/888/1000")).status == 404  # 고르지 않은 채널
 
     run(flow)
+
+
+def test_random_video_skips_photos_watched_and_middle_parts(monkeypatch, tmp_path):
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    telegram_src._migrated.discard(str(tmp_path))
+    rows = [(1, "Movie_0000", "Movie_0000.mkv", "video"), (2, "Movie_0001", "Movie_0001.mkv", "video"),
+            (3, "사진", "p.jpg", "image"), (4, "본 영화", "seen.mp4", "video"), (5, "다른 채널", "x.mp4", "video")]
+    with telegram_src.db() as conn:
+        conn.executemany(
+            "INSERT INTO videos(source,channel,msg,title,caption,file_name,mime,duration,size,width,height,date,has_thumb,kind)"
+            " VALUES('tg',?,?,?,'',?,'video/mp4',60,1,1,1,'',0,?)",
+            [(2 if m == 5 else 1, m, t, f, k) for m, t, f, k in rows])
+    telegram_src.save_progress("tg", 1, 4, 60, 60, watched=True)
+    seen = {telegram_src.random_video("tg", [1])["msg"] for _ in range(60)}
+    assert seen == {1, 4}                     # 사진 X, 중간 조각(2) -> 첫 조각(1)
+    assert {telegram_src.random_video("tg", [1], unwatched=True)["msg"] for _ in range(20)} == {1}
+    assert telegram_src.random_video("tg", [1], exclude=[(1, 1), (1, 2)])["msg"] == 4
+    # 전부 뺄 목록이어도 아무거나 하나는
+    assert telegram_src.random_video("tg", [1], unwatched=True, exclude=[(1, 1), (1, 2)])["msg"] == 1
+    assert telegram_src.random_video("tg", [2])["msg"] == 5
+    assert telegram_src.random_video("tg", []) is None

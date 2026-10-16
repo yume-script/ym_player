@@ -1,6 +1,7 @@
 // Plex 라이브러리: [추천] 탭(섹션 허브) / [라이브러리] 탭(정렬 가능한 포스터 격자, 스크롤하면 더 불러옴)
 import { h, icon, clear, storeGet, storeSet } from '../util.js';
 import { registry } from '../providers/index.js';
+import { player } from '../player.js';
 import { hubRow, posterCard, channelCard, playlistOf, emptyState, loading } from '../cards.js';
 
 const PAGE = 60;
@@ -51,11 +52,17 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
     const kindSel = p.libraryKinds ? h('select', { class: 'select' },
         p.libraryKinds().map(([v, label]) => h('option', { value: v, text: label, selected: v === (pref.kind || '') }))) : null;
     const countEl = h('span', { class: 'muted' });
+    // 고르기 귀찮을 때: 이 라이브러리(채널)에서 아무거나 틀고, 끝나면 또 아무거나 (Plex는 [안 본 것만]을 따름)
+    const randomBtn = p.randomPick ? h('button', {
+        class: 'btn', title: '이 라이브러리에서 아무거나 골라 계속 재생',
+        on: { click: () => player.playRandom((exclude) => p.randomPick(libId, { unwatched: unwatchedChk.checked, exclude }), lib.title) },
+    }, icon('shuffle'), ' 랜덤 재생') : null;
     const grid = h('div', { class: `grid${lib.type === 'artist' ? ' grid-square' : ''}${lib.type === 'telegram' ? ' grid-wide' : ''}${lib.type === 'radio' ? ' grid-channels' : ''}` });
     const sentinel = h('div', { class: 'sentinel' });
     body.append(
         h('div', { class: 'toolbar' },
             countEl,
+            randomBtn,
             p.kind === 'plex' ? h('label', { class: 'check' }, unwatchedChk, ' 안 본 것만') : null,
             kindSel ? h('label', { class: 'muted' }, '보기 ', kindSel) : null,
             h('label', { class: 'muted' }, '정렬 ', sortSel)),

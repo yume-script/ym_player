@@ -60,6 +60,7 @@ class Player {
         this.token = 0;
         this.attemptSeq = 0;
         this.prepSeq = 0;   // [재생]을 누른 뒤 준비(getPlayback)하는 동안 다른 걸 누르거나 닫으면 버리기 위함
+        this.shuffle = null; // 랜덤 재생 중이면 {pick, label, played}
         this.recoverCount = 0;
         this.viaProxy = false;
         this.playingSince = 0;
@@ -148,6 +149,7 @@ class Player {
                     this.playBtn,
                     btn('rotate-right', '30초 앞으로 (→)', () => this.seekBy(30), 'vod-only'),
                     btn('forward-step', '다음 채널 (↓)', () => this.switchChannel(1), 'live-only'),
+                    btn('shuffle', '다른 랜덤 영상 (N)', () => this.shuffleNext(), 'shuffle-only on'),
                     h('div', { class: 'vol' }, this.muteBtn, this.volRange)),
                 h('div', { class: 'ctrl-group' }, this.engineEl),
                 h('div', { class: 'ctrl-group' },
@@ -412,6 +414,7 @@ class Player {
 
     stop() {
         this.prepSeq++;
+        this._setShuffle(null);
         this._finishCurrent();
         this.token++;
         this._destroyEngines();
@@ -779,7 +782,11 @@ class Player {
         on('stop', () => this.stop());
         // 라이브(라디오·IPTV)는 이전/다음 방송, VOD는 10초 뒤로 / 30초 앞으로
         on('previoustrack', () => { if (this.pb && this.pb.live) this.switchChannel(-1); else this.seekBy(-10); });
-        on('nexttrack', () => { if (this.pb && this.pb.live) this.switchChannel(1); else this.seekBy(30); });
+        on('nexttrack', () => {
+            if (this.pb && this.pb.live) this.switchChannel(1);
+            else if (this.shuffle) this.shuffleNext();
+            else this.seekBy(30);
+        });
         on('seekbackward', () => this.seekBy(-10));
         on('seekforward', () => this.seekBy(30));
     }
@@ -885,11 +892,14 @@ class Player {
 
     playChannel(provider, channel, playlist) {
         this.prepSeq++; // 준비 중이던 다른 영상은 버린다
+        this._setShuffle(null);
         if (provider.kind === 'radio') this.viz.prime(); // 누른 그 순간에 (브라우저 소리 허용 조건)
         return this.start(provider.getPlayback(channel), playlist);
     }
 
     async playItem(provider, id, opts) {
+        // 직접 고른 영상이면 랜덤 재생을 끝낸다 (랜덤으로 뽑은 것/이어지는 조각은 opts.shuffle)
+        if (!(opts && opts.shuffle)) this._setShuffle(null);
         // 재생 전에 물어볼 게 있으면 (텔레그램 나눠진 파일의 두 번째 이후 조각 등) 먼저 묻는다
         if (provider.confirmPlay) {
             const ask = ++this.prepSeq;
@@ -909,6 +919,49 @@ class Player {
             toast(`재생 준비 실패: ${e.message}`, 'error');
             this.stop();
         }
+    }
+
+    /**
+     * 랜덤 재생: pick(exclude)가 돌려주는 영상({pid, id, title})을 틀고, 끝나면 또 하나를 뽑아 계속 튼다.
+     * exclude는 이번 랜덤 재생에서 이미 튼 항목들 ("pid/id") - 연달아 같은 게 안 나오게.
+     * 다른 영상/채널을 직접 고르거나 재생을 끝내면 멈춘다.
+     */
+    playRandom(pick, label = '') {
+        const sh = { pick, label, played: [] };
+        this._setShuffle(sh);
+        return this._playShuffle(sh);
+    }
+
+    shuffleNext() {
+        if (this.shuffle) this._playShuffle(this.shuffle);
+    }
+
+    _setShuffle(sh) {
+        this.shuffle = sh;
+        this.root.classList.toggle('is-shuffle', !!sh);
+    }
+
+    async _playShuffle(sh) {
+        const ask = ++this.prepSeq;
+        let next;
+        try {
+            next = await sh.pick(new Set(sh.played));
+        } catch (e) {
+            if (this.shuffle === sh && ask === this.prepSeq) toast(`랜덤 재생 실패: ${e.message}`, 'error');
+            return;
+        }
+        if (this.shuffle !== sh || ask !== this.prepSeq) return;
+        if (!next) {
+            toast(sh.played.length ? '더 틀 영상이 없습니다.' : '랜덤으로 틀 영상이 없습니다.');
+            this._setShuffle(null);
+            return;
+        }
+        const key = `${next.pid}/${next.id}`;
+        sh.played = [...sh.played.filter((x) => x !== key), key].slice(-40);
+        const provider = registry.byId(next.pid);
+        if (!provider) return;
+        toast(`랜덤${sh.label ? ` (${sh.label})` : ''}: ${next.title}`);
+        return this.playItem(provider, next.id, { auto: true, shuffle: true });
     }
 
     /** 지금 보던 것을 정리하고 빈 재생 화면에 "재생 준비 중"을 띄운다 */
@@ -997,13 +1050,15 @@ class Player {
         const pb = this.pb;
         if (!pb || pb.live) return;
         if (pb.onProgress) pb.onProgress('stopped', this._duration());
+        // 랜덤 재생 중이면 다음 화 대신 또 랜덤으로 (나눠 올린 파일의 다음 조각은 이어서)
+        if (this.shuffle && !pb.nextIsPart) return this._playShuffle(this.shuffle);
         if (!pb.getNext) return;
         try {
             const next = await pb.getNext();
             if (!next || this.pb !== pb) return;
             const provider = registry.byId(next.pid);
             toast(`다음: ${next.title}`);
-            this.playItem(provider, next.id, { fromStart: true, auto: true });
+            this.playItem(provider, next.id, { fromStart: true, auto: true, shuffle: !!this.shuffle });
         } catch (e) { /* 다음 화가 없으면 그냥 끝 */ }
     }
 
@@ -1270,6 +1325,7 @@ class Player {
         else if (k === 'f' || k === 'F') this.toggleFullscreen();
         else if (k === 'm' || k === 'M') this.toggleMute();
         else if (k === 'i' || k === 'I') this.showOsd();
+        else if ((k === 'n' || k === 'N') && this.shuffle) this.shuffleNext();
         else if ((k === 'c' || k === 'C') && !live) this.toggleSubMenu();
         else if (k === 'Escape' && !document.fullscreenElement) {
             if (!this.subMenu.classList.contains('hidden')) this.subMenu.classList.add('hidden');

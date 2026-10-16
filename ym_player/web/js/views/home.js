@@ -1,6 +1,7 @@
 // 홈: 맨 위에 모든 소스를 합친 이어보기, 그 아래 소스마다 허브(최근 추가, 지금 방송 중...)를 가로 줄로 쌓는다.
 import { h, icon, clear } from '../util.js';
-import { registry } from '../providers/index.js';
+import { registry, randomAcross } from '../providers/index.js';
+import { player } from '../player.js';
 import { hubRow, emptyState, loading } from '../cards.js';
 
 export async function renderHome(main, _params, _query, ctx) {
@@ -14,6 +15,16 @@ export async function renderHome(main, _params, _query, ctx) {
 
     const page = h('div', { class: 'page home' });
     main.appendChild(page);
+
+    // 고르기 귀찮을 때: Plex·텔레그램 전체에서 안 본 것 위주로 아무거나 계속 재생
+    const randomSources = registry.randomProviders();
+    if (randomSources.length) {
+        page.appendChild(h('div', { class: 'home-actions' },
+            h('button', {
+                class: 'btn', title: `${randomSources.map((p) => p.name).join(', ')}에서 아무거나 골라 계속 재생`,
+                on: { click: () => player.playRandom(randomAcross(randomSources)) },
+            }, icon('shuffle'), ' 랜덤 재생')));
+    }
 
     // 맨 위: 모든 소스의 이어보기를 최근에 본 순서로 한 줄에 (각 소스의 이어보기 줄은 따로 안 그린다)
     const contSlot = h('div', { class: 'home-slot' });
