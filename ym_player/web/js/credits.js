@@ -88,6 +88,11 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 37,
+        "date": "2026-10-16",
+        "title": "아이패드 라디오 백그라운드 재생 우선, 잠금 화면·제어 센터 조작(Media Session)"
+    },
+    {
         "pr": 36,
         "date": "2026-10-16",
         "title": "v1.1.1: 이름을 YMPlayer로, 버전 배지에 전체 버전, 기본 테마를 바꿔도 화면이 그대로인 경우 안내"

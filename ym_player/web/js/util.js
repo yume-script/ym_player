@@ -133,5 +133,9 @@ export function modal(title, body, actions = []) {
  * MP4 안의 MP3 소리는 처음 몇 초를 못 내고, WebM·VP9·AV1·Opus·FLAC은 기기와 버전마다 되다 안 되다 한다.
  * 그래서 Safari에서는 H.264 + AAC(또는 소리 없음)만 원본으로 보내고 나머지는 서버 변환으로 연다.
  */
+/** 아이폰·아이패드 (아이패드 Safari는 기본으로 Mac인 척하므로 터치로 구별) */
+export const IS_IOS = typeof navigator !== 'undefined' && (/iPad|iPhone|iPod/.test(navigator.userAgent)
+    || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 0));
+
 export const IS_SAFARI = typeof navigator !== 'undefined' && /safari/i.test(navigator.userAgent)
     && !/chrome|crios|chromium|android|fxios|edg/i.test(navigator.userAgent);
