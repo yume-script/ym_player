@@ -105,6 +105,18 @@ img { display: block; }
 .ver-notice:hover, .ver-notice:focus-visible { filter: brightness(1.12); outline: none; box-shadow: 0 0 0 2px rgba(var(--fg-rgb), 0.35); }
 @keyframes ver-pulse { 50% { transform: scale(1.12); } }
 .whats-new .changelog { margin-bottom: 0.75rem; }
+.ver-notice.github { background: var(--text); color: var(--bg); font-family: inherit; letter-spacing: 0; }
+.ver-notice + .ver-notice { margin-left: -0.35rem; }
+.cmd-box { display: flex; gap: 0.5rem; align-items: center; margin: 0.4rem 0 0.75rem; }
+.cmd-box code {
+    flex: 1; min-width: 0; padding: 0.55rem 0.7rem; border-radius: var(--radius); background: var(--bg); border: 1px solid var(--border);
+    font: 0.8rem/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-x: auto; white-space: nowrap; user-select: all;
+}
+.update-box { display: flex; flex-direction: column; gap: 0.5rem; }
+.update-line { font-size: 0.95rem; }
+.update-line .ok { color: var(--ok, #3fb950); }
+.update-new { color: var(--accent); }
+.update-meta { font-size: 0.8rem; }
 .search { flex: 1; max-width: 520px; position: relative; display: flex; align-items: center; }
 .search i { position: absolute; left: 0.9rem; color: var(--muted); font-size: 0.85rem; }
 .search input {

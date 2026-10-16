@@ -43,7 +43,7 @@ from urllib.parse import urlencode
 from aiohttp import ClientSession, ClientTimeout, web
 from yarl import URL
 
-from . import __version__, auth, config_store, iptv, media_cache, prefs, radio, subtitles, telegram_src, transcode
+from . import __version__, auth, config_store, iptv, media_cache, prefs, radio, subtitles, telegram_src, transcode, updates
 
 log = logging.getLogger("ym_player")
 
@@ -90,6 +90,8 @@ TRANSCODES = web.AppKey("transcodes", dict)     # 사용자명 -> 돌고 있는 
 PLEX_FILES = web.AppKey("plex_files", dict)  # 캐시 키 -> (크기, Content-Type) - Plex 원본 파일
 HLS_JOBS = web.AppKey("hls_jobs", dict)  # HLS 변환 id -> HlsJob (Safari용 서버 변환)
 HLS_SWEEPER = web.AppKey("hls_sweeper", asyncio.Task)
+UPDATES = web.AppKey("updates", updates.UpdateChecker)
+UPDATE_TASK = web.AppKey("update_task", asyncio.Task)
 PROBES = web.AppKey("probes", dict)  # (소스id, 채널, 메시지) -> 돌고 있는 ffprobe (같은 영상을 겹쳐 보지 않게)  # 소스 id -> telegram_src.TelegramSource (연결을 계속 유지)
 
 
@@ -1652,6 +1654,18 @@ async def admin_status(request):
 
 
 @admin_only
+async def admin_update_get(request):
+    """GitHub에 새 버전이 있는지 (마지막으로 확인한 결과, 6시간마다 다시 봄)"""
+    return web.json_response({"success": True, **request.app[UPDATES].info()})
+
+
+@admin_only
+async def admin_update_check(request):
+    """지금 바로 GitHub 확인 ([지금 확인] 버튼)"""
+    return web.json_response({"success": True, **await request.app[UPDATES].check(request.app[HTTP])})
+
+
+@admin_only
 async def admin_cache_get(request):
     cfg = config_store.load()
     return web.json_response({"success": True, "settings": media_cache.clean_settings(cfg.get("cache")),
@@ -1948,6 +1962,7 @@ async def _on_startup(app):
     media_cache.STORE.configure(config_store.load().get("cache"))
     shutil.rmtree(_hls_root(), ignore_errors=True)  # 지난번에 남은 HLS 변환 파일
     app[HLS_SWEEPER] = asyncio.ensure_future(_hls_sweeper(app))
+    app[UPDATE_TASK] = asyncio.ensure_future(app[UPDATES].loop(app[HTTP]))
     if app[REQUIRE_AUTH]:
         made = auth.bootstrap_from_env()
         if made:
@@ -1957,9 +1972,9 @@ async def _on_startup(app):
 
 
 async def _on_cleanup(app):
-    sweeper = app.get(HLS_SWEEPER)
-    if sweeper:
-        sweeper.cancel()
+    for task in (app.get(HLS_SWEEPER), app.get(UPDATE_TASK)):
+        if task:
+            task.cancel()
     for job in list(app[HLS_JOBS].values()):
         await _hls_stop(app, job)
     for proc in list(app[TRANSCODES].values()):
@@ -1988,6 +2003,7 @@ def create_app(require_auth=True):
     app[TRANSCODES] = {}
     app[PROBES] = {}
     app[HLS_JOBS] = {}
+    app[UPDATES] = updates.UpdateChecker()
     app[RADIO_NOW] = {}
     app[RADIO_ART] = {}
     app[PLEX_FILES] = {}
@@ -2013,6 +2029,8 @@ def create_app(require_auth=True):
     app.router.add_delete("/api/admin/branding/icon", branding_icon_delete)
     app.router.add_get("/api/admin/status", admin_status)
     app.router.add_get("/api/admin/backup", admin_backup)
+    app.router.add_get("/api/admin/update", admin_update_get)
+    app.router.add_post("/api/admin/update/check", admin_update_check)
     app.router.add_get("/api/admin/cache", admin_cache_get)
     app.router.add_put("/api/admin/cache", admin_cache_put)
     app.router.add_delete("/api/admin/cache", admin_cache_clear)

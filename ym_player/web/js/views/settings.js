@@ -4,6 +4,7 @@ import { h, icon, clear, api, toast, modal, storeGet, storeSet } from '../util.j
 import { registry } from '../providers/index.js';
 import { PlexProvider } from '../providers/plex.js';
 import { applyBranding } from '../brand.js';
+import { setGithubInfo, showGithubUpdate } from '../notice.js';
 import { ownThemeLabel, setDefaults, themePicker, useDefaultTheme } from '../theme.js';
 import { CHANGELOG, CREDITS, REPO } from '../credits.js';
 
@@ -546,12 +547,42 @@ async function renderStatus(pane) {
         h('div', { class: 'src-card status-list' }, rows.length ? rows : h('p', { class: 'muted', text: '소스가 없습니다.' })),
         h('h3', { class: 'pane-title', text: '서버' }),
         h('div', { class: 'src-card facts' }, facts.map(([k, v]) => h('div', { class: 'fact' }, h('span', { text: k }), h('b', { text: v })))),
+        h('h3', { class: 'pane-title', text: '업데이트 (GitHub)' }),
+        updateBox(),
         h('h3', { class: 'pane-title', text: `최근 경고 (${st.warnings.length})` }),
         h('div', { class: 'src-card warn-list' }, st.warnings.length
             ? st.warnings.map((w) => h('div', { class: `warn-row ${w.level.toLowerCase()}` },
                 h('span', { class: 'warn-time', text: new Date(w.time * 1000).toLocaleString() }),
                 h('span', { class: 'warn-msg', text: w.message, title: w.logger })))
             : h('p', { class: 'muted', text: '서버를 켠 뒤로 경고가 없습니다.' }))));
+}
+
+/** GitHub에 새 버전이 있는지 (서버가 6시간마다 확인, [지금 확인]으로 바로) */
+function updateBox() {
+    const box = h('div', { class: 'src-card update-box' });
+    const draw = (u, busy = false) => {
+        const when = u.checked_at ? new Date(u.checked_at * 1000).toLocaleString() : '아직 확인 안 함';
+        const state = u.error ? h('span', { class: 'error', text: `확인 실패: ${u.error}` })
+            : !u.latest ? h('span', { class: 'muted', text: '아직 확인하지 않았습니다.' })
+                : u.newer ? h('b', { class: 'update-new', text: `새 버전 ${u.latest}이(가) 있습니다` })
+                    : h('span', { class: 'ok', text: '최신 버전입니다' });
+        clear(box).append(
+            h('div', { class: 'update-line' }, icon(u.newer ? 'circle-up' : 'code-branch'), ' ', state),
+            h('div', { class: 'muted update-meta', text: `이 서버 ${u.current} · GitHub ${u.latest || '-'} · 마지막 확인 ${when}`
+                + (u.enabled ? ' · 6시간마다 자동 확인' : ' · 자동 확인 꺼짐 (MP_UPDATE_CHECK=0)') }),
+            h('div', { class: 'toolbar' },
+                h('button', { class: 'btn btn-sm', disabled: busy, on: { click: async () => {
+                    draw(u, true);
+                    try { u = await api('/api/admin/update/check', { method: 'POST' }); setGithubInfo(u); } catch (e) { u = { ...u, error: e.message }; }
+                    draw(u);
+                } } }, icon(busy ? 'circle-notch' : 'rotate', busy ? 'fa-spin' : ''), busy ? ' 확인 중...' : ' 지금 확인'),
+                u.newer ? h('button', { class: 'btn btn-sm btn-accent', on: { click: () => showGithubUpdate(u) } }, icon('download'), ' 업데이트 방법') : null,
+                h('a', { class: 'btn btn-sm', href: u.repo || 'https://github.com/yume-script/ym_player', target: '_blank', rel: 'noopener' },
+                    icon('arrow-up-right-from-square'), ' 저장소')));
+    };
+    box.appendChild(h('p', { class: 'muted', text: '불러오는 중...' }));
+    api('/api/admin/update').then((u) => draw(u)).catch((e) => clear(box).appendChild(h('p', { class: 'muted error', text: e.message })));
+    return box;
 }
 
 function fmtBytes(n) {
