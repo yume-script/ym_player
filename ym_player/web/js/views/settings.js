@@ -679,6 +679,11 @@ function renderThanks(pane) {
         if (last && last.date === e.date) last.items.push(e); else byDate.push({ date: e.date, items: [e] });
     }
     clear(pane).append(
+        h('div', { class: 'src-card thanks-card thanks-people' },
+            h('h3', { class: 'pane-title' }, icon('hand-holding-heart'), ' 특별히 고마운 분'),
+            (CREDITS.people || []).map((p) => h('div', { class: 'thanks-person' },
+                h('div', { class: 'thanks-name' }, h('b', { text: p.name }), h('span', { class: 'thanks-url', text: p.role })),
+                h('p', { class: 'thanks-note', text: p.note })))),
         h('div', { class: 'src-card thanks-card' },
             h('h3', { class: 'pane-title' }, icon('heart'), ' 참고한 저장소'),
             h('p', { class: 'field-hint', text: 'Yume Player는 아래 프로젝트에서 출발했거나 아이디어를 얻었습니다. 고맙습니다.' }),

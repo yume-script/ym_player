@@ -1,6 +1,13 @@
 // 설정 > Thanks to 탭에 보여 줄 내용 (views/settings.js renderThanks).
 // 참고한 저장소와 쓰는 라이브러리, 그리고 변경 이력(PR마다 한 줄, 새것이 위). 새 PR을 머지하면 CHANGELOG 맨 위에 한 줄 더한다.
 export const CREDITS = {
+    "people": [
+        {
+            "name": "CRARES 님",
+            "role": "북오아시스(BookOasis) 제작자",
+            "note": "수많은 플러그인이 편하게 안주할 수 있는 터전, 북오아시스를 만들어 주셔서 고맙습니다. Yume Player도 북오아시스의 M3U 플레이어와 텔레그램 동영상 플러그인에서 출발했습니다."
+        }
+    ],
     "sources": [
         {
             "name": "ym_m3u_player (북오아시스 M3U 플레이어 플러그인)",
@@ -80,6 +87,11 @@ export const CREDITS = {
 export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
+    {
+        "pr": 35,
+        "date": "2026-10-16",
+        "title": "Thanks to: 북오아시스를 만든 CRARES 님께 감사 인사"
+    },
     {
         "pr": 34,
         "date": "2026-10-16",
