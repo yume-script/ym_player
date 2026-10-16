@@ -81,6 +81,11 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 34,
+        "date": "2026-10-16",
+        "title": "라디오: 일반 사용자에게도 방송국 목록, 사용자마다 볼 방송국 고르기"
+    },
+    {
         "pr": 33,
         "date": "2026-10-16",
         "title": "설정에 Thanks to 탭: 참고한 저장소와 변경 이력"

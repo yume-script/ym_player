@@ -151,13 +151,14 @@ export async function renderSettings(main, _params, _query, ctx) {
             const sub = h('div', { class: 'acc-libs' });
             chk.addEventListener('change', () => { if (chk.checked) chosen.add(src.id); else chosen.delete(src.id); sub.classList.toggle('hidden', !chk.checked); });
             sub.classList.toggle('hidden', !chk.checked);
-            const hasItems = src.type === 'plex' || src.type === 'telegram';
+            const hasItems = src.type === 'plex' || src.type === 'telegram' || src.type === 'radio';
+            const srcIcon = { plex: 'server', telegram: 'paper-plane', radio: 'radio' }[src.type] || 'tower-broadcast';
             listBox.appendChild(h('div', { class: 'acc-src' },
-                h('label', { class: 'check' }, chk, icon(src.type === 'plex' ? 'server' : src.type === 'telegram' ? 'paper-plane' : 'tower-broadcast'), ` ${src.name}`),
+                h('label', { class: 'check' }, chk, icon(srcIcon), ` ${src.name}`),
                 hasItems ? sub : null));
             if (!hasItems) return;
-            // 그 소스 안에서 볼 것: Plex는 라이브러리, 텔레그램은 설정에서 고른 채널
-            const what = src.type === 'plex' ? '라이브러리' : '채널';
+            // 그 소스 안에서 볼 것: Plex는 라이브러리, 텔레그램은 설정에서 고른 채널, 라디오는 방송국
+            const what = { plex: '라이브러리', telegram: '채널', radio: '방송국' }[src.type];
             const fill = (items) => {
                 clear(sub);
                 if (!items.length) { sub.appendChild(h('span', { class: 'muted', text: `고를 ${what}이 없습니다.` })); return; }
@@ -184,6 +185,10 @@ export async function renderSettings(main, _params, _query, ctx) {
                 fill((src.channels || []).map((c) => ({ id: String(c.id), title: c.title, icon: 'bullhorn' })));
                 return;
             }
+            if (src.type === 'radio') {
+                fill((src.stations || []).map((st) => ({ id: st.id, title: st.name, icon: 'radio' })));
+                return;
+            }
             sub.appendChild(h('span', { class: 'muted' }, icon('circle-notch', 'fa-spin'), ' 라이브러리 불러오는 중...'));
             new PlexProvider(src, registry.config.client_id).getLibraries({ all: true }).then(fill)
                 .catch((e) => { clear(sub).appendChild(h('span', { class: 'muted error', text: `라이브러리 목록 실패: ${e.message}` })); });
@@ -195,7 +200,7 @@ export async function renderSettings(main, _params, _query, ctx) {
             h('label', { class: 'check' }, allIn, ' 전부 (나중에 추가하는 소스도)'),
             h('label', { class: 'check' }, someIn, ' 고른 것만'),
             listBox,
-            h('p', { class: 'field-hint', text: '고르지 않은 소스, Plex 라이브러리, 텔레그램 채널은 이 사용자의 사이드바·홈·검색·이어보기에 안 나오고, 서버도 열어 주지 않습니다.' })),
+            h('p', { class: 'field-hint', text: '고르지 않은 소스, Plex 라이브러리, 텔레그램 채널, 라디오 방송국은 이 사용자의 사이드바·홈·검색·이어보기에 안 나오고, 서버도 열어 주지 않습니다.' })),
         [saveAcc]);
         saveAcc.addEventListener('click', async () => {
             const access = allIn.checked ? null : {
