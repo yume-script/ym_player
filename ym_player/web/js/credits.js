@@ -1,5 +1,7 @@
 // 설정 > Thanks to 탭에 보여 줄 내용 (views/settings.js renderThanks).
 // 참고한 저장소와 쓰는 라이브러리, 그리고 변경 이력(PR마다 한 줄, 새것이 위). 새 PR을 머지하면 CHANGELOG 맨 위에 한 줄 더한다.
+// PR마다 ym_player/__init__.py의 __version__ 셋째 자리를 하나 올리고 그 줄의 version에 같은 값을 적는다
+// (version이 있는 줄은 아이콘 옆 [NEW]를 누르면 "새로워진 점"으로 나온다 - notice.js).
 export const CREDITS = {
     "people": [
         {
@@ -88,17 +90,26 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 39,
+        "version": "1.1.2",
+        "date": "2026-10-16",
+        "title": "새 버전 알림: 아이콘 옆 [NEW]를 누르면 새로워진 점, 열어 둔 화면에서 서버가 업데이트되면 [업데이트]로 새로고침 안내"
+    },
+    {
         "pr": 38,
+        "version": "1.1.1",
         "date": "2026-10-16",
         "title": "랜덤 재생 (Plex·텔레그램): 홈/라이브러리의 [랜덤 재생], 끝나면 또 아무거나, 재생 화면의 [다른 랜덤 영상]"
     },
     {
         "pr": 37,
+        "version": "1.1.1",
         "date": "2026-10-16",
         "title": "아이패드 라디오 백그라운드 재생 우선, 잠금 화면·제어 센터 조작(Media Session)"
     },
     {
         "pr": 36,
+        "version": "1.1.1",
         "date": "2026-10-16",
         "title": "v1.1.1: 이름을 YMPlayer로, 버전 배지에 전체 버전, 기본 테마를 바꿔도 화면이 그대로인 경우 안내"
     },

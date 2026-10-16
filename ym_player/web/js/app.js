@@ -5,6 +5,7 @@ import { emptyState } from './cards.js';
 import './player.js';
 import { loadFavorites } from './providers/iptv.js';
 import { loadMyTheme, openThemeDialog } from './theme.js';
+import { initVersionNotice } from './notice.js';
 import { renderHome } from './views/home.js';
 import { renderLibrary } from './views/library.js';
 import { renderDetail } from './views/detail.js';
@@ -213,6 +214,7 @@ async function boot() {
         registry.user = (await api('/api/auth/me')).user;
         const [, prefs] = await Promise.all([registry.load(), loadFavorites()]);
         if (prefs) loadMyTheme(prefs);
+        initVersionNotice(prefs, registry.isAdmin());
     } catch (e) {
         toast(`설정을 불러오지 못했습니다: ${e.message}`, 'error', 8000);
     }
