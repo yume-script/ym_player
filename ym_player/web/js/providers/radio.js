@@ -1,4 +1,4 @@
-// 인터넷 라디오 소스. 방송국 목록은 설정(config)에 있고, 지금 나오는 곡과 앨범 표지는 서버(/api/radio/{id}/now)가
+// 인터넷 라디오 소스 (MP3/AAC/Ogg 스트림과 HLS .m3u8). 방송국 목록은 설정(config)에 있고, 지금 나오는 곡과 앨범 표지는 서버(/api/radio/{id}/now)가
 // 방송 스트림의 곡 정보(ICY)와 iTunes 검색으로 알려 준다. 재생은 IPTV 라이브 채널과 같은 길(채널 카드, OSD,
 // 위/아래 방송국 전환, 미니 플레이어)을 쓰고, 화면에는 영상 대신 앨범 표지를 크게 보여 준다.
 import { api } from '../util.js';
@@ -101,6 +101,9 @@ export class RadioProvider {
 
     getPlayback(ch) {
         const st = this.stations.find((s) => s.id === ch.stationId) || ch;
+        // HLS(.m3u8) 방송은 hls.js로 (Chrome은 <audio>에 m3u8을 바로 못 넣음, Safari는 기본 지원).
+        // 서버 중계(/api/stream)가 재생목록 안의 조각 주소도 중계 주소로 바꿔 준다
+        const hls = /\.m3u8(\?|$)/i.test(st.url || '');
         this.refreshNow();
         this._watch(true);
         // 방송국을 바꾸면 새 재생을 먼저 준비한 뒤 이전 재생의 onStop이 불린다 -> 자기 차례일 때만 끈다
@@ -109,7 +112,7 @@ export class RadioProvider {
         // 서버 중계(같은 사이트 주소)로 받아야 브라우저가 소리를 분석해 시각화가 음악에 반응한다 (아이패드 포함).
         // 중계가 안 되면 방송국 주소로 바로 (소리는 나지만 시각화는 기본 움직임)
         const base = {
-            kind: 'direct',
+            kind: hls ? 'hls' : 'direct',
             live: true,
             audioOnly: true,
             visualizer: true,

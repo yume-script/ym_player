@@ -90,6 +90,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 44,
+        "version": "1.1.7",
+        "date": "2026-10-17",
+        "title": "라디오: HLS(.m3u8) 방송국도 재생 (Chrome은 hls.js로, 서버 중계로 시각화도)"
+    },
+    {
         "pr": 43,
         "version": "1.1.6",
         "date": "2026-10-17",
