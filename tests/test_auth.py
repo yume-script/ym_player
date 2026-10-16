@@ -488,3 +488,34 @@ def test_static_files_get_versioned_urls(data):
         assert (await c.get(f"/s/{m.group(1)}/%2e%2e/server.py")).status == 404
 
     run(flow)
+
+
+def test_radio_stations_for_users(data):
+    async def flow(c, app):
+        await c.post("/api/auth/setup", json={"username": "admin", "password": "adminpw"})
+        stations = [{"name": "재즈", "url": "http://127.0.0.1:9/a"}, {"name": "블루스", "url": "http://127.0.0.1:9/b"},
+                    {"name": "클래식", "url": "http://127.0.0.1:9/c"}]
+        assert (await c.put("/api/config", json={"sources": [{"id": "rd", "type": "radio", "name": "라디오",
+                                                              "stations": stations}]})).status == 200
+        await c.post("/api/users", json={"username": "kim", "password": "kimpass"})
+        await c.post("/api/users", json={"username": "lee", "password": "leepass"})
+        r = await c.put("/api/users/lee", json={"access": {"sources": ["rd"], "libraries": {"rd": ["재즈", "클래식"]}}})
+        assert r.status == 200
+
+        async def login(name, pw):
+            await c.post("/api/auth/logout")
+            c.session.cookie_jar.clear()
+            await c.post("/api/auth/login", json={"username": name, "password": pw})
+
+        # 일반 사용자도 방송국 목록을 받는다 (예전엔 빠져서 방송국 화면이 비었다)
+        await login("kim", "kimpass")
+        src = (await (await c.get("/api/config")).json())["sources"][0]
+        assert [s["id"] for s in src["stations"]] == ["재즈", "블루스", "클래식"]
+        # 고른 방송국만
+        await login("lee", "leepass")
+        src = (await (await c.get("/api/config")).json())["sources"][0]
+        assert [s["id"] for s in src["stations"]] == ["재즈", "클래식"]
+        now = (await (await c.get("/api/radio/rd/now")).json())["now"]
+        assert sorted(now) == ["재즈", "클래식"]
+
+    run(flow)

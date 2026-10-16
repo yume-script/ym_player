@@ -183,7 +183,7 @@ async def _pipe_response(request, upstream):
 # 설정
 # ---------------------------------------------------------------------------
 # 관리자가 아닌 사용자에게는 서버 주소/M3U 주소(키가 들어 있기도 함)/API ID 등을 안 보여준다
-_USER_VISIBLE = ("id", "type", "name", "enabled", "channels", "hidden_libraries")
+_USER_VISIBLE = ("id", "type", "name", "enabled", "channels", "hidden_libraries", "stations")
 
 
 async def get_config(request):
@@ -200,6 +200,8 @@ async def get_config(request):
                 item["allowed_libraries"] = sorted(allowed)
             if s["type"] == "telegram" and allowed is not None:
                 item["channels"] = [c for c in item.get("channels") or [] if str(c["id"]) in allowed]
+            if s["type"] == "radio" and allowed is not None:  # 라디오는 방송국 id
+                item["stations"] = [st for st in item.get("stations") or [] if st["id"] in allowed]
             out.append(item)
         pub["sources"] = out
     return web.json_response(pub)
@@ -410,6 +412,9 @@ async def radio_now(request):
     """GET /api/radio/{sid}/now -> 방송국마다 지금 나오는 곡 (15초 캐시)."""
     src = _source_or_404(request.match_info["sid"], "radio", request)
     stations = src.get("stations") or []
+    allowed = auth.allowed_libraries(request.get("user"), src["id"])
+    if allowed is not None:
+        stations = [st for st in stations if st["id"] in allowed]
     nows = await asyncio.gather(*(_radio_now(request.app, st) for st in stations))
     return web.json_response({"success": True, "now": {st["id"]: n for st, n in zip(stations, nows)}})
 
