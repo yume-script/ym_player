@@ -6,10 +6,10 @@
 //   kind 'direct' -> <video src>
 // 원본 주소가 막히면(CORS/혼합콘텐츠) playback.proxyUrl(서버 중계)로 한 번 더 시도한다.
 // 시도마다 token을 올려서, 늦게 도착한 이전 채널의 콜백이 새 채널을 건드리지 못하게 한다.
-import { h, icon, clear, fmtClock, fmtHM, storeGet, storeSet, toast } from './util.js';
+import { h, icon, clear, fmtClock, fmtHM, storeGet, storeSet, toast, IS_IOS } from './util.js';
 import { channelHealth, isFavorite, toggleFavorite } from './providers/iptv.js';
 import { registry } from './providers/index.js';
-import { Visualizer } from './visualizer.js';
+import { MODES, Visualizer } from './visualizer.js';
 
 const START_TIMEOUT_MS = 20000;
 const PROGRESS_EVERY_SEC = 10;
@@ -153,7 +153,7 @@ class Player {
                 h('div', { class: 'ctrl-group' },
                     this.ccBtn = btn('closed-captioning', '자막 (C)', () => this.toggleSubMenu(), 'vod-only'),
                     this.optBtn = btn('sliders', '음성·화질', () => this.toggleOptMenu(), 'vod-only'),
-                    this.vizBtn = btn('wave-square', '시각화 바꾸기', () => this.cycleViz(), 'radio-only'),
+                    this.vizBtn = btn('wave-square', '시각화', () => this.toggleVizMenu(), 'radio-only'),
                     this.lpBtn = btn('record-vinyl', 'LP 잡음', () => this.toggleLp(), 'radio-only'),
                     btn('clone', '화면 속 화면', () => this.togglePip()),
                     this.fsBtn,
@@ -184,7 +184,10 @@ class Player {
             this._syncLp(true);
         });
 
-        this.root = h('div', { class: 'player hidden' }, this.stage, this.top, this.bottom, this.drawer, this.subMenu, this.optMenu, this.lpMenu);
+        // 시각화 고르기 (+ 아이폰·아이패드: 음악에 맞춰 움직이기 = 소리를 Web Audio로, 백그라운드 재생과 맞바꿈)
+        this.vizMenu = h('div', { class: 'lp-menu viz-menu hidden', on: { click: (e) => e.stopPropagation() } });
+        this.root = h('div', { class: 'player hidden' }, this.stage, this.top, this.bottom, this.drawer, this.subMenu, this.optMenu, this.lpMenu, this.vizMenu);
+        this._setupMediaSession();
 
         this.miniSlot = h('div', { class: 'mini-video', on: { click: () => this.expand() } },
             h('div', { class: 'mini-pip-note' }, icon('clone'), h('span', { text: '화면 속 화면에서 재생 중' })));
@@ -301,15 +304,17 @@ class Player {
         if (pb.live) this.showOsd();
         if (!this.drawer.classList.contains('hidden')) this._renderDrawer();
 
-        // 라디오에서 AudioContext로 끌어간 <video>는 다른 걸 틀 때 새로 만들어 원래대로
-        if (!pb.visualizer && this.viz.isRouted(this.video) && !this.inPip) this.needsRecreate = true;
+        // AudioContext로 끌어간 <video>는 끌어가지 않을 재생(라디오가 아님, 아이패드 기본)에서는 새로 만들어 원래대로
+        const route = !!pb.visualizer && this.viz.wantsRoute();
+        if (!route && this.viz.isRouted(this.video) && !this.inPip) this.needsRecreate = true;
         if (this.needsRecreate) { this.needsRecreate = false; this._recreateVideo(); }
         this._destroyEngines();
         this.video.removeAttribute('src');
         this.video.load();
         this._applyTrack(pb.textTrack);
         this.root.classList.toggle('is-radio', !!pb.visualizer);
-        if (pb.visualizer) this.viz.attach(this.video);
+        if (route) this.viz.attach(this.video);
+        this._mediaMeta();
         this.viz.show(!!pb.visualizer);
         this.viz.setVisible(!this.minimized);
         this._syncLp(false);
@@ -725,6 +730,78 @@ class Player {
         this._wakeUi();
     }
 
+    toggleVizMenu() {
+        if (!this.pb || !this.pb.visualizer) return;
+        const open = this.vizMenu.classList.contains('hidden');
+        this.vizMenu.classList.toggle('hidden', !open);
+        this.lpMenu.classList.add('hidden');
+        clearTimeout(this._vizTimer);
+        if (open) {
+            this._renderVizMenu();
+            this._vizTimer = setTimeout(() => this.vizMenu.classList.add('hidden'), 10000);
+        }
+        this._wakeUi();
+    }
+
+    _renderVizMenu() {
+        const modes = h('div', { class: 'viz-modes' }, MODES.map((m) => h('button', {
+            class: `btn btn-sm${this.viz.mode === m.id ? ' btn-accent' : ''}`, text: m.label,
+            on: { click: () => { this.viz.setMode(m.id); this._renderVizMenu(); } },
+        })));
+        const parts = [h('b', { text: '시각화' }), modes];
+        if (IS_IOS) {
+            const chk = h('input', { type: 'checkbox', checked: this.viz.iosLive });
+            chk.addEventListener('change', () => this._setIosLive(chk.checked));
+            parts.push(h('label', { class: 'check viz-ios' }, chk,
+                h('span', { text: ' 음악에 맞춰 움직이기 (켜면 화면을 끄거나 다른 앱으로 갈 때 소리가 끊길 수 있음)' })));
+        }
+        clear(this.vizMenu).append(...parts);
+    }
+
+    /** 아이폰·아이패드에서 분석 켜기/끄기. 바꾸면 지금 방송을 새로 연다 (끌어간 소리는 되돌릴 수 없어서) */
+    _setIosLive(on) {
+        this.viz.setIosLive(on);
+        if (on) this.viz.prime(); // 누른 그 순간에
+        const pb = this.pb;
+        if (pb && pb.visualizer) this.start(pb, null, { auto: true });
+        toast(on ? '음악에 맞춘 시각화를 켰습니다. 백그라운드에서는 소리가 끊길 수 있습니다.' : '백그라운드 재생을 우선합니다 (시각화는 기본 움직임).');
+    }
+
+    // ------------------------------------------------------------------
+    // 잠금 화면·제어 센터 (Media Session)
+    // ------------------------------------------------------------------
+    _setupMediaSession() {
+        const ms = navigator.mediaSession;
+        if (!ms) return;
+        const on = (action, fn) => { try { ms.setActionHandler(action, fn); } catch (e) { /* 지원 안 하는 동작 */ } };
+        on('play', () => { if (this.pb) this.video.play().catch(() => {}); });
+        on('pause', () => { if (this.pb) this.video.pause(); });
+        on('stop', () => this.stop());
+        // 라이브(라디오·IPTV)는 이전/다음 방송, VOD는 10초 뒤로 / 30초 앞으로
+        on('previoustrack', () => { if (this.pb && this.pb.live) this.switchChannel(-1); else this.seekBy(-10); });
+        on('nexttrack', () => { if (this.pb && this.pb.live) this.switchChannel(1); else this.seekBy(30); });
+        on('seekbackward', () => this.seekBy(-10));
+        on('seekforward', () => this.seekBy(30));
+    }
+
+    /** 지금 재생 정보(제목, 곡, 표지)를 잠금 화면에 */
+    _mediaMeta() {
+        const ms = navigator.mediaSession, pb = this.pb;
+        if (!ms || !pb || typeof MediaMetadata === 'undefined') return;
+        const sub = String(this.subEl.textContent || pb.subtitle || '').replace(/^♪\s*/, '');
+        const key = `${pb.title}|${sub}|${pb.poster || ''}`;
+        if (this._metaKey === key) return;
+        this._metaKey = key;
+        try {
+            ms.metadata = new MediaMetadata({
+                title: pb.audioOnly && sub ? sub : (pb.title || ''),
+                artist: pb.audioOnly && sub ? (pb.title || '') : sub,
+                album: pb.provider ? pb.provider.name || '' : '',
+                artwork: pb.poster ? [{ src: new URL(pb.poster, location.href).href, sizes: '600x600' }] : [],
+            });
+        } catch (e) { /* 오래된 브라우저 */ }
+    }
+
     toggleLp() {
         if (!this.pb || !this.pb.visualizer) return;
         this.viz.setNoise(!this.viz.lp.on);
@@ -932,6 +1009,9 @@ class Player {
 
     _syncPlayState() {
         const paused = this.video.paused;
+        if (navigator.mediaSession) {
+            try { navigator.mediaSession.playbackState = this.pb ? (paused ? 'paused' : 'playing') : 'none'; } catch (e) { /* 무시 */ }
+        }
         this.viz.setPlaying(!paused && !!this.pb);
         const cls = paused ? 'fa-solid fa-play' : 'fa-solid fa-pause';
         this.playBtn.firstChild.className = cls;
@@ -1021,6 +1101,7 @@ class Player {
                 this.posterEl.style.backgroundImage = `url("${art}")`;
             }
         }
+        this._mediaMeta();
     }
 
     // ------------------------------------------------------------------

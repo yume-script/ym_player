@@ -6,7 +6,7 @@
 // - 한 번 AudioContext에 물린 <video>는 계속 그쪽으로 소리가 나간다. 라디오가 아닌 걸 틀 때는 재생기가
 //   <video>를 새로 만들어(isRouted) 원래대로 돌린다.
 // - LP 잡음: 히스(분홍빛 잡음)와 탁탁 튀는 소리를 20초 분량 만들어 반복한다. 재생 중일 때만 들린다.
-import { storeGet, storeSet } from './util.js';
+import { IS_IOS, storeGet, storeSet } from './util.js';
 
 export const MODES = [
     { id: 'bars', label: '스펙트럼' },
@@ -18,6 +18,7 @@ export const MODES = [
 ];
 const MODE_KEY = 'yp_viz_mode';
 const LP_KEY = 'yp_lp_noise';
+const IOS_LIVE_KEY = 'yp_viz_live_ios';
 
 export class Visualizer {
     constructor(canvas) {
@@ -26,6 +27,9 @@ export class Visualizer {
         this.mode = storeGet(MODE_KEY, 'bars');
         if (!MODES.some((m) => m.id === this.mode)) this.mode = 'bars';
         this.lp = { on: false, level: 30, ...storeGet(LP_KEY, {}) };
+        // 아이폰·아이패드는 소리를 AudioContext로 끌어가면 화면을 끄거나 다른 앱으로 갈 때 함께 멈출 수 있다.
+        // 그래서 기본은 끌어가지 않고(백그라운드 재생 우선, 시각화는 기본 움직임), 원하는 사람만 켠다.
+        this.iosLive = !!storeGet(IOS_LIVE_KEY, false);
         this.ctx = null;
         this.el = null;          // AudioContext에 물린 <video>
         this.active = false;     // 라디오를 재생 중 (LP 잡음은 미니 플레이어로 접어도 계속)
@@ -51,6 +55,22 @@ export class Visualizer {
     }
 
     isRouted(el) { return !!el && this.el === el; }
+
+    /** 이번 재생에서 소리를 분석기로 끌어갈지 */
+    wantsRoute() { return !IS_IOS || this.iosLive; }
+
+    setIosLive(on) {
+        this.iosLive = !!on;
+        storeSet(IOS_LIVE_KEY, this.iosLive);
+    }
+
+    setMode(id) {
+        if (!MODES.some((m) => m.id === id)) return;
+        this.mode = id;
+        storeSet(MODE_KEY, id);
+        this.canvas.classList.toggle('hidden', !this.active || this.mode === 'off');
+        this._loop();
+    }
 
     /** 이 <video>를 분석기에 문다 (같은 요소면 그대로) */
     attach(el) {
