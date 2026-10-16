@@ -90,6 +90,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 42,
+        "version": "1.1.5",
+        "date": "2026-10-16",
+        "title": "텔레그램 포스터: 큰 파일은 포스터보다 한참 뒤에 올라와도 짝짓기(12시간까지), 포스터를 카드 썸네일로 먼저, 짝짓기 결과를 서버 로그에"
+    },
+    {
         "pr": 41,
         "version": "1.1.4",
         "date": "2026-10-16",

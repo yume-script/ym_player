@@ -307,11 +307,11 @@ def db():
             with conn:
                 conn.execute("DELETE FROM sync_state")
             conn.execute("PRAGMA user_version = 3")
-        if conn.execute("PRAGMA user_version").fetchone()[0] < 4:
-            # 영상 옆에 올린 포스터 사진 찾기 (예전에 색인한 채널도 한 번)
+        if conn.execute("PRAGMA user_version").fetchone()[0] < 5:
+            # 영상 옆에 올린 포스터 사진 찾기 (예전에 색인한 채널도 한 번, 5: 시간 기준을 늘려 다시)
             for sid, ch in conn.execute("SELECT DISTINCT source, channel FROM videos").fetchall():
                 _link_posters(conn, sid, ch)
-            conn.execute("PRAGMA user_version = 4")
+            conn.execute("PRAGMA user_version = 5")
     return conn
 
 
@@ -349,7 +349,10 @@ def upsert_videos(sid, channel, items):
 # 영상 바로 앞(또는 뒤) 몇 개 안에, 몇 분 안에 올라온 사진이 같은 작품·회차면 그 영상의 포스터로 본다.
 # 포스터가 된 사진은 [전체] 목록에서 빠지고(사진 보기에는 나옴), 영상 카드의 썸네일/상세 포스터로 쓰인다.
 # ---------------------------------------------------------------------------
-POSTER_WINDOW_SEC = 30 * 60
+# 텔레그램은 파일을 다 올린 시각을 메시지 시각으로 잡는다 -> 몇 GB짜리 회차는 포스터보다 한참 뒤 시각이 된다.
+# 작품 이름/회차가 맞으면 12시간까지, 연도만 맞으면(이름이 다를 때) 30분 안만.
+POSTER_WINDOW_SEC = 12 * 3600
+POSTER_NEAR_SEC = 30 * 60
 POSTER_BEFORE = 4    # 영상 앞쪽으로 볼 메시지 수 (나눠진 조각들 사이에 끼어 있어도 찾게)
 POSTER_AFTER = 2     # 영상 뒤에 포스터를 올리는 채널도 있다
 
@@ -419,10 +422,11 @@ def _link_posters(conn, sid, channel):
         for j in [*range(i - 1, i - 1 - POSTER_BEFORE, -1), *range(i + 1, i + 1 + POSTER_AFTER)]:
             if not 0 <= j < len(rows) or rows[j]["kind"] != "image":
                 continue
-            if times[i] is not None and times[j] is not None and abs(times[i] - times[j]) > POSTER_WINDOW_SEC:
+            gap = abs(times[i] - times[j]) if times[i] is not None and times[j] is not None else 0
+            if gap > POSTER_WINDOW_SEC:
                 continue
             score = _poster_score(keys[j], keys[i])
-            if score == 1 and abs(i - j) > 2:     # 연도만 같으면 아주 가까울 때만
+            if score == 1 and (abs(i - j) > 2 or gap > POSTER_NEAR_SEC):   # 연도만 같으면 아주 가까울 때만
                 continue
             score -= 0.01 * abs(i - j) + (0.005 if j > i else 0)   # 같으면 가깝고 앞에 있는 것
             if score > best_score:
@@ -432,7 +436,29 @@ def _link_posters(conn, sid, channel):
     with conn:
         conn.execute("DELETE FROM posters WHERE source=? AND channel=?", (sid, channel))
         conn.executemany("INSERT INTO posters(source,channel,video,image) VALUES(?,?,?,?)", links)
+    _log_posters(rows, keys, links, channel)
     return len(links)
+
+
+def _log_posters(rows, keys, links, channel):
+    """짝짓기 결과를 서버 로그에 (짝을 못 찾은 사진 몇 개는 옆 영상 제목과 같이 - 규칙을 고칠 때 보려고)"""
+    images = [i for i, r in enumerate(rows) if r["kind"] == "image"]
+    videos = sum(r["kind"] == "video" for r in rows)
+    if not images or not videos:
+        return
+    used = {img for *_, img in links}
+    log.info("텔레그램 포스터 짝짓기: 채널 %s 영상 %d개 중 %d개에 포스터 (사진 %d개 중 %d개 사용)",
+             channel, videos, len(links), len(images), len(used))
+    shown = 0
+    for i in images:
+        if rows[i]["msg"] in used or shown >= 3:
+            continue
+        near = next((rows[j] for j in (i + 1, i - 1, i + 2) if 0 <= j < len(rows) and rows[j]["kind"] == "video"), None)
+        if near is None:
+            continue
+        shown += 1
+        log.info("  짝 없음: 사진 %r %s %s / 옆 영상 %r %s %s", rows[i]["title"][:60], keys[i], rows[i]["date"],
+                 near["title"][:60], _media_key(near["title"], near["file_name"]), near["date"])
 
 
 def link_posters(sid, channel):
