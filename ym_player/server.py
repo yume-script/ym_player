@@ -1938,7 +1938,8 @@ def _render_page(name, token=""):
     page = (page.replace("__BRAND_TITLE__", html.escape(b["title"]))
                 .replace("__BRAND_FAVICON__", html.escape(b["icon_url"] or DEFAULT_FAVICON))
                 .replace("__BRAND_MARK__", brand_mark_html(b["icon_url"], b["show_version"]))
-                .replace("__THEME__", b["theme"]).replace("__ACCENT__", b["accent"]))
+                .replace("__THEME__", b["theme"]).replace("__ACCENT__", b["accent"])
+                .replace("__VERSION__", html.escape(__version__)))
     return web.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-cache"})
 
 

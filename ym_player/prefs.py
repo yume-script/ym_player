@@ -1,11 +1,12 @@
 """사용자마다 따로 두는 작은 설정 (data/prefs.json) - IPTV 즐겨찾기 채널, 화면 테마.
 
-{"사용자명(소문자)": {"fav_channels": ["채널id", ...], "theme": "light", "accent": "blue"}}
+{"사용자명(소문자)": {"fav_channels": ["채널id", ...], "theme": "light", "accent": "blue", "seen_version": "1.1.2"}}
 theme/accent가 ""(또는 없음)이면 관리자가 정한 기본값을 따른다.
 브라우저(localStorage)에만 두면 기기마다 달라서, 로그인한 사람 기준으로 서버에 둔다.
 """
 import json
 import os
+import re
 import threading
 
 from . import config_store
@@ -40,8 +41,16 @@ def _choice(options):
     return check
 
 
+def _version(value):
+    """마지막으로 "새로워진 점"을 본 버전 ("1.1.2" 꼴, 없으면 "")"""
+    value = str(value or "")
+    if value and not re.fullmatch(r"\d{1,4}(\.\d{1,4}){0,3}", value):
+        raise ValueError(f"버전 형식이 아닙니다: {value}")
+    return value
+
+
 # 받아 주는 키와 검사 함수
-KEYS = {"fav_channels": _str_list, "theme": _choice(THEMES), "accent": _choice(ACCENTS)}
+KEYS = {"fav_channels": _str_list, "theme": _choice(THEMES), "accent": _choice(ACCENTS), "seen_version": _version}
 
 
 def _path():

@@ -12,7 +12,7 @@ function field(label, input, hint) {
         hint ? h('span', { class: 'field-hint', text: hint }) : null);
 }
 
-export async function renderSettings(main, _params, _query, ctx) {
+export async function renderSettings(main, _params, query, ctx) {
     let drafts = registry.config.sources.map((s) => ({ ...s, token: '' }));
     let dirty = false;
 
@@ -505,7 +505,7 @@ export async function renderSettings(main, _params, _query, ctx) {
     }
 
     draw();
-    showTab(storeGet('yp_settings_tab', 'sources'));
+    showTab((query && query.get('tab')) || storeGet('yp_settings_tab', 'sources'));
 }
 
 const TYPE_ICON = { plex: 'server', iptv: 'tower-broadcast', telegram: 'paper-plane', radio: 'radio' };
@@ -712,7 +712,7 @@ function renderThanks(pane) {
                 h('h4', { text: g.date }),
                 h('ul', { class: 'changelog' }, g.items.map((e) => h('li', {},
                     h('a', { class: 'changelog-pr', href: `${REPO}/pull/${e.pr}`, target: '_blank', rel: 'noopener', text: `#${e.pr}` }),
-                    h('span', { text: e.title }))))))));
+                    h('span', {}, e.version ? h('span', { class: 'changelog-ver', text: `v${e.version}` }) : null, e.title))))))));
 }
 
 function renderBackup(pane) {

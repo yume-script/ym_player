@@ -434,10 +434,16 @@ def test_theme_default_and_per_user(data):
         assert (await c.put("/api/admin/branding", json={"theme": "rainbow"})).status == 400
         page = await (await c.get("/")).text()
         assert 'data-theme="light" data-accent="teal"' in page and "__THEME__" not in page
+        from ym_player import __version__
+        assert f'data-version="{__version__}"' in page          # 새 버전 알림(notice.js)이 지금 버전을 안다
+        # 새로워진 점을 본 버전 (버전 꼴만)
+        r = await c.put("/api/me/prefs", json={"seen_version": "1.1.2"})
+        assert (await r.json())["prefs"]["seen_version"] == "1.1.2"
+        assert (await c.put("/api/me/prefs", json={"seen_version": "1.1<b>"})).status == 400
 
         # 사용자 선택은 prefs에 (빈 값 = 관리자 기본)
         r = await c.put("/api/me/prefs", json={"theme": "black", "accent": ""})
-        assert (await r.json())["prefs"] == {"theme": "black", "accent": ""}
+        assert (await r.json())["prefs"] == {"theme": "black", "accent": "", "seen_version": "1.1.2"}
         assert (await c.put("/api/me/prefs", json={"theme": "<script>"})).status == 400
         assert (await c.put("/api/me/prefs", json={"accent": "gold"})).status == 400
 
