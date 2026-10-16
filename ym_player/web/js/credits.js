@@ -90,6 +90,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 43,
+        "version": "1.1.6",
+        "date": "2026-10-17",
+        "title": "텔레그램 포스터: 우리말 제목 포스터와 원제 영상(성난 사람들 S02E03 / BEEF_S02E03)도 회차가 같고 바로 옆이면 짝짓기"
+    },
+    {
         "pr": 42,
         "version": "1.1.5",
         "date": "2026-10-16",

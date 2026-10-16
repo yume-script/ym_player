@@ -307,11 +307,11 @@ def db():
             with conn:
                 conn.execute("DELETE FROM sync_state")
             conn.execute("PRAGMA user_version = 3")
-        if conn.execute("PRAGMA user_version").fetchone()[0] < 5:
-            # 영상 옆에 올린 포스터 사진 찾기 (예전에 색인한 채널도 한 번, 5: 시간 기준을 늘려 다시)
+        if conn.execute("PRAGMA user_version").fetchone()[0] < 6:
+            # 영상 옆에 올린 포스터 사진 찾기 (예전에 색인한 채널도 한 번. 5: 시간 기준을 늘려, 6: 회차만 같아도)
             for sid, ch in conn.execute("SELECT DISTINCT source, channel FROM videos").fetchall():
                 _link_posters(conn, sid, ch)
-            conn.execute("PRAGMA user_version = 5")
+            conn.execute("PRAGMA user_version = 6")
     return conn
 
 
@@ -383,7 +383,8 @@ def _media_key(title, file_name=""):
 
 
 def _poster_score(img, vid):
-    """0이면 짝 아님. 작품 이름이 맞으면 높게, 이름이 달라도(호프 / Hope) 연도가 같고 가까우면 낮게."""
+    """0이면 짝 아님. 작품 이름이 맞으면 높게(3~4). 이름이 달라도 - 우리말 제목 / 원제 - 회차가 같거나(성난 사람들 S02E03 /
+    BEEF_S02E03, 1.5) 연도가 같으면(호프 [2026] / Hope.2026, 1) 낮게 (이 둘은 바로 옆·30분 안일 때만 짝)."""
     (iname, iep, iyear), (vname, vep, vyear) = img, vid
     if iep is not None and vep is not None and iep != vep:
         return 0
@@ -391,6 +392,8 @@ def _poster_score(img, vid):
     if iname and vname and (iname in vname or vname in iname
                             or (re.findall(r"\d+", iname) == re.findall(r"\d+", vname) and _similar(iname, vname) >= 0.6)):
         return 3 + (1 if iep is not None and iep == vep else 0)
+    if iep is not None and iep == vep:
+        return 1.5
     if iyear and iyear == vyear and iep is None:
         return 1
     return 0
@@ -426,7 +429,7 @@ def _link_posters(conn, sid, channel):
             if gap > POSTER_WINDOW_SEC:
                 continue
             score = _poster_score(keys[j], keys[i])
-            if score == 1 and (abs(i - j) > 2 or gap > POSTER_NEAR_SEC):   # 연도만 같으면 아주 가까울 때만
+            if score < 3 and (abs(i - j) > 2 or gap > POSTER_NEAR_SEC):    # 이름이 다르면 아주 가까울 때만
                 continue
             score -= 0.01 * abs(i - j) + (0.005 if j > i else 0)   # 같으면 가깝고 앞에 있는 것
             if score > best_score:

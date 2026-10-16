@@ -661,7 +661,7 @@ def test_existing_index_titles_are_repaired_once(monkeypatch, tmp_path):
     row = telegram_src.get_video("tg", 1, 2)
     assert row["title"] == "영화" and row["file_name"] == "영화.mkv"
     with telegram_src.db() as c:
-        assert c.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert c.execute("PRAGMA user_version").fetchone()[0] == 6
 
 
 def test_split_parts_are_grouped(monkeypatch, tmp_path):
@@ -839,14 +839,22 @@ def test_posters_are_paired_and_hidden_from_all(monkeypatch, tmp_path):
         (20, "video", "Other.2019.1080p", "Other.2019.1080p.mkv", 95),
         (21, "image", "로또 1등도 출근합니다 S01E07 [2026]", "", 100),
         (22, "video", "로또 1등도 출근합니다.E07.261001.1080p", "z.mkv", 200),  # 큰 파일이라 100분 뒤에 올라옴
+        # 우리말 제목 포스터 + 원제 영상: 이름은 달라도 회차가 같고 바로 옆이면 (실제 로그)
+        (23, "image", "성난 사람들 S02E03 [2026]", "", 300),
+        (24, "video", "BEEF_S02E03_The_Increasing_Flimsiness_of_Any_Certainties_Abo", "BEEF_S02E03_x.mkv", 300),
+        (25, "image", "성난 사람들 S02E04 [2026]", "", 301),
+        (26, "video", "BEEF_S02E05_I_Am_Killing_My_Flesh", "BEEF_S02E05_x.mkv", 302),   # 회차가 다르면 짝 아님
+        (27, "image", "다른 드라마 S01E08", "", 400),
+        (28, "video", "Another_S01E08_1080p", "Another_S01E08.mkv", 500),               # 회차는 같아도 100분 떨어짐
     ])
     telegram_src.link_posters("tg", 1)
     rows, total = telegram_src.query_videos("tg", [1], limit=50)
     by = {r["msg"]: r for r in rows}
-    assert {11: 10, 13: 12, 17: 16, 18: 16, 22: 21} == {m: r["poster"] for m, r in by.items() if r["poster"]}
-    assert set(by) == {11, 13, 14, 15, 17, 18, 19, 20, 22} and total == 9   # 포스터 사진(10,12,16,21)은 전체에서 빠짐
+    assert {11: 10, 13: 12, 17: 16, 18: 16, 22: 21, 24: 23} == {m: r["poster"] for m, r in by.items() if r["poster"]}
+    # 포스터 사진(10,12,16,21,23)은 전체에서 빠짐
+    assert set(by) == {11, 13, 14, 15, 17, 18, 19, 20, 22, 24, 25, 26, 27, 28} and total == 14
     photos, _ = telegram_src.query_videos("tg", [1], kind="image", limit=50)
-    assert {r["msg"] for r in photos} == {10, 12, 14, 16, 19, 21}           # 사진 보기에는 다 나옴
+    assert {r["msg"] for r in photos} == {10, 12, 14, 16, 19, 21, 23, 25, 27}   # 사진 보기에는 다 나옴
     assert telegram_src.get_video("tg", 1, 13)["poster"] == 12
     assert telegram_src._poster_score(telegram_src._media_key("영화 3 포스터"), telegram_src._media_key("영화 2")) == 0
     assert telegram_src._poster_score(telegram_src._media_key("로또 1등도 출근합니다"), telegram_src._media_key("로또 1등도 출근함")) > 0
