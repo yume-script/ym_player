@@ -818,3 +818,7 @@ body.viewer-open { overflow: hidden; }
 .changelog { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.35rem; }
 .changelog li { display: flex; gap: 0.7rem; align-items: baseline; font-size: 0.9rem; line-height: 1.5; }
 .changelog-pr { flex: 0 0 2.6rem; color: var(--accent); font-variant-numeric: tabular-nums; font-size: 0.82rem; }
+.thanks-people { border-color: rgba(var(--accent-rgb), 0.45); background: linear-gradient(135deg, rgba(var(--accent-rgb), 0.1), transparent 60%), var(--bg-elev); }
+.thanks-people .pane-title .fa-solid { color: var(--accent); }
+.thanks-person .thanks-name b { font-size: 1.05rem; }
+.thanks-person + .thanks-person { margin-top: 0.75rem; }
