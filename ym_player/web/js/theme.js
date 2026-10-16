@@ -100,6 +100,19 @@ export function themePicker({ admin = false, value = null, onPick = null } = {})
     return box;
 }
 
+/** 내가 따로 고른 테마가 있으면 그 이름 (관리자 기본값을 따르면 null) */
+export function ownThemeLabel() {
+    if (!mine.theme && !mine.accent) return null;
+    const t = THEMES.find((x) => x.id === mine.theme), a = ACCENTS.find((x) => x.id === mine.accent);
+    return [t && t.label, a && a.label.replace(/\s*\(.*\)/, '')].filter(Boolean).join(' · ') || '직접 고른 테마';
+}
+
+/** 내 테마를 지우고 관리자 기본값을 따른다 */
+export async function useDefaultTheme() {
+    mine = { theme: '', accent: '' };
+    await saveMine();
+}
+
 export function openThemeDialog() {
     const m = modal('테마', themePicker(), [h('button', { class: 'btn btn-accent', on: { click: () => m.close() } }, '닫기')]);
 }

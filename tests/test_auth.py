@@ -373,8 +373,8 @@ def test_branding_title_and_icon(data):
     async def flow(c, app):
         # 로그인 전에도 이름/아이콘은 보인다 (로그인 화면이 씀)
         b = await (await c.get("/api/branding")).json()
-        assert b["title"] == "Yume Player" and b["icon_url"] is None
-        assert "<title>로그인 · Yume Player</title>" in await (await c.get("/login")).text()
+        assert b["title"] == "YMPlayer" and b["icon_url"] is None
+        assert "<title>로그인 · YMPlayer</title>" in await (await c.get("/login")).text()
         assert (await c.get("/brand/icon")).status == 404
 
         await c.post("/api/auth/setup", json={"username": "admin", "password": "adminpw"})
@@ -457,14 +457,14 @@ def test_version_badge(data):
     from ym_player import __version__
 
     async def flow(c, app):
-        short = ".".join(__version__.split(".")[:2])
+        short = __version__
         page = await (await c.get("/login")).text()
         assert f'<span class="brand-ver">{short}</span>' in page and 'class="logo"' in page
         b = await (await c.get("/api/branding")).json()
         assert b["version"] == __version__ and b["show_version"] is True
         await c.post("/api/auth/setup", json={"username": "admin", "password": "adminpw"})
         b = await (await c.put("/api/admin/branding", json={"show_version": False})).json()
-        assert b["show_version"] is False and b["title"] == "Yume Player"
+        assert b["show_version"] is False and b["title"] == "YMPlayer"
         assert "brand-ver" not in await (await c.get("/")).text()
         status = await (await c.get("/api/admin/status")).json()
         assert status["server"]["version"] == __version__

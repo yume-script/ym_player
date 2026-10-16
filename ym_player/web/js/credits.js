@@ -5,7 +5,7 @@ export const CREDITS = {
         {
             "name": "CRARES 님",
             "role": "북오아시스(BookOasis) 제작자",
-            "note": "수많은 플러그인이 편하게 안주할 수 있는 터전, 북오아시스를 만들어 주셔서 고맙습니다. Yume Player도 북오아시스의 M3U 플레이어와 텔레그램 동영상 플러그인에서 출발했습니다."
+            "note": "수많은 플러그인이 편하게 안주할 수 있는 터전, 북오아시스를 만들어 주셔서 고맙습니다. YMPlayer도 북오아시스의 M3U 플레이어와 텔레그램 동영상 플러그인에서 출발했습니다."
         }
     ],
     "sources": [
@@ -87,6 +87,11 @@ export const CREDITS = {
 export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
+    {
+        "pr": 36,
+        "date": "2026-10-16",
+        "title": "v1.1.1: 이름을 YMPlayer로, 버전 배지에 전체 버전, 기본 테마를 바꿔도 화면이 그대로인 경우 안내"
+    },
     {
         "pr": 35,
         "date": "2026-10-16",
@@ -260,6 +265,6 @@ export const CHANGELOG = [
     {
         "pr": 1,
         "date": "2026-10-14",
-        "title": "Yume Player: Plex/IPTV를 한 화면에서 보는 Plex 스타일 독립형 동영상 플레이어"
+        "title": "YMPlayer: Plex/IPTV를 한 화면에서 보는 Plex 스타일 독립형 동영상 플레이어"
     }
 ];

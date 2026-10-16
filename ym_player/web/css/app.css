@@ -1,4 +1,4 @@
-/* Yume Player - Plex 스타일. 테마는 <html data-theme data-accent>로 바꾼다 (맨 아래 "테마" 부분) */
+/* YMPlayer - Plex 스타일. 테마는 <html data-theme data-accent>로 바꾼다 (맨 아래 "테마" 부분) */
 :root {
     --bg: #141517;
     --bg-elev: #1d1f22;
@@ -822,3 +822,6 @@ body.viewer-open { overflow: hidden; }
 .thanks-people .pane-title .fa-solid { color: var(--accent); }
 .thanks-person .thanks-name b { font-size: 1.05rem; }
 .thanks-person + .thanks-person { margin-top: 0.75rem; }
+.theme-own-note { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; padding: 0.55rem 0.8rem; border-radius: var(--radius);
+    background: rgba(var(--accent-rgb), 0.1); border: 1px solid rgba(var(--accent-rgb), 0.35); font-size: 0.85rem; line-height: 1.5; }
+.theme-own-note .btn { margin-left: auto; }

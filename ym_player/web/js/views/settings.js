@@ -4,7 +4,7 @@ import { h, icon, clear, api, toast, modal, storeGet, storeSet } from '../util.j
 import { registry } from '../providers/index.js';
 import { PlexProvider } from '../providers/plex.js';
 import { applyBranding } from '../brand.js';
-import { setDefaults, themePicker } from '../theme.js';
+import { ownThemeLabel, setDefaults, themePicker, useDefaultTheme } from '../theme.js';
 import { CHANGELOG, CREDITS, REPO } from '../credits.js';
 
 function field(label, input, hint) {
@@ -614,7 +614,7 @@ async function renderLook(pane) {
         b = info;
         applyBranding(info); // 미리보기도 .brand-mark/.brand-name이라 같이 바뀐다
     };
-    const titleIn = h('input', { class: 'input', value: b.title, maxlength: '40', placeholder: 'Yume Player' });
+    const titleIn = h('input', { class: 'input', value: b.title, maxlength: '40', placeholder: 'YMPlayer' });
     const saveTitle = h('button', { class: 'btn btn-accent' }, icon('check'), ' 이름 저장');
     saveTitle.addEventListener('click', async () => {
         try { show(await api('/api/admin/branding', { method: 'PUT', json: { title: titleIn.value.trim() } })); toast('이름을 바꿨습니다.', 'success'); } catch (e) { toast(e.message, 'error'); }
@@ -635,10 +635,22 @@ async function renderLook(pane) {
     reset.addEventListener('click', async () => {
         try { show(await api('/api/admin/branding/icon', { method: 'DELETE' })); toast('기본 아이콘으로 되돌렸습니다.'); } catch (e) { toast(e.message, 'error'); }
     });
+    // 관리자가 사이드바 [테마]에서 자기 테마를 따로 골라 두었으면 기본값을 바꿔도 내 화면은 그대로다 -> 알려 준다
+    const ownNote = h('div', { class: 'theme-own-note hidden' });
+    const paintOwnNote = () => {
+        const label = ownThemeLabel();
+        ownNote.classList.toggle('hidden', !label);
+        if (!label) return;
+        clear(ownNote).append(icon('circle-info'),
+            h('span', { text: ` 지금 이 화면은 내가 따로 고른 테마(${label})를 쓰고 있어서, 기본 테마를 바꿔도 내 화면은 그대로입니다.` }),
+            h('button', { class: 'btn btn-sm', on: { click: async () => { await useDefaultTheme(); paintOwnNote(); toast('기본 테마를 따릅니다.'); } } },
+                '기본 테마 쓰기'));
+    };
+    paintOwnNote();
     clear(pane).append(h('div', { class: 'src-card brand-card' },
         h('h3', { class: 'pane-title' }, icon('palette'), ' 이름과 아이콘'),
         preview,
-        field('이름', titleIn, '왼쪽 위, 로그인 화면, 브라우저 탭에 나옵니다. 비우면 Yume Player.'),
+        field('이름', titleIn, '왼쪽 위, 로그인 화면, 브라우저 탭에 나옵니다. 비우면 YMPlayer.'),
         saveTitle,
         h('div', { class: 'brand-row' }, upload, reset, fileIn),
         h('p', { class: 'field-hint', text: 'PNG, JPG, GIF, WebP, ICO 그림 (512KB까지). 정사각형 그림이 잘 맞습니다. 브라우저 탭 아이콘(favicon)으로도 쓰입니다.' }),
@@ -651,13 +663,15 @@ async function renderLook(pane) {
     h('div', { class: 'src-card brand-card' },
         h('h3', { class: 'pane-title' }, icon('swatchbook'), ' 기본 테마'),
         h('p', { class: 'field-hint', text: '모든 사용자와 로그인 화면의 기본 테마입니다. 사용자는 사이드바 아래 [테마] 버튼으로 자기 테마를 따로 고를 수 있습니다.' }),
+        ownNote,
         themePicker({
             admin: true, value: { theme: b.theme, accent: b.accent },
             onPick: async (v) => {
                 try {
                     const info = await api('/api/admin/branding', { method: 'PUT', json: v });
                     setDefaults(info);
-                    toast('기본 테마를 바꿨습니다.', 'success');
+                    toast(ownThemeLabel() ? '기본 테마를 바꿨습니다. 지금 화면은 내 테마를 쓰고 있어 그대로입니다.' : '기본 테마를 바꿨습니다.', 'success');
+                    paintOwnNote();
                 } catch (e) { toast(e.message, 'error'); }
             },
         })));
@@ -686,7 +700,7 @@ function renderThanks(pane) {
                 h('p', { class: 'thanks-note', text: p.note })))),
         h('div', { class: 'src-card thanks-card' },
             h('h3', { class: 'pane-title' }, icon('heart'), ' 참고한 저장소'),
-            h('p', { class: 'field-hint', text: 'Yume Player는 아래 프로젝트에서 출발했거나 아이디어를 얻었습니다. 고맙습니다.' }),
+            h('p', { class: 'field-hint', text: 'YMPlayer는 아래 프로젝트에서 출발했거나 아이디어를 얻었습니다. 고맙습니다.' }),
             h('ul', { class: 'thanks-list' }, CREDITS.sources.map(linkRow))),
         h('div', { class: 'src-card thanks-card' },
             h('h3', { class: 'pane-title' }, icon('cubes'), ' 쓰고 있는 오픈소스'),

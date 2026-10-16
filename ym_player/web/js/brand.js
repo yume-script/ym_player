@@ -6,7 +6,7 @@ const LOGO_SVG = '<svg class="logo" viewBox="0 0 64 64" aria-hidden="true"><rect
 export function applyBranding({ title, icon_url: icon, show_version: showVersion = true, version = '' }) {
     document.title = title;
     document.querySelectorAll('.brand-name').forEach((el) => { el.textContent = title; });
-    const short = String(version || '').split('.').slice(0, 2).join('.');
+    const short = String(version || '');
     document.querySelectorAll('.brand-mark').forEach((el) => {
         el.classList.toggle('has-img', !!icon);
         el.replaceChildren();

@@ -1,4 +1,4 @@
-"""Yume Player 서버 - Plex 스타일 웹 화면 + Plex/IPTV 중계.
+"""YMPlayer 서버 - Plex 스타일 웹 화면 + Plex/IPTV 중계.
 
 실행:  python -m ym_player            (기본 http://127.0.0.1:8899)
 환경변수:
@@ -48,7 +48,7 @@ from . import __version__, auth, config_store, iptv, media_cache, prefs, radio, 
 log = logging.getLogger("ym_player")
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
-PRODUCT = "Yume Player"
+PRODUCT = "YMPlayer"
 TEXT_MAX_BYTES = 80 * 1024 * 1024  # 통합 EPG가 수십 MB인 경우가 있어 넉넉히
 CHANNEL_CACHE_SEC = 10 * 60
 EPG_CACHE_SEC = 30 * 60
@@ -1702,7 +1702,10 @@ def branding_info():
     b = config_store.load().get("branding") or {}
     icon = _brand_icon_path()
     version = int(os.path.getmtime(icon)) if icon else 0
-    return {"title": b.get("title") or DEFAULT_TITLE, "icon_url": f"/brand/icon?v={version}" if icon else None,
+    title = b.get("title") or ""
+    if title == "Yume Player":  # 예전 이름을 그대로 저장해 둔 경우는 새 기본 이름으로
+        title = ""
+    return {"title": title or DEFAULT_TITLE, "icon_url": f"/brand/icon?v={version}" if icon else None,
             "theme": b.get("theme") if b.get("theme") in prefs.THEMES else "dark",
             "accent": b.get("accent") if b.get("accent") in prefs.ACCENTS else "amber",
             "show_version": b.get("show_version", True) is not False, "version": __version__}
@@ -1799,7 +1802,7 @@ async def admin_backup(request):
 async def admin_restore(request):
     body = await _json_body(request)
     if body.get("format") != BACKUP_FORMAT:
-        return _json_error(400, "Yume Player 백업 파일이 아닙니다.")
+        return _json_error(400, "YMPlayer 백업 파일이 아닙니다.")
     try:
         raw_cfg = body.get("config") or {}
         cfg = config_store.replace_sources({"client_id": str(raw_cfg.get("client_id") or ""), "sources": []},
@@ -1863,8 +1866,8 @@ LOGO_SVG = ('<svg class="logo" viewBox="0 0 64 64" aria-hidden="true">'
 
 
 def version_short(version=__version__):
-    """배지에 쓸 앞 두 자리 ("1.0.3" -> "1.0")."""
-    return ".".join(version.split(".")[:2])
+    """배지에 쓸 버전 ("1.1.1" 그대로 - 작은 수정도 보이게)."""
+    return version
 
 
 def brand_mark_html(icon_url, show_version=True):
@@ -2038,7 +2041,7 @@ def main():
             os.environ.get("MP_USER") and os.environ.get("MP_PASSWORD")):
         log.warning("MP_HOST=%s 로 열었고 아직 사용자가 없습니다 - 가장 먼저 접속한 사람이 관리자 계정을 만들게 됩니다. "
                     "바로 접속해서 관리자를 만들거나 MP_USER/MP_PASSWORD를 넣고 시작하세요.", host)
-    web.run_app(create_app(), host=host, port=port, print=lambda *_: log.info("Yume Player %s: http://%s:%d", __version__, host, port))
+    web.run_app(create_app(), host=host, port=port, print=lambda *_: log.info("YMPlayer %s: http://%s:%d", __version__, host, port))
 
 
 if __name__ == "__main__":
