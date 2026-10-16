@@ -661,7 +661,7 @@ def test_existing_index_titles_are_repaired_once(monkeypatch, tmp_path):
     row = telegram_src.get_video("tg", 1, 2)
     assert row["title"] == "영화" and row["file_name"] == "영화.mkv"
     with telegram_src.db() as c:
-        assert c.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert c.execute("PRAGMA user_version").fetchone()[0] == 5
 
 
 def test_split_parts_are_grouped(monkeypatch, tmp_path):
@@ -837,14 +837,16 @@ def test_posters_are_paired_and_hidden_from_all(monkeypatch, tmp_path):
         (18, "video", f"{hope}_0001", f"{hope}_0001.mkv", 9),
         (19, "image", "다른 영화 [2019]", "", 50),                             # 30분 넘게 떨어짐
         (20, "video", "Other.2019.1080p", "Other.2019.1080p.mkv", 95),
+        (21, "image", "로또 1등도 출근합니다 S01E07 [2026]", "", 100),
+        (22, "video", "로또 1등도 출근합니다.E07.261001.1080p", "z.mkv", 200),  # 큰 파일이라 100분 뒤에 올라옴
     ])
     telegram_src.link_posters("tg", 1)
     rows, total = telegram_src.query_videos("tg", [1], limit=50)
     by = {r["msg"]: r for r in rows}
-    assert {11: 10, 13: 12, 17: 16, 18: 16} == {m: r["poster"] for m, r in by.items() if r["poster"]}
-    assert set(by) == {11, 13, 14, 15, 17, 18, 19, 20} and total == 8       # 포스터 사진(10,12,16)은 전체에서 빠짐
+    assert {11: 10, 13: 12, 17: 16, 18: 16, 22: 21} == {m: r["poster"] for m, r in by.items() if r["poster"]}
+    assert set(by) == {11, 13, 14, 15, 17, 18, 19, 20, 22} and total == 9   # 포스터 사진(10,12,16,21)은 전체에서 빠짐
     photos, _ = telegram_src.query_videos("tg", [1], kind="image", limit=50)
-    assert {r["msg"] for r in photos} == {10, 12, 14, 16, 19}               # 사진 보기에는 다 나옴
+    assert {r["msg"] for r in photos} == {10, 12, 14, 16, 19, 21}           # 사진 보기에는 다 나옴
     assert telegram_src.get_video("tg", 1, 13)["poster"] == 12
     assert telegram_src._poster_score(telegram_src._media_key("영화 3 포스터"), telegram_src._media_key("영화 2")) == 0
     assert telegram_src._poster_score(telegram_src._media_key("로또 1등도 출근합니다"), telegram_src._media_key("로또 1등도 출근함")) > 0

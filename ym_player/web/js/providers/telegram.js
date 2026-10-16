@@ -54,9 +54,10 @@ export class TelegramProvider {
     toItem(v) {
         const id = `${v.channel}:${v.msg}`;
         this._seen.set(id, v);
-        // 영상 옆에 올린 포스터 사진(서버가 짝지음)이 있으면: 영상 썸네일이 없을 때 대신, 상세 화면 포스터로
+        // 영상 옆에 올린 포스터 사진(서버가 짝지음)이 있으면 카드 썸네일과 상세 화면 포스터로
+        // (텔레그램 영상 썸네일은 검은 첫 화면이거나 없는 경우가 많아 포스터를 먼저)
         const posterImg = v.poster ? `${this.base}/thumb/${v.channel}/${v.poster}` : '';
-        const thumb = v.has_thumb ? `${this.base}/thumb/${v.channel}/${v.msg}` : posterImg;
+        const thumb = posterImg || (v.has_thumb ? `${this.base}/thumb/${v.channel}/${v.msg}` : '');
         if (v.kind === 'image') {
             // 사진: 누르면 뷰어로 (cards.js). 원본은 처음 열 때 서버가 텔레그램에서 받아 둔다
             const sub = [this.channelTitle(v.channel), (v.date || '').slice(0, 10), v.width ? `${v.width}×${v.height}` : '']
