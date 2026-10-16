@@ -90,6 +90,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 40,
+        "version": "1.1.3",
+        "date": "2026-10-16",
+        "title": "GitHub 새 버전 알림 (관리자): 서버가 6시간마다 GitHub 버전을 확인, 아이콘 옆 [GitHub]에 바뀐 점과 업데이트 명령, 설정 > 상태에 [지금 확인]"
+    },
+    {
         "pr": 39,
         "version": "1.1.2",
         "date": "2026-10-16",
