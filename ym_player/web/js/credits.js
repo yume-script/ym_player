@@ -88,6 +88,11 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 38,
+        "date": "2026-10-16",
+        "title": "랜덤 재생 (Plex·텔레그램): 홈/라이브러리의 [랜덤 재생], 끝나면 또 아무거나, 재생 화면의 [다른 랜덤 영상]"
+    },
+    {
         "pr": 37,
         "date": "2026-10-16",
         "title": "아이패드 라디오 백그라운드 재생 우선, 잠금 화면·제어 센터 조작(Media Session)"

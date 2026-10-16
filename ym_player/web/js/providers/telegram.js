@@ -124,6 +124,19 @@ export class TelegramProvider {
         return { items: data.items.map((v) => this.toItem(v)), total, shown: data.total, approx: !!data.more };
     }
 
+    /**
+     * 랜덤 재생할 영상 하나 (채널 하나 또는 libId가 없으면 볼 수 있는 채널 전부, 사진 제외).
+     * exclude: 이번 랜덤 재생에서 이미 튼 "pid/id"들. 반환 {pid, id, title} 또는 null
+     */
+    async randomPick(libId, { unwatched = false, exclude = new Set() } = {}) {
+        const mine = [...exclude].filter((k) => k.startsWith(`${this.id}/`)).map((k) => k.slice(this.id.length + 1));
+        const p = new URLSearchParams({ channel: libId || '', unwatched: unwatched ? 1 : 0, exclude: mine.slice(-40).join(',') });
+        const data = await api(`${this.base}/random?${p}`);
+        if (!data.item) return null;
+        const it = this.toItem(data.item);
+        return { pid: this.id, id: it.id, title: it.title };
+    }
+
     async search(query) {
         const data = await api(`${this.base}/videos?${new URLSearchParams({ q: query, limit: 40 })}`);
         const items = data.items.map((v) => this.toItem(v));
@@ -259,6 +272,7 @@ export class TelegramProvider {
         const nextPart = parts[parts.findIndex((p) => p.msg === v.msg) + 1];
         if (parts.length && nextPart && parts.some((p) => p.msg === v.msg)) {
             common.getNext = async () => ({ pid: this.id, id: `${channel}:${nextPart.msg}`, title: nextPart.title });
+            common.nextIsPart = true; // 랜덤 재생 중에도 다음 조각은 이어서
         }
         const streamed = (at, mode) => ({
             ...common,

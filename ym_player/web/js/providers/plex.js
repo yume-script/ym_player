@@ -12,6 +12,8 @@ const PRODUCT = 'YMPlayer';
 const LIB_ICONS = { movie: 'film', show: 'tv', artist: 'music' };
 const PLAYABLE = new Set(['movie', 'episode', 'track', 'clip']);
 const CONTINUE_HUBS = new Set(['home.continue', 'home.ondeck']);
+// 랜덤 재생 때 라이브러리 종류별로 뽑는 항목 종류 (Plex type 번호: 1 영화, 4 에피소드, 10 곡)
+const RANDOM_TYPES = { movie: 1, show: 4, artist: 10 };
 
 // 서버(/api/plex-sub)가 WebVTT로 바꿔 줄 수 있는 외부 자막 형식 (ym_player/subtitles.py TEXT_CODECS와 같게)
 const TEXT_SUB_CODECS = new Set(['srt', 'subrip', 'smi', 'sami', 'ass', 'ssa', 'vtt', 'webvtt']);
@@ -199,6 +201,47 @@ export class PlexProvider {
         const mc = await this.req(`/library/sections/${libId}/all`, params);
         const items = (mc.Metadata || []).map((m) => this.toItem(m));
         return { items, total: mc.totalSize ?? mc.size ?? items.length };
+    }
+
+    /**
+     * 랜덤 재생할 항목 하나. 영화 라이브러리는 영화, TV는 에피소드, 음악은 곡 중에서.
+     * libId가 없으면 음악을 뺀 모든 라이브러리에서 (항목 수에 비례해 라이브러리를 고름).
+     * exclude: 이번 랜덤 재생에서 이미 튼 "pid/id"들. 반환 {pid, id, title} 또는 null
+     */
+    async randomPick(libId, { unwatched = false, exclude = new Set() } = {}) {
+        const libs = (await this.getLibraries())
+            .filter((l) => (libId ? l.id === String(libId) : l.type !== 'artist') && RANDOM_TYPES[l.type]);
+        const base = (lib) => {
+            const p = { type: RANDOM_TYPES[lib.type] };
+            if (unwatched) p.unwatched = 1;
+            return p;
+        };
+        // 라이브러리마다 개수만 먼저 (항목은 받지 않음)
+        const counts = await Promise.all(libs.map(async (lib) => {
+            try {
+                const mc = await this.req(`/library/sections/${lib.id}/all`,
+                    { ...base(lib), 'X-Plex-Container-Start': 0, 'X-Plex-Container-Size': 0 });
+                return { lib, total: Number(mc.totalSize ?? mc.size ?? 0) };
+            } catch (e) {
+                if (libId) throw e;
+                return { lib, total: 0 };
+            }
+        }));
+        const all = counts.reduce((n, c) => n + c.total, 0);
+        if (!all) return null;
+        let best = null;
+        for (let tries = 0; tries < 4; tries++) {
+            let r = Math.floor(Math.random() * all), c = counts[0];
+            for (c of counts) { if (r < c.total) break; r -= c.total; }
+            const mc = await this.req(`/library/sections/${c.lib.id}/all`,
+                { ...base(c.lib), 'X-Plex-Container-Start': r, 'X-Plex-Container-Size': 1 });
+            const m = (mc.Metadata || [])[0];
+            if (!m) continue;
+            const it = this.toItem(m);
+            best = { pid: this.id, id: it.id, title: m.type === 'episode' ? `${it.title} ${it.subtitle}` : it.title };
+            if (!exclude.has(`${this.id}/${it.id}`)) break;
+        }
+        return best;
     }
 
     async getDetail(id) {

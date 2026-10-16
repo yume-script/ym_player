@@ -967,6 +967,25 @@ async def tg_videos(request, tg):
 
 
 @telegram_api
+async def tg_random(request, tg):
+    """랜덤 재생할 영상 하나. channel(없으면 볼 수 있는 채널 전부), unwatched=1, exclude="채널:메시지,..." """
+    channel = request.query.get("channel", "")
+    mine = _user_channels(request, tg)
+    if channel.lstrip("-").isdigit():
+        channels = [int(channel)] if int(channel) in mine else []
+    else:
+        channels = mine
+    exclude = []
+    for part in request.query.get("exclude", "").split(",")[:50]:
+        c, _, m = part.partition(":")
+        if c.lstrip("-").isdigit() and m.isdigit():
+            exclude.append((int(c), int(m)))
+    item = telegram_src.random_video(tg.sid, channels, user=username(request),
+                                     unwatched=request.query.get("unwatched") == "1", exclude=exclude)
+    return web.json_response({"success": True, "item": item})
+
+
+@telegram_api
 async def tg_home(request, tg):
     """홈 줄: 이어보기 + 채널마다 최신 영상 몇 개. 채널들을 동시에, 오래된 쪽 채우기 없이."""
     async def one(ch):
@@ -2016,6 +2035,7 @@ def create_app(require_auth=True):
     app.router.add_post("/api/tg/{sid}/logout", tg_logout)
     app.router.add_get("/api/tg/{sid}/channels", tg_channels)
     app.router.add_get("/api/tg/{sid}/videos", tg_videos)
+    app.router.add_get("/api/tg/{sid}/random", tg_random)
     app.router.add_get("/api/tg/{sid}/home", tg_home)
     app.router.add_get(r"/api/tg/{sid}/video/{channel:-?\d+}/{msg:\d+}", tg_video)
     app.router.add_get(r"/api/tg/{sid}/stream/{channel:-?\d+}/{msg:\d+}", tg_stream)

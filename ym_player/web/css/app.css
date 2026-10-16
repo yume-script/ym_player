@@ -151,6 +151,7 @@ img { display: block; }
 .empty p { margin: 0 0 1.5rem; }
 .empty.small { padding: 2rem 1rem; }
 .home-note { padding: 0.75rem 0; color: var(--muted); }
+.home-actions { display: flex; justify-content: flex-end; gap: 0.6rem; margin-bottom: 0.5rem; }
 .home-note.error { color: var(--danger); }
 .sentinel { height: 1px; }
 
@@ -411,6 +412,7 @@ body.player-open { overflow: hidden; }
 .pbtn.on { color: var(--accent); }
 .player:not(.is-live) .live-only { display: none !important; }
 .player.is-live .vod-only { display: none !important; }
+.player:not(.is-shuffle) .shuffle-only, .player.is-live .shuffle-only { display: none !important; }
 
 .seek { display: flex; align-items: center; gap: 0.9rem; margin-bottom: 0.4rem; }
 .seek-time { font-variant-numeric: tabular-nums; font-size: 0.85rem; color: #ddd; min-width: 3.4rem; text-align: center; }

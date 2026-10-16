@@ -440,6 +440,35 @@ def video_parts(sid, channel, msg, user=""):
     return out
 
 
+def random_video(sid, channels, user="", unwatched=False, exclude=()):
+    """랜덤 재생: 고른 채널들의 영상 중 하나 (사진 제외). 없으면 None.
+
+    unwatched=True면 다 본 영상은 뺀다. exclude는 방금 틀었던 (채널, 메시지)들 (연달아 같은 게 안 나오게).
+    나눠 올린 영상의 중간 조각이 뽑히면 그 묶음의 첫 조각으로 바꾼다 (다음 조각은 이어서 재생됨).
+    """
+    if not channels:
+        return None
+    marks = ",".join("?" * len(channels))
+    where = f"v.source=? AND v.channel IN ({marks}) AND v.kind='video'"
+    args = [user, sid, *channels]
+    if unwatched:
+        where += " AND COALESCE(p.watched, 0)=0"
+    skip = {(int(c), int(m)) for c, m in exclude}
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT v.* FROM videos v LEFT JOIN user_progress p ON p.source=v.source AND p.user=? "
+            f"AND p.channel=v.channel AND p.msg=v.msg WHERE {where} ORDER BY RANDOM() LIMIT ?",
+            [*args, len(skip) + 1]).fetchall()
+    # 뺄 목록이 전부라면 (영상이 몇 개뿐) 그중에서라도
+    pick = next((r for r in rows if (r["channel"], r["msg"]) not in skip), rows[0] if rows else None)
+    if pick is None:
+        return None
+    parts = video_parts(sid, pick["channel"], pick["msg"], user=user)
+    if parts and parts[0]["msg"] != pick["msg"]:
+        return get_video(sid, pick["channel"], parts[0]["msg"], user=user)
+    return get_video(sid, pick["channel"], pick["msg"], user=user)
+
+
 def get_video(sid, channel, msg, user=""):
     with db() as conn:
         r = conn.execute("SELECT * FROM videos WHERE source=? AND channel=? AND msg=?", (sid, channel, msg)).fetchone()
