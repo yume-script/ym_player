@@ -1,4 +1,4 @@
-"""Yume Player(ym_player) - M3U/XMLTV 파싱, HLS 주소 바꾸기, 설정 저장, 서버 중계."""
+"""YMPlayer(ym_player) - M3U/XMLTV 파싱, HLS 주소 바꾸기, 설정 저장, 서버 중계."""
 import asyncio
 import gzip
 import os

@@ -8,7 +8,7 @@
 //                onProgress(state, sec), onStop(sec), getNext() }
 import { fmtDuration, uuid, storeGet, storeSet, IS_SAFARI } from '../util.js';
 
-const PRODUCT = 'Yume Player';
+const PRODUCT = 'YMPlayer';
 const LIB_ICONS = { movie: 'film', show: 'tv', artist: 'music' };
 const PLAYABLE = new Set(['movie', 'episode', 'track', 'clip']);
 const CONTINUE_HUBS = new Set(['home.continue', 'home.ondeck']);

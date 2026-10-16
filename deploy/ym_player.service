@@ -1,4 +1,4 @@
-# Yume Player systemd 서비스
+# YMPlayer systemd 서비스
 #
 # 설치 (저장소가 /mnt/ym_player, venv가 /mnt/ym_player/.venv 인 경우):
 #   sudo cp deploy/ym_player.service /etc/systemd/system/
@@ -10,7 +10,7 @@
 # 다른 경로에 두었다면 아래 WorkingDirectory / ExecStart 두 줄만 고치면 된다.
 
 [Unit]
-Description=Yume Player (Plex/IPTV 웹 플레이어)
+Description=YMPlayer (Plex/IPTV 웹 플레이어)
 After=network-online.target
 Wants=network-online.target
 
