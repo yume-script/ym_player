@@ -90,6 +90,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 49,
+        "version": "1.1.12",
+        "date": "2026-10-17",
+        "title": "작게 보기·PiP 자동 전환: 사이트 안에서는 작게 보기, 재생 중 다른 탭(Chrome)·홈 화면(아이패드)으로 가면 자동 PiP, 돌아오면 보던 화면으로"
+    },
+    {
         "pr": 48,
         "version": "1.1.11",
         "date": "2026-10-17",

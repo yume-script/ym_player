@@ -17,7 +17,8 @@ export class PipArt {
         this.player = player;
         this.canvas = h('canvas', { width: SIZE, height: SIZE });
         this.g = this.canvas.getContext('2d');
-        this.video = h('video', { class: 'pip-art-video', muted: true, playsinline: true });
+        this.video = h('video', { class: 'pip-art-video', muted: true, playsinline: true, autopictureinpicture: true });
+        this.video.autoPictureInPicture = true; // Safari가 받아 주면 라디오도 홈 화면으로 갈 때 자동 PiP
         this.video.muted = true;
         this.timer = 0;
         this.active = false;

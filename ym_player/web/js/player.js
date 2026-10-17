@@ -215,8 +215,10 @@ class Player {
     }
 
     _newVideo() {
-        const v = h('video', { playsinline: true, preload: 'auto' });
+        const v = h('video', { playsinline: true, preload: 'auto', autopictureinpicture: true });
         v.playsInline = true;
+        // 아이패드·아이폰 Safari: 영상 재생 중 홈 화면으로 가면 자동으로 PiP
+        v.autoPictureInPicture = true;
         v.volume = storeGet('yp_volume', 1);
         v.muted = storeGet('yp_muted', false);
         for (const ev of ['play', 'pause', 'playing', 'waiting']) v.addEventListener(ev, () => this._syncPlayState());
@@ -811,7 +813,9 @@ class Player {
         });
         on('seekbackward', () => this.seekBy(-10));
         // Chrome 도구막대 미디어 조작의 PIP 버튼·탭 전환 자동 PIP -> 우리 방식으로 (라디오는 그림 창)
-        on('enterpictureinpicture', () => this.togglePip());
+        // Chrome: 재생 중에 다른 탭으로 가면 자동으로 PiP (사이트 설정의 "자동 PIP"가 허용일 때).
+        // 도구막대 미디어 조작의 PIP 버튼도 여기로 온다. 이미 떠 있으면 그대로 (닫지 않게 toggle이 아님)
+        on('enterpictureinpicture', () => this.enterPip());
         on('seekforward', () => this.seekBy(30));
     }
 
@@ -862,11 +866,24 @@ class Player {
         this.miniArt.classList.toggle('has-img', !!url);
     }
 
+    _pipElement() {
+        return document.pictureInPictureElement
+            || [this.video, this.pipArt && this.pipArt.video].find((v) => v && v.webkitPresentationMode === 'picture-in-picture');
+    }
+
     async togglePip() {
+        const cur = this._pipElement();
+        if (!cur) return this.enterPip();
         try {
-            if (document.pictureInPictureElement) return await document.exitPictureInPicture();
-            const webkitPip = [this.video, this.pipArt && this.pipArt.video].find((v) => v && v.webkitPresentationMode === 'picture-in-picture');
-            if (webkitPip) return webkitPip.webkitSetPresentationMode('inline');
+            if (document.pictureInPictureElement) await document.exitPictureInPicture();
+            else cur.webkitSetPresentationMode('inline');
+        } catch (e) { /* 이미 닫힘 */ }
+    }
+
+    /** PiP 열기 (이미 떠 있으면 그대로). 누른 그 순간(또는 Chrome 자동 PiP 처리기 안)에 불러야 한다 */
+    async enterPip() {
+        if (!this.pb || this._pipElement()) return;
+        try {
             // 라디오처럼 소리만 있으면 영상 대신 앨범 표지·시각화를 그린 창으로 (pipart.js). 안 되면 원래대로
             // (소리만 있는 원래 <video>는 Chrome·Safari 모두 "영상 트랙 없음"으로 거절하므로 그림 창이 안 되면 거기서 끝)
             if (this.pb && this.pb.audioOnly && PipArt.supported()) return void await this._openPipArt();
@@ -897,12 +914,18 @@ class Player {
      */
     _onPipEnter() {
         if (!this.pb) return;
+        if (!this.inPip) {
+            // 다른 탭·앱으로 나가서 자동으로 뜬 PiP면 돌아왔을 때 원래 화면(큰 화면/작게 보기)으로 되돌린다
+            this._pipAuto = document.hidden;
+            this._pipWasMini = this.minimized;
+        }
         this.inPip = true;
         this._lockQuality(true);
         if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
         this.minimize();
         this.mini.classList.add('pip');
-        if (!location.hash.startsWith('#/home')) location.hash = '#/home';
+        // 직접 PiP를 열었으면 홈으로 (둘러보기 좋게). 자동 PiP는 보던 화면 그대로
+        if (!this._pipAuto && !location.hash.startsWith('#/home')) location.hash = '#/home';
     }
 
     /** 화면 속 화면 창을 닫았거나(일시정지됨) "탭으로 돌아가기"를 눌렀을 때 */
@@ -912,8 +935,10 @@ class Player {
         this._lockQuality(false);
         this.mini.classList.remove('pip');
         if (!this.pb) return;
-        if (this.video.paused) this.minimize(); // 창을 닫음 -> 작은 막대에서 이어서
-        else this.expand();                     // 탭으로 돌아가기 -> 큰 화면으로
+        if (this.video.paused) this.minimize();                 // 창을 닫음 -> 작은 막대에서 이어서
+        else if (this._pipAuto && this._pipWasMini) this.minimize(); // 자동 PiP였고 작게 보던 중이었으면 그대로
+        else this.expand();                                     // 탭으로 돌아가기 -> 큰 화면으로
+        this._pipAuto = false;
     }
 
     /**
