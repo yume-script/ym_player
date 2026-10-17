@@ -1,6 +1,32 @@
 // 텔레그램 채널 소스. 서버(/api/tg/{id}/...)가 Telethon으로 채널 영상을 색인하고 스트림을 이어 준다.
 // 설정에서 고른 채널 하나하나가 라이브러리처럼 보인다. 항목 id는 "채널id:메시지id".
 import { api, fmtDuration, h, modal, IS_SAFARI } from '../util.js';
+import { registry } from './index.js';
+
+// "새로 올라온 영상"의 NEW: 지난번 방문(서버 설정 tg_seen) 뒤 올라왔고 아직 안 본 영상.
+// 이번 방문 동안은 같은 기준을 쓰도록 처음 값을 세션에 붙잡아 둔다 (홈을 다시 열어도 NEW가 바로 사라지지 않게)
+const SEEN_SESSION = 'yp_tg_seen_prev';
+function seenBefore() {
+    try {
+        let v = sessionStorage.getItem(SEEN_SESSION);
+        if (v === null) {
+            v = (registry.prefs && registry.prefs.tg_seen) || '';
+            sessionStorage.setItem(SEEN_SESSION, v);
+        }
+        return v;
+    } catch (e) {
+        return (registry.prefs && registry.prefs.tg_seen) || '';
+    }
+}
+
+/** 이번에 본 가장 새 영상 시각을 서버에 (다음 방문의 NEW 기준) */
+function markSeen(items) {
+    const newest = items.reduce((m, v) => (v.date && v.date > m ? v.date : m), '');
+    const prefs = registry.prefs || (registry.prefs = {});
+    if (!newest || newest <= (prefs.tg_seen || '')) return;
+    prefs.tg_seen = newest;
+    api('/api/me/prefs', { method: 'PUT', json: { tg_seen: newest } }).catch(() => {});
+}
 
 const TRANSCODE_NOTE = { remux: '서버 변환(포장만)', audio: '서버 변환(음성)', transcode: '서버 변환(H.264)' };
 
@@ -87,6 +113,7 @@ export class TelegramProvider {
             watched: !!v.watched,
             route: `#/item/${this.id}/${id}`,
             ts: v.updated || 0,
+            isNew: !!(seenBefore() && v.date && v.date > seenBefore() && !v.watched && !(v.position > 0)),
             posterImg,
             raw: v,
         };
@@ -97,11 +124,17 @@ export class TelegramProvider {
     }
 
     async getHomeHubs() {
+        seenBefore(); // 이번 방문의 NEW 기준을 먼저 붙잡는다 (아래 markSeen이 서버 값을 바꾸기 전에)
         const data = await api(`${this.base}/home`);
         const hubs = [];
         if (data.continue && data.continue.length) {
             hubs.push({ title: '이어보기', source: this.name, continue: true, items: data.continue.map((v) => this.toItem(v)) });
         }
+        // 채널들을 합친 새 영상 (채널이 여럿일 때 서버가 보내 줌)
+        if (data.recent && data.recent.length) {
+            hubs.push({ title: '새로 올라온 영상', source: this.name, items: data.recent.map((v) => this.toItem(v)) });
+        }
+        markSeen([...(data.recent || []), ...(data.channels || []).flatMap((r) => r.items)]);
         for (const row of data.channels || []) {
             if (!row.items.length) continue;
             hubs.push({

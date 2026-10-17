@@ -31,6 +31,7 @@ export function posterCard(item, { wide = false } = {}) {
     const fallback = { movie: 'film', show: 'tv', season: 'tv', episode: 'tv', artist: 'music', album: 'compact-disc', track: 'music', photo: 'image' }[item.type] || 'photo-film';
     const art = img(wide ? item.wideThumb : item.thumb, `card-art shape-${shape}`, fallback);
 
+    if (item.isNew) art.appendChild(h('span', { class: 'card-new', title: '지난번에 본 뒤 새로 올라옴', text: 'NEW' }));
     if (item.watched) art.appendChild(h('span', { class: 'card-watched', title: '시청함' }, icon('check')));
     else if (item.unwatched) art.appendChild(h('span', { class: 'card-count', text: String(item.unwatched) }));
     const bar = progressBar(item.progress);

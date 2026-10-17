@@ -237,6 +237,9 @@ img { display: block; }
 .card:hover .card-play, .ep-row:hover .card-play { opacity: 1; transform: scale(1); }
 .card-play.static { pointer-events: none; }
 .card-channel.offline { opacity: 0.45; }
+/* 텔레그램 "새로 올라온 영상" - 지난번 방문 뒤 올라왔고 아직 안 본 것 */
+.card-new { position: absolute; top: 8px; left: 8px; padding: 0.05rem 0.4rem; border-radius: 4px; background: var(--accent);
+    color: var(--accent-ink); font: 700 0.66rem/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 0.04em; z-index: 1; }
 .live-badge {
     display: inline-block; background: var(--danger); color: #fff; font-size: 0.66rem; font-weight: 700;
     padding: 0.1rem 0.4rem; border-radius: 3px; letter-spacing: 0.04em; line-height: 1.4;

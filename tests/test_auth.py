@@ -440,10 +440,15 @@ def test_theme_default_and_per_user(data):
         r = await c.put("/api/me/prefs", json={"seen_version": "1.1.2"})
         assert (await r.json())["prefs"]["seen_version"] == "1.1.2"
         assert (await c.put("/api/me/prefs", json={"seen_version": "1.1<b>"})).status == 400
+        # 텔레그램 "새로 올라온 영상"을 마지막으로 본 시각 (ISO만)
+        r = await c.put("/api/me/prefs", json={"tg_seen": "2026-10-14T10:00:00+00:00"})
+        assert (await r.json())["prefs"]["tg_seen"] == "2026-10-14T10:00:00+00:00"
+        assert (await c.put("/api/me/prefs", json={"tg_seen": "<script>"})).status == 400
 
         # 사용자 선택은 prefs에 (빈 값 = 관리자 기본)
         r = await c.put("/api/me/prefs", json={"theme": "black", "accent": ""})
-        assert (await r.json())["prefs"] == {"theme": "black", "accent": "", "seen_version": "1.1.2"}
+        assert (await r.json())["prefs"] == {"theme": "black", "accent": "", "seen_version": "1.1.2",
+                                             "tg_seen": "2026-10-14T10:00:00+00:00"}
         assert (await c.put("/api/me/prefs", json={"theme": "<script>"})).status == 400
         assert (await c.put("/api/me/prefs", json={"accent": "gold"})).status == 400
 
