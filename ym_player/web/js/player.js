@@ -10,6 +10,7 @@ import { h, icon, clear, fmtClock, fmtHM, storeGet, storeSet, toast, IS_IOS } fr
 import { channelHealth, isFavorite, toggleFavorite } from './providers/iptv.js';
 import { registry } from './providers/index.js';
 import { MODES, Visualizer } from './visualizer.js';
+import { PipArt } from './pipart.js';
 
 const START_TIMEOUT_MS = 20000;
 const PROGRESS_EVERY_SEC = 10;
@@ -293,6 +294,8 @@ class Player {
         this.subEl.textContent = pb.subtitle || '';
         this.miniTitle.textContent = pb.title || '';
         this.miniSub.textContent = pb.subtitle || '';
+        // 라디오 그림 PiP 창을 띄운 채 영상을 틀면 그 창은 닫는다 (영상은 원래 <video>로 다시 PiP)
+        if (!pb.audioOnly && this.pipArt && this.pipArt.active) document.exitPictureInPicture().catch(() => {});
         this.posterEl.classList.toggle('hidden', !pb.audioOnly);
         this.posterEl.style.backgroundImage = pb.audioOnly && pb.poster ? `url("${pb.poster}")` : '';
         this.engineEl.textContent = '';
@@ -835,8 +838,13 @@ class Player {
 
     async togglePip() {
         try {
-            if (document.pictureInPictureElement) await document.exitPictureInPicture();
-            else await this.video.requestPictureInPicture();
+            if (document.pictureInPictureElement) return await document.exitPictureInPicture();
+            // 라디오처럼 소리만 있으면 영상 대신 앨범 표지·시각화를 그린 창으로 (pipart.js). 안 되면 원래대로
+            if (this.pb && this.pb.audioOnly && PipArt.supported()) {
+                this.pipArt = this.pipArt || new PipArt(this);
+                try { return await this.pipArt.open(); } catch (e) { console.warn('[Player] 그림 PiP 실패, 원래 방식으로:', e); }
+            }
+            await this.video.requestPictureInPicture();
         } catch (e) { toast('이 브라우저는 화면 속 화면을 지원하지 않습니다.', 'error'); }
     }
 
@@ -1068,6 +1076,7 @@ class Player {
             try { navigator.mediaSession.playbackState = this.pb ? (paused ? 'paused' : 'playing') : 'none'; } catch (e) { /* 무시 */ }
         }
         this.viz.setPlaying(!paused && !!this.pb);
+        if (this.pipArt) this.pipArt.syncPlaying(!paused);
         const cls = paused ? 'fa-solid fa-play' : 'fa-solid fa-pause';
         this.playBtn.firstChild.className = cls;
         this.miniPlayBtn.firstChild.className = cls;

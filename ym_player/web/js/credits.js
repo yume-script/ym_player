@@ -90,6 +90,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 45,
+        "version": "1.1.8",
+        "date": "2026-10-17",
+        "title": "라디오 화면 속 화면(PiP): 검은 화면 대신 앨범 표지 + 시각화 + 방송국·곡 이름, PiP 창의 재생/일시정지도 동작"
+    },
+    {
         "pr": 44,
         "version": "1.1.7",
         "date": "2026-10-17",

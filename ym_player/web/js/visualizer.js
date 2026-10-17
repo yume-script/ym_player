@@ -251,6 +251,19 @@ export class Visualizer {
             .call(this, g, w, h, dpr);
     }
 
+    /**
+     * 다른 캔버스에 지금 모양을 한 장 그린다 (라디오 "화면 속 화면" 창용 - pipart.js).
+     * 큰 화면이 접혀 있어도 분석기 값은 그대로 읽힌다. 끄기 모드면 그리지 않고 false.
+     */
+    drawTo(g, w, h) {
+        if (this.mode === 'off') return false;
+        this.accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || this.accent;
+        this._read();
+        ({ bars: this._bars, mirror: this._mirror, wave: this._wave, vu: this._vu, bokeh: this._bokeh })[this.mode]
+            .call(this, g, w, h, 1);
+        return true;
+    }
+
     /** 낮은 소리를 넓게 보이도록 로그 간격으로 n개 묶은 막대 높이 (0~1) */
     _bands(n) {
         const out = new Array(n), len = this.freq.length * 0.72;
