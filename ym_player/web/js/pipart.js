@@ -20,18 +20,23 @@ export class PipArt {
         this.art = { url: '', img: null };
         this._mirroring = false;
         this.video.addEventListener('enterpictureinpicture', () => { this.active = true; player.inPip = false; player._onPipEnter(); });
-        this.video.addEventListener('leavepictureinpicture', () => {
-            this.active = false;
-            this._stop();
-            player._onPipLeave();
-        });
+        this.video.addEventListener('leavepictureinpicture', () => this._left());
+        // Safari(아이패드)의 PiP는 webkitpresentationmodechanged로 알려 준다
+        watchWebkitPip(this.video, () => { this.active = true; player.inPip = false; player._onPipEnter(); }, () => this._left());
         // PiP 창의 재생/일시정지 -> 원래 재생
         this.video.addEventListener('pause', () => { if (this.active && !this._mirroring && !player.video.paused) player.video.pause(); });
         this.video.addEventListener('play', () => { if (this.active && !this._mirroring && player.video.paused) player.video.play().catch(() => {}); });
     }
 
     static supported() {
-        return !!(HTMLCanvasElement.prototype.captureStream && document.pictureInPictureEnabled);
+        return !!(HTMLCanvasElement.prototype.captureStream && pipAvailable());
+    }
+
+    _left() {
+        if (!this.active) return;
+        this.active = false;
+        this._stop();
+        this.player._onPipLeave();
     }
 
     /** 원래 재생이 멈추거나 다시 나오면 PiP 창의 버튼 모양도 맞춘다 */
@@ -48,8 +53,15 @@ export class PipArt {
         if (this.video.srcObject !== this.stream) this.video.srcObject = this.stream;
         if (!this.video.isConnected) document.body.appendChild(this.video);
         this._start();
+        if (!document.pictureInPictureEnabled) {
+            // Safari 전용 PiP는 누른 그 순간(기다리지 않고) 불러야 받아 준다
+            const playing = this.video.play();
+            await requestPip(this.video);
+            await playing;
+            return;
+        }
         await this.video.play();
-        await this.video.requestPictureInPicture();
+        await requestPip(this.video);
     }
 
     _start() {
@@ -105,6 +117,34 @@ export class PipArt {
             g.fillText(clip(g, sub, SIZE - 40), 20, SIZE - 22);
         }
     }
+}
+
+/** 표준 PiP(Chrome·Edge·Mac Safari) 또는 Safari 전용 PiP(아이패드·아이폰: webkitSetPresentationMode) */
+function pipAvailable() {
+    if (document.pictureInPictureEnabled) return true;
+    const v = HTMLVideoElement.prototype;
+    return typeof v.webkitSetPresentationMode === 'function';
+}
+
+export async function requestPip(video) {
+    if (document.pictureInPictureEnabled && video.requestPictureInPicture) return video.requestPictureInPicture();
+    if (video.webkitSupportsPresentationMode && video.webkitSupportsPresentationMode('picture-in-picture')) {
+        video.webkitSetPresentationMode('picture-in-picture');
+        return undefined;
+    }
+    throw new Error('화면 속 화면 기능이 없습니다');
+}
+
+/** Safari 전용 PiP의 들어감/나옴 (표준 PiP를 쓰는 브라우저는 표준 이벤트가 따로 온다) */
+export function watchWebkitPip(video, onEnter, onLeave) {
+    if (document.pictureInPictureEnabled) return;
+    let was = false;
+    video.addEventListener('webkitpresentationmodechanged', () => {
+        const now = video.webkitPresentationMode === 'picture-in-picture';
+        if (now && !was) onEnter();
+        if (!now && was) onLeave();
+        was = now;
+    });
 }
 
 function clip(g, text, max) {

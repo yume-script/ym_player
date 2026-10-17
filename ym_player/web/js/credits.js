@@ -90,6 +90,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 47,
+        "version": "1.1.10",
+        "date": "2026-10-17",
+        "title": "라디오: 작게 보기(미니 막대)에 앨범 표지, 아이패드·아이폰 Safari의 화면 속 화면(webkitSetPresentationMode) 지원"
+    },
+    {
         "pr": 46,
         "version": "1.1.9",
         "date": "2026-10-17",
