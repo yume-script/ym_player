@@ -661,7 +661,7 @@ def test_existing_index_titles_are_repaired_once(monkeypatch, tmp_path):
     row = telegram_src.get_video("tg", 1, 2)
     assert row["title"] == "영화" and row["file_name"] == "영화.mkv"
     with telegram_src.db() as c:
-        assert c.execute("PRAGMA user_version").fetchone()[0] == 8
+        assert c.execute("PRAGMA user_version").fetchone()[0] == 9
 
 
 def test_split_parts_are_grouped(monkeypatch, tmp_path):
@@ -940,3 +940,21 @@ def test_series_grouping_and_next_episode(monkeypatch, tmp_path):
     assert data["episodes"][0]["watched"] and data["episodes"][1]["poster"] == 12
     assert telegram_src.series_of("tg", 1, 13)["next"]["msg"] == 16
     assert telegram_src.series_of("tg", 1, 16)["next"] is None and telegram_src.series_of("tg", 1, 14) is None
+
+
+def test_three_digit_season_is_grouped(monkeypatch, tmp_path):
+    """'킬러들의_쇼핑몰_S102E08_잘들어_…' - 시즌을 세 자리로 적고 회차 뒤에 부제가 붙은 이름 (실제 채널)"""
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    telegram_src._migrated.discard(str(tmp_path))
+    assert telegram_src._episode_info("킬러들의_쇼핑몰_S102E08_잘들어_정신차려_2160p", "") == ("킬러들의쇼핑몰", 2, 8)
+    assert telegram_src._display_title("킬러들의_쇼핑몰_S102E08_잘들어_정신차려_2160p") == "킬러들의 쇼핑몰"
+    rows = [(m, "video", f"킬러들의_쇼핑몰_S102E0{m}_부제_{m}_2160p", f"x{m}.mkv") for m in range(1, 9)]
+    with telegram_src.db() as conn:
+        conn.executemany(
+            "INSERT INTO videos(source,channel,msg,title,caption,file_name,mime,duration,size,width,height,date,has_thumb,kind)"
+            " VALUES('tg',1,?,?,'',?,'video/mp4',60,1,1,1,'2026-08-14T10:00:00+00:00',0,?)",
+            [(m, t, f, k) for m, k, t, f in rows])
+    assert telegram_src.link_series("tg", 1) == 1
+    grouped, total = telegram_src.query_videos("tg", [1], limit=50, group=True)
+    assert total == 1 and grouped[0]["series"]["count"] == 8 and grouped[0]["series"]["title"] == "킬러들의 쇼핑몰"
+    assert [e["ep"] for e in telegram_src.series_episodes("tg", 1, "킬러들의쇼핑몰")["episodes"]] == list(range(1, 9))
