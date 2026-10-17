@@ -309,6 +309,9 @@ class Player {
         this.miniSub.textContent = pb.subtitle || '';
         // 라디오 그림 PiP 창을 띄운 채 영상을 틀면 그 창은 닫는다 (영상은 원래 <video>로 다시 PiP)
         if (!pb.audioOnly && this.pipArt && this.pipArt.active) document.exitPictureInPicture().catch(() => {});
+        // 라디오면 그림 PiP 영상을 미리 준비 (아이패드는 버튼을 누른 그 순간에 바로 요청해야 해서)
+        if (pb.audioOnly && PipArt.supported()) (this.pipArt = this.pipArt || new PipArt(this)).prepare();
+        else if (this.pipArt) this.pipArt.release();
         this.posterEl.classList.toggle('hidden', !pb.audioOnly);
         this.miniArt.classList.toggle('hidden', !pb.audioOnly);
         this._setMiniArt(pb.audioOnly ? pb.poster : '');
@@ -432,6 +435,7 @@ class Player {
 
     stop() {
         this.prepSeq++;
+        if (this.pipArt) setTimeout(() => this.pipArt && this.pipArt.release(), 0);
         this._setShuffle(null);
         this._finishCurrent();
         this.token++;
@@ -864,7 +868,8 @@ class Player {
             const webkitPip = [this.video, this.pipArt && this.pipArt.video].find((v) => v && v.webkitPresentationMode === 'picture-in-picture');
             if (webkitPip) return webkitPip.webkitSetPresentationMode('inline');
             // 라디오처럼 소리만 있으면 영상 대신 앨범 표지·시각화를 그린 창으로 (pipart.js). 안 되면 원래대로
-            if (this.pb && this.pb.audioOnly && PipArt.supported() && await this._openPipArt()) return;
+            // (소리만 있는 원래 <video>는 Chrome·Safari 모두 "영상 트랙 없음"으로 거절하므로 그림 창이 안 되면 거기서 끝)
+            if (this.pb && this.pb.audioOnly && PipArt.supported()) return void await this._openPipArt();
             await requestPip(this.video);
         } catch (e) { toast(`이 브라우저는 화면 속 화면을 지원하지 않습니다. (${e.name || ''} ${e.message || e})`, 'error', 6000); }
     }
@@ -879,7 +884,7 @@ class Player {
             return true;
         } catch (e) {
             console.warn('[Player] 그림 PiP 실패:', e);
-            toast(`앨범 표지 PiP를 열지 못했습니다${swap ? '' : ' (검은 화면 PiP로 엽니다)'}: ${e.name || ''} ${e.message || e}`, 'error', 8000);
+            toast(`앨범 표지 PiP를 열지 못했습니다${swap ? '' : '. 잠시 뒤 다시 눌러 주세요'}: ${e.name || ''} ${e.message || e}`, 'error', 8000);
             return false;
         } finally {
             setTimeout(() => { this._pipSwap = false; }, 500);

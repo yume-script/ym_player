@@ -90,6 +90,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 48,
+        "version": "1.1.11",
+        "date": "2026-10-17",
+        "title": "아이패드 라디오 PiP: 그림 영상을 미리 준비해 두고 누른 그 순간에 요청 (Safari의 user activation 조건)"
+    },
+    {
         "pr": 47,
         "version": "1.1.10",
         "date": "2026-10-17",
