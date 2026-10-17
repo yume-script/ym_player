@@ -95,6 +95,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 55,
+        "version": "1.1.18",
+        "date": "2026-10-17",
+        "title": "텔레그램 시리즈: S102E08처럼 시즌을 세 자리로 적은 회차도 인식 (킬러들의 쇼핑몰)"
+    },
+    {
         "pr": 54,
         "version": "1.1.17",
         "date": "2026-10-17",

@@ -335,6 +335,13 @@ def db():
             for sid, ch in conn.execute("SELECT DISTINCT source, channel FROM videos").fetchall():
                 _link_series(conn, sid, ch)
             conn.execute("PRAGMA user_version = 8")
+        if conn.execute("PRAGMA user_version").fetchone()[0] < 9:
+            # 회차 인식 규칙이 바뀜 (S102E08 같은 세 자리 시즌) -> 포스터·자막·시리즈를 한 번 다시
+            for sid, ch in conn.execute("SELECT DISTINCT source, channel FROM videos").fetchall():
+                _link_posters(conn, sid, ch)
+                _link_subs(conn, sid, ch)
+                _link_series(conn, sid, ch)
+            conn.execute("PRAGMA user_version = 9")
     return conn
 
 
@@ -380,10 +387,11 @@ POSTER_BEFORE = 4    # 영상 앞쪽으로 볼 메시지 수 (나눠진 조각�
 POSTER_AFTER = 2     # 영상 뒤에 포스터를 올리는 채널도 있다
 
 _B, _E = r"(?<![A-Za-z0-9])", r"(?![A-Za-z0-9])"   # 밑줄(_)도 구분자로 ("이름_S01E04_1080p")
-_EP_RE = re.compile(_B + r"S(\d{1,2})[\s._-]*E(\d{1,4})" + _E + "|" + _B + r"EP?(\d{1,4})" + _E
+# 시즌은 세 자리도 ("킬러들의_쇼핑몰_S102E08" - 업로더가 시즌 2를 S102로 적음 -> 뒤 두 자리가 시즌)
+_EP_RE = re.compile(_B + r"S(\d{1,3})[\s._-]*E(\d{1,4})" + _E + "|" + _B + r"EP?(\d{1,4})" + _E
                     + r"|(\d{1,4})\s*(?:화|회)(?![가-힣A-Za-z0-9])", re.I)
 _YEAR_RE = re.compile(r"(?<!\d)(19\d{2}|20\d{2})(?!\d)")
-_CUT_RE = re.compile(_B + r"S\d{1,2}[\s._-]*E\d|" + _B + r"EP?\d{1,4}" + _E + r"|\d{1,4}\s*(?:화|회)(?![가-힣A-Za-z0-9])"
+_CUT_RE = re.compile(_B + r"S\d{1,3}[\s._-]*E\d|" + _B + r"EP?\d{1,4}" + _E + r"|\d{1,4}\s*(?:화|회)(?![가-힣A-Za-z0-9])"
                      r"|(?<!\d)(?:19|20)\d{2}(?!\d)|" + _B + r"\d{3,4}p" + _E + r"|[\[(]", re.I)
 
 
@@ -545,7 +553,7 @@ def link_subs(sid, channel):
 # 시리즈(회차) 묶기: 같은 채널에서 작품 이름이 같고 회차(S01E09 / E09 / 9화)가 있는 영상이 2편 이상이면 한 시리즈.
 # 목록에서는 가장 최근 회차 하나(rep)만 시리즈 카드로 보이고, 누르면 회차 목록. 회차가 끝나면 다음 회차를 이어서.
 # ---------------------------------------------------------------------------
-_SEASON_RE = re.compile(_B + r"S(\d{1,2})[\s._-]*E\d|시즌\s*(\d{1,2})", re.I)
+_SEASON_RE = re.compile(_B + r"S(\d{1,3})[\s._-]*E\d|시즌\s*(\d{1,2})", re.I)
 
 
 def _episode_info(title, file_name):
@@ -557,7 +565,7 @@ def _episode_info(title, file_name):
     for text in (title or "", file_name or ""):
         m = _SEASON_RE.search(text)
         if m:
-            season = int(m.group(1) or m.group(2))
+            season = int(m.group(1) or m.group(2)) % 100   # S102 -> 2
             break
     return name, season, ep
 
