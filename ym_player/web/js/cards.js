@@ -37,7 +37,8 @@ export function posterCard(item, { wide = false } = {}) {
     const bar = progressBar(item.progress);
     if (bar) art.appendChild(bar);
 
-    if (PLAYABLE.has(item.type) && provider) {
+    // item.playable: 시리즈 카드처럼 종류는 재생 대상이 아니어도 [재생]이 되는 것 (다음 볼 회차를 틂)
+    if ((PLAYABLE.has(item.type) || item.playable) && provider) {
         art.appendChild(h('button', {
             class: 'card-play', title: '재생',
             on: {

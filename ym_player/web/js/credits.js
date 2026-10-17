@@ -95,6 +95,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 56,
+        "version": "1.1.19",
+        "date": "2026-10-17",
+        "title": "텔레그램 시리즈: 재생하면 HTTP 404 나던 문제 (시리즈를 영상처럼 열려고 함) - 다음 볼 회차로 바꿔서 재생, 시리즈 카드에도 [재생]"
+    },
+    {
         "pr": 55,
         "version": "1.1.18",
         "date": "2026-10-17",
