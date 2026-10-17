@@ -463,3 +463,19 @@ def test_radio_source_and_now_playing(monkeypatch, tmp_path):
         return "ART" if (artist, title) == ("Bill Evans", "Peace Piece") else ""
 
     asyncio.run(run())
+
+
+def test_radio_station_groups_and_korean_list():
+    """방송국 분류(지역)는 남기고, 한국 지역 라디오 194개를 다 넣어도 잘리지 않는다."""
+    import json
+    import re
+    out = config_store.clean_stations([
+        {"name": "KBS부산 1라디오", "url": "https://radio.bsod.kr/stream?stn=kbs&ch=1radio&city=busan", "group": " 부산·경남 "},
+        {"name": "재즈", "url": "http://x/stream"}])
+    assert out[0]["group"] == "부산·경남" and "group" not in out[1]
+    text = open(os.path.join(os.path.dirname(__file__), "..", "ym_player", "web", "js", "data", "kr_radio.js"), encoding="utf-8").read()
+    rows = [json.loads(m) for m in re.findall(r"^    (\{.*\}),$", text, re.M)]
+    assert len(rows) == 194 and len({r["url"] for r in rows}) == 194
+    assert {r["group"] for r in rows} >= {"전국", "서울·경기", "부산·경남", "제주"}
+    cleaned = config_store.clean_stations(rows)
+    assert len(cleaned) == 194 and len({s["id"] for s in cleaned}) == 194

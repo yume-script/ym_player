@@ -384,6 +384,7 @@ class Player {
         this.playingSince = this.video.currentTime || 0;
         this._hideMsg();
         if (pb.channel) channelHealth.set(pb.channel.id, 'online');
+        if (pb.onStarted) pb.onStarted(); // 이 방법으로 나왔다 (라디오: HLS로 나온 방송국 기억)
         this._wakeUi();
     }
 

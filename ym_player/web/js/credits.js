@@ -12,6 +12,11 @@ export const CREDITS = {
     ],
     "sources": [
         {
+            "name": "radio.bsod.kr",
+            "url": "https://radio.bsod.kr/",
+            "note": "한국 라디오 방송국(KBS·MBC·SBS 지역국, EBS, CBS, TBN, 공동체 라디오 등)을 지역별로 정리해 방송사 스트림으로 연결해 주는 곳. 한국 지역 라디오 목록이 이 사이트의 지역별 M3U에서 왔습니다."
+        },
+        {
             "name": "ym_m3u_player (북오아시스 M3U 플레이어 플러그인)",
             "url": "https://github.com/yume-script/ym_m3u_player",
             "note": "재생 엔진(hls.js·mpegts.js·네이티브 하이브리드), M3U·XMLTV 처리, 라이브 OSD를 옮겨 왔습니다."
@@ -89,6 +94,12 @@ export const CREDITS = {
 export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
+    {
+        "pr": 51,
+        "version": "1.1.14",
+        "date": "2026-10-17",
+        "title": "한국 지역 라디오 194개(radio.bsod.kr 지역별 목록, 전국 + 9개 지역)를 설정에서 한 번에 넣기, 방송국 화면에서 지역별로 보기, HLS 방송 자동 판별"
+    },
     {
         "pr": 50,
         "version": "1.1.13",

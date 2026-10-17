@@ -130,6 +130,9 @@ DEFAULT_STATIONS = [
 ]
 
 
+MAX_STATIONS = 500   # 한국 지역 라디오(194개)를 다 넣어도 넉넉하게
+
+
 def clean_stations(value):
     """라디오 방송국 목록 검사. 이름과 http(s) 스트림 주소가 있어야 하고, id는 이름에서 만든다 (즐겨찾기가 안 깨지게)."""
     import re as _re
@@ -148,9 +151,13 @@ def clean_stations(value):
             n += 1
         seen.add(sid)
         home = str(st.get("homepage") or "").strip()
-        out.append({"id": sid, "name": name, "subtitle": str(st.get("subtitle") or "").strip()[:80], "url": url[:500],
-                    "homepage": home[:300] if home.startswith(("http://", "https://")) else ""})
-    return out[:100]
+        item = {"id": sid, "name": name, "subtitle": str(st.get("subtitle") or "").strip()[:80], "url": url[:500],
+                "homepage": home[:300] if home.startswith(("http://", "https://")) else ""}
+        group = str(st.get("group") or "").strip()[:40]   # 분류 (지역 등) - 방송국 화면에서 골라 보기
+        if group:
+            item["group"] = group
+        out.append(item)
+    return out[:MAX_STATIONS]
 
 
 def url_list(value):
