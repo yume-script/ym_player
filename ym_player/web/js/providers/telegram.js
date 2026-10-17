@@ -108,6 +108,20 @@ export class TelegramProvider {
                 raw: v,
             };
         }
+        if (v.series) {
+            // 시리즈(회차 묶음) 카드: 가장 최근 회차가 대표. 누르면 회차 목록
+            const sid = `series:${v.channel}:${v.series.key}`;
+            return {
+                pid: this.id, id: sid, type: 'show', title: v.series.title,
+                subtitle: [this.channelTitle(v.channel), `${v.series.count}화`, (v.date || '').slice(0, 10)].filter(Boolean).join(' · '),
+                thumb, wideThumb: thumb, shape: 'wide',
+                unwatched: v.series.unwatched, progress: 0,
+                route: `#/item/${this.id}/${encodeURIComponent(sid)}`,
+                ts: v.updated || 0,
+                isNew: !!(seenBefore() && v.date && v.date > seenBefore() && !v.watched && !(v.position > 0)),
+                raw: v,
+            };
+        }
         const sub = [this.channelTitle(v.channel), (v.date || '').slice(0, 10), v.duration ? fmtDuration(v.duration * 1000) : '']
             .filter(Boolean).join(' · ');
         return {
@@ -167,7 +181,7 @@ export class TelegramProvider {
     }
 
     async getLibraryItems(channel, { start = 0, size = 60, sort = 'latest', kind = '' } = {}) {
-        const p = new URLSearchParams({ channel, offset: start, limit: size, sort, kind });
+        const p = new URLSearchParams({ channel, offset: start, limit: size, sort, kind, group: 1 }); // 회차는 시리즈로 묶어서
         const data = await api(`${this.base}/videos?${p}`);
         // 아직 훑지 않은 오래된 메시지가 남았으면 total보다 더 있을 수 있다 -> 한 칸 더 있다고 알려 계속 불러오게
         const total = data.more ? Math.max(data.total, start + data.items.length + 1) : data.total;
@@ -214,7 +228,44 @@ export class TelegramProvider {
         fetch(`${this.base}/probe/${channel}/${msg}`, { method: 'POST' }).catch(() => {});
     }
 
+    /** 시리즈(회차 묶음) 상세: 회차 목록 + [다음 볼 회차] */
+    async _seriesDetail(id) {
+        const [, channel, ...rest] = String(id).split(':');
+        const key = rest.join(':');
+        const data = await api(`${this.base}/series/${channel}?${new URLSearchParams({ key })}`);
+        const eps = data.episodes || [];
+        const children = eps.map((v) => {
+            const it = this.toItem({ ...v, series: undefined });
+            const multiSeason = eps.some((x) => x.season !== eps[0].season);
+            return {
+                ...it,
+                epLabel: `${multiSeason ? `시즌 ${v.season} ` : ''}${v.ep}화`,
+                raw: { ...v, index: multiSeason ? `S${v.season}·${v.ep}` : v.ep, title: v.title, originallyAvailableAt: (v.date || '').slice(0, 10), duration: (v.duration || 0) * 1000, summary: '' },
+            };
+        });
+        // 다음에 볼 회차: 보던 회차 -> 안 본 첫 회차 -> 첫 회차
+        const resumeIdx = eps.findIndex((v) => v.position > 30 && !v.watched);
+        const nextIdx = resumeIdx >= 0 ? resumeIdx : Math.max(0, eps.findIndex((v) => !v.watched));
+        const deck = children[nextIdx];
+        const latest = eps[eps.length - 1] || {};
+        const posterOf = (v) => (v.poster ? `${this.base}/thumb/${v.channel}/${v.poster}` : '');
+        const poster = posterOf(latest) || [...eps].reverse().map(posterOf).find(Boolean) || '';
+        const unwatched = eps.filter((v) => !v.watched).length;
+        return {
+            pid: this.id, id, type: 'show', title: data.title, subtitle: '',
+            poster: poster || (deck && deck.thumb) || '', posterShape: poster ? 'poster' : 'wide', art: '',
+            metaLine: [`${eps.length}화`, unwatched ? `안 본 회차 ${unwatched}` : '다 봄'],
+            rating: null, summary: '', tagline: '', genres: [], directors: [], cast: [],
+            playable: false, unwatched, watched: unwatched === 0,
+            viewOffset: 0, duration: 0, progress: 0,
+            parent: { label: this.channelTitle(channel), route: `#/library/${this.id}/${channel}` },
+            children, childrenTitle: '회차', childrenStyle: 'episode',
+            onDeck: deck ? { ...deck, subtitle: `${deck.epLabel} ${resumeIdx >= 0 ? '이어보기' : '재생'}` } : null,
+        };
+    }
+
     async getDetail(id) {
+        if (String(id).startsWith('series:')) return this._seriesDetail(id);
         this.warm(id);
         const v = await this._video(id);
         const item = this.toItem(v);
@@ -246,6 +297,12 @@ export class TelegramProvider {
     }
 
     async setWatched(id, watched) {
+        if (String(id).startsWith('series:')) {
+            // 시리즈 전체를 봤음/안 봄으로
+            const d = await this._seriesDetail(id);
+            for (const ep of d.children) await this.setWatched(ep.id, watched);
+            return;
+        }
         const [channel, msg] = String(id).split(':');
         await api(`${this.base}/progress`, { method: 'POST', json: { channel, msg, position: 0, duration: 0, watched } });
     }
@@ -346,6 +403,10 @@ export class TelegramProvider {
         if (parts.length && nextPart && parts.some((p) => p.msg === v.msg)) {
             common.getNext = async () => ({ pid: this.id, id: `${channel}:${nextPart.msg}`, title: nextPart.title });
             common.nextIsPart = true; // 랜덤 재생 중에도 다음 조각은 이어서
+        } else if (v.series && v.series.next) {
+            // 시리즈 회차면 끝난 뒤 다음 회차를
+            const n = v.series.next;
+            common.getNext = async () => ({ pid: this.id, id: `${channel}:${n.msg}`, title: n.title });
         }
         const streamed = (at, mode) => withSubs({
             ...common,

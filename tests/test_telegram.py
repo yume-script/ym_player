@@ -661,7 +661,7 @@ def test_existing_index_titles_are_repaired_once(monkeypatch, tmp_path):
     row = telegram_src.get_video("tg", 1, 2)
     assert row["title"] == "영화" and row["file_name"] == "영화.mkv"
     with telegram_src.db() as c:
-        assert c.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert c.execute("PRAGMA user_version").fetchone()[0] == 8
 
 
 def test_split_parts_are_grouped(monkeypatch, tmp_path):
@@ -908,3 +908,35 @@ def test_subtitle_files_are_indexed_linked_and_hidden(monkeypatch, tmp_path):
     vtt = subtitles.to_vtt(b"1\n00:00:05,000 --> 00:00:07,000\nA\n\n2\n00:01:05,000 --> 00:01:07,500\nB\n", "srt")
     shifted = subtitles.shift_vtt(vtt, 60)
     assert "A" not in shifted.split("\n") and "00:00:05.000 --> 00:00:07.500" in shifted and "B" in shifted
+
+
+def test_series_grouping_and_next_episode(monkeypatch, tmp_path):
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    telegram_src._migrated.discard(str(tmp_path))
+    rows = [(10, "image", "로또 1등도 출근합니다 S01E04 [2026]", ""),
+            (11, "video", "로또_1등도_출근합니다_S01E04_1080p", "로또_1등도_출근합니다_S01E04_1080p.mkv"),
+            (12, "image", "로또 1등도 출근합니다 S01E05 [2026]", ""),
+            (13, "video", "로또 1등도 출근합니다.E05.260924.1080p", "a.mkv"),
+            (14, "video", "Hope.2026.1080p_0000", "Hope.2026.1080p_0000.mkv"),        # 회차 없음 -> 묶지 않음
+            (15, "video", "단막극 E01", "b.mp4"),                                     # 한 편뿐 -> 묶지 않음
+            (16, "video", "로또 1등도 출근합니다.E06.261001.1080p", "c.mkv")]
+    with telegram_src.db() as conn:
+        conn.executemany(
+            "INSERT INTO videos(source,channel,msg,title,caption,file_name,mime,duration,size,width,height,date,has_thumb,kind)"
+            " VALUES('tg',1,?,?,'',?,'video/mp4',60,1,1,1,?,0,?)",
+            [(m, t, f, f"2026-10-14T10:{m:02d}:00+00:00", k) for m, k, t, f in rows])
+    telegram_src.link_posters("tg", 1)
+    assert telegram_src.link_series("tg", 1) == 1
+    telegram_src.save_progress("tg", 1, 11, 60, 60, watched=True)
+    grouped, total = telegram_src.query_videos("tg", [1], limit=50, group=True)
+    by = {r["msg"]: r for r in grouped}
+    assert set(by) == {14, 15, 16} and total == 3                 # 시리즈는 최근 회차(16) 하나로
+    assert by[16]["series"] == {"key": "로또1등도출근합니다", "title": "로또 1등도 출근합니다", "count": 3, "unwatched": 2}
+    assert "series" not in by[14]
+    flat, _ = telegram_src.query_videos("tg", [1], limit=50)      # 묶지 않으면 회차가 다 보임
+    assert {11, 13, 16} <= {r["msg"] for r in flat}
+    data = telegram_src.series_episodes("tg", 1, "로또1등도출근합니다")
+    assert [(e["msg"], e["ep"]) for e in data["episodes"]] == [(11, 4), (13, 5), (16, 6)]
+    assert data["episodes"][0]["watched"] and data["episodes"][1]["poster"] == 12
+    assert telegram_src.series_of("tg", 1, 13)["next"]["msg"] == 16
+    assert telegram_src.series_of("tg", 1, 16)["next"] is None and telegram_src.series_of("tg", 1, 14) is None

@@ -288,6 +288,9 @@ CREATE TABLE IF NOT EXISTS posters(source TEXT, channel INTEGER, video INTEGER, 
 CREATE INDEX IF NOT EXISTS posters_by_image ON posters(source, channel, image);
 CREATE TABLE IF NOT EXISTS subs(source TEXT, channel INTEGER, video INTEGER, sub INTEGER,
     PRIMARY KEY(source, channel, sub));
+CREATE TABLE IF NOT EXISTS series(source TEXT, channel INTEGER, video INTEGER, skey TEXT, title TEXT,
+    season INTEGER, ep INTEGER, rep INTEGER DEFAULT 0, PRIMARY KEY(source, channel, video));
+CREATE INDEX IF NOT EXISTS series_by_key ON series(source, channel, skey);
 """
 # 이어보기는 사용자마다 따로 (user_progress). 예전 progress(사용자 구분 없음)는 처음 한 번 MIGRATE_USER 몫으로 옮긴다.
 MIGRATE_USER = ""
@@ -327,6 +330,11 @@ def db():
             with conn:
                 conn.execute("DELETE FROM sync_state")
             conn.execute("PRAGMA user_version = 7")
+        if conn.execute("PRAGMA user_version").fetchone()[0] < 8:
+            # 회차 영상을 시리즈로 묶기 (예전에 색인한 채널도 한 번)
+            for sid, ch in conn.execute("SELECT DISTINCT source, channel FROM videos").fetchall():
+                _link_series(conn, sid, ch)
+            conn.execute("PRAGMA user_version = 8")
     return conn
 
 
@@ -533,6 +541,135 @@ def link_subs(sid, channel):
         return _link_subs(conn, sid, channel)
 
 
+# ---------------------------------------------------------------------------
+# 시리즈(회차) 묶기: 같은 채널에서 작품 이름이 같고 회차(S01E09 / E09 / 9화)가 있는 영상이 2편 이상이면 한 시리즈.
+# 목록에서는 가장 최근 회차 하나(rep)만 시리즈 카드로 보이고, 누르면 회차 목록. 회차가 끝나면 다음 회차를 이어서.
+# ---------------------------------------------------------------------------
+_SEASON_RE = re.compile(_B + r"S(\d{1,2})[\s._-]*E\d|시즌\s*(\d{1,2})", re.I)
+
+
+def _episode_info(title, file_name):
+    """(작품 이름 키, 시즌, 회차) - 회차가 없으면 None"""
+    name, ep, _year = _media_key(title, file_name)
+    if not name or ep is None:
+        return None
+    season = 1
+    for text in (title or "", file_name or ""):
+        m = _SEASON_RE.search(text)
+        if m:
+            season = int(m.group(1) or m.group(2))
+            break
+    return name, season, ep
+
+
+def _display_title(text):
+    """'로또_1등도_출근합니다_S01E04_1080p' / '로또 1등도 출근합니다 S01E09 [2026]' -> '로또 1등도 출근합니다'"""
+    text = os.path.splitext(text or "")[0] if re.search(r"\.(mkv|mp4|avi|ts|mov|webm|m4v)$", text or "", re.I) else (text or "")
+    cut = _CUT_RE.search(text)
+    head = text[:cut.start()] if cut and cut.start() > 0 else text
+    head = re.sub(r"[._]+", " ", head)
+    return re.sub(r"[\s\-\[(]+$", "", head).strip()
+
+
+def _link_series(conn, sid, channel):
+    rows = conn.execute("SELECT msg, title, file_name FROM videos WHERE source=? AND channel=? AND kind='video' ORDER BY msg",
+                        (sid, channel)).fetchall()
+    posters = {p["video"]: p["image"] for p in conn.execute(
+        "SELECT video, image FROM posters WHERE source=? AND channel=?", (sid, channel)).fetchall()}
+    groups = {}
+    for r in rows:
+        info = _episode_info(r["title"], r["file_name"])
+        if info:
+            groups.setdefault(info[0], []).append((r, info[1], info[2]))
+    links = []
+    for key, eps in groups.items():
+        if len({(s, e) for _, s, e in eps}) < 2:   # 회차 하나뿐이면 묶지 않는다
+            continue
+        rep = max(r["msg"] for r, _, _ in eps)
+        # 이름은 포스터 사진 제목(띄어쓰기가 살아 있는 경우가 많음) -> 영상 제목 -> 파일 이름 순으로
+        title = ""
+        for r, _, _ in sorted(eps, key=lambda x: -x[0]["msg"]):
+            img = posters.get(r["msg"])
+            if img:
+                prow = conn.execute("SELECT title FROM videos WHERE source=? AND channel=? AND msg=?", (sid, channel, img)).fetchone()
+                title = _display_title(prow["title"]) if prow else ""
+                if title:
+                    break
+        if not title:
+            cands = [_display_title(r["title"]) for r, _, _ in eps] + [_display_title(r["file_name"]) for r, _, _ in eps]
+            cands = [c for c in cands if c]
+            title = max(cands, key=lambda c: (c.count(" "), -len(c))) if cands else key
+        for r, season, ep in eps:
+            links.append((sid, channel, r["msg"], key, title, season, ep, int(r["msg"] == rep)))
+    with conn:
+        conn.execute("DELETE FROM series WHERE source=? AND channel=?", (sid, channel))
+        conn.executemany("INSERT INTO series(source,channel,video,skey,title,season,ep,rep) VALUES(?,?,?,?,?,?,?,?)", links)
+    return len({x[3] for x in links})
+
+
+def link_series(sid, channel):
+    with db() as conn:
+        return _link_series(conn, sid, channel)
+
+
+def _series_map(conn, sid, rows, user=""):
+    """목록의 대표 회차 -> 시리즈 정보 {key, title, count, unwatched}"""
+    reps = {(r["channel"], r["msg"]) for r in rows if r["kind"] == "video"}
+    if not reps:
+        return {}
+    chans = {c for c, _ in reps}
+    marks = ",".join("?" * len(chans))
+    srows = conn.execute(f"SELECT channel, video, skey, title, rep FROM series WHERE source=? AND channel IN ({marks})",
+                         [sid, *chans]).fetchall()
+    keys = {(s["channel"], s["skey"]) for s in srows if s["rep"] and (s["channel"], s["video"]) in reps}
+    if not keys:
+        return {}
+    watched = {(p["channel"], p["msg"]) for p in conn.execute(
+        "SELECT channel, msg FROM user_progress WHERE source=? AND user=? AND watched=1", (sid, user)).fetchall()}
+    info = {}
+    for s in srows:
+        k = (s["channel"], s["skey"])
+        if k not in keys:
+            continue
+        d = info.setdefault(k, {"key": s["skey"], "title": s["title"], "count": 0, "unwatched": 0, "rep": None})
+        d["count"] += 1
+        d["unwatched"] += (s["channel"], s["video"]) not in watched
+        if s["rep"]:
+            d["rep"] = s["video"]
+    return {(c, d["rep"]): {k: v for k, v in d.items() if k != "rep"} for (c, _), d in info.items()}
+
+
+def series_episodes(sid, channel, key, user=""):
+    """시리즈의 회차들 (시즌, 회차 순). 없으면 None"""
+    with db() as conn:
+        srows = conn.execute("SELECT video, title, season, ep FROM series WHERE source=? AND channel=? AND skey=? "
+                             "ORDER BY season, ep, video", (sid, channel, key)).fetchall()
+        if not srows:
+            return None
+        rows = {r["msg"]: r for r in conn.execute(
+            f"SELECT * FROM videos WHERE source=? AND channel=? AND msg IN ({','.join('?' * len(srows))})",
+            [sid, channel, *[s["video"] for s in srows]]).fetchall()}
+        vids = list(rows.values())
+        prog, posters = _progress_map(conn, sid, vids, user), _poster_map(conn, sid, vids)
+    eps = [{**_row(rows[s["video"]], prog, posters), "season": s["season"], "ep": s["ep"]} for s in srows if s["video"] in rows]
+    return {"key": key, "title": srows[0]["title"], "channel": channel, "episodes": eps}
+
+
+def series_of(sid, channel, msg):
+    """이 영상이 시리즈의 회차면 {key, title, season, ep, next: {msg, title} 또는 None}"""
+    with db() as conn:
+        me = conn.execute("SELECT skey, title, season, ep FROM series WHERE source=? AND channel=? AND video=?",
+                          (sid, channel, msg)).fetchone()
+        if not me:
+            return None
+        nxt = conn.execute(
+            "SELECT s.video, v.title FROM series s JOIN videos v ON v.source=s.source AND v.channel=s.channel AND v.msg=s.video "
+            "WHERE s.source=? AND s.channel=? AND s.skey=? AND (s.season > ? OR (s.season = ? AND s.ep > ?)) "
+            "ORDER BY s.season, s.ep, s.video LIMIT 1", (sid, channel, me["skey"], me["season"], me["season"], me["ep"])).fetchone()
+    return {"key": me["skey"], "title": me["title"], "season": me["season"], "ep": me["ep"],
+            "next": {"msg": nxt["video"], "title": nxt["title"]} if nxt else None}
+
+
 def video_subs(sid, channel, msg):
     """이 영상에 붙은 자막 파일들 [{msg, name}] (메시지 순서)"""
     with db() as conn:
@@ -600,7 +737,7 @@ def _channel_clause(channels, kinds, col=""):
     return "(" + " OR ".join(parts) + ")", args
 
 
-def query_videos(sid, channels, offset=0, limit=40, q="", sort="latest", user="", kind="", kinds=None):
+def query_videos(sid, channels, offset=0, limit=40, q="", sort="latest", user="", kind="", kinds=None, group=False):
     """kind: "video" / "image" / ""(둘 다 - 영상의 포스터로 짝지은 사진은 뺌). kinds: 채널마다 정한 종류"""
     if not channels:
         return [], 0
@@ -614,6 +751,10 @@ def query_videos(sid, channels, offset=0, limit=40, q="", sort="latest", user=""
         where += " AND kind IN ('video','image')"   # 자막 파일은 목록에 안 보임 (영상에 붙음)
         where += (" AND NOT (kind='image' AND EXISTS (SELECT 1 FROM posters p WHERE p.source=videos.source"
                   " AND p.channel=videos.channel AND p.image=videos.msg))")
+    if group and kind != "image":
+        # 시리즈는 가장 최근 회차 하나만 (나머지 회차는 시리즈 화면에서)
+        where += (" AND NOT EXISTS (SELECT 1 FROM series s WHERE s.source=videos.source AND s.channel=videos.channel"
+                  " AND s.video=videos.msg AND s.rep=0)")
     if q:
         where += " AND (title LIKE ? OR caption LIKE ? OR file_name LIKE ?)"
         like = f"%{q}%"
@@ -625,7 +766,13 @@ def query_videos(sid, channels, offset=0, limit=40, q="", sort="latest", user=""
                             [*args, int(limit), int(offset)]).fetchall()
         prog = _progress_map(conn, sid, rows, user)
         posters = _poster_map(conn, sid, rows)
-    return [_row(r, prog, posters) for r in rows], total
+        series = _series_map(conn, sid, rows, user) if group else {}
+    out = [_row(r, prog, posters) for r in rows]
+    for d in out:
+        s = series.get((d["channel"], d["msg"]))
+        if s:
+            d["series"] = s
+    return out, total
 
 
 # 큰 영상을 여러 파일로 나눠 올린 경우: "이름_0000", "이름_0001" / "이름.001" / "이름 part2" / "이름 CD2"
@@ -770,7 +917,7 @@ def forget_source(sid):
     """소스를 지우면 그 색인/진행 기록도 지운다 (세션 파일은 TelegramSource.logout이)."""
     media_cache.STORE.drop_prefix(f"tg:{sid}:")
     with db() as conn:
-        for table in ("videos", "sync_state", "peers", "progress", "user_progress", "probes", "posters", "subs"):
+        for table in ("videos", "sync_state", "peers", "progress", "user_progress", "probes", "posters", "subs", "series"):
             conn.execute(f"DELETE FROM {table} WHERE source=?", (sid,))
     shutil.rmtree(os.path.join(config_store.DATA_DIR, "telegram_images", sid), ignore_errors=True)
 
@@ -965,6 +1112,7 @@ class TelegramSource:
         if items:
             link_posters(self.sid, channel)
             link_subs(self.sid, channel)
+            link_series(self.sid, channel)
         # 새로 찾은 영상의 썸네일은 화면이 달라고 하기 전에 뒤에서 미리 받아 둔다
         wanted = [it["msg"] for it in items if it["has_thumb"]][:THUMB_PREFETCH]
         if wanted:
@@ -995,7 +1143,7 @@ class TelegramSource:
             save_sync_state(self.sid, channel, oldest=min(ids + [st["oldest"]]), complete=int(len(ids) < SCAN_BATCH))
             return bool(ids)
 
-    async def videos(self, channels, offset=0, limit=40, q="", sort="latest", fill=True, user="", kind=""):
+    async def videos(self, channels, offset=0, limit=40, q="", sort="latest", fill=True, user="", kind="", group=False):
         """목록. 이미 색인한 채널은 DB에서 바로 돌려주고 새 영상 받기는 뒤에서 한다 (기다리지 않음).
 
         - 처음 보는 채널만 첫 SCAN_BATCH개를 받을 때까지 기다린다 (보여줄 게 없으니까)
@@ -1017,13 +1165,13 @@ class TelegramSource:
             elif time.time() - st["latest_at"] >= LATEST_SYNC_SEC:
                 self.background(("latest", c), lambda c=c: self.sync_latest(c))
                 syncing = True
-        rows, total = query_videos(self.sid, channels, offset, limit, q, sort, user, kind, self.kinds)
+        rows, total = query_videos(self.sid, channels, offset, limit, q, sort, user, kind, self.kinds, group)
         if fill and len(channels) == 1 and not q and sort == "latest":
             ch = channels[0]
             for _ in range(OLDER_BATCHES_PER_PAGE):
                 if len(rows) >= limit or not await self.sync_older(ch):
                     break
-                rows, total = query_videos(self.sid, channels, offset, limit, q, sort, user, kind, self.kinds)
+                rows, total = query_videos(self.sid, channels, offset, limit, q, sort, user, kind, self.kinds, group)
             ahead = total - (offset + len(rows))
             if ahead < limit * 2 and not sync_state(self.sid, ch)["complete"]:
                 self.background(("older", ch), lambda: self.sync_older(ch))

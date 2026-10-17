@@ -973,7 +973,8 @@ async def tg_videos(request, tg):
         channels = mine
     data = await tg.videos(channels, offset=_int_arg(request, "offset"), limit=_int_arg(request, "limit", 40, 1, 200),
                            q=request.query.get("q", "").strip(), sort=request.query.get("sort", "latest"),
-                           user=username(request), kind=request.query.get("kind", ""))
+                           user=username(request), kind=request.query.get("kind", ""),
+                           group=request.query.get("group") == "1")
     return web.json_response({"success": True, **data})
 
 
@@ -1001,7 +1002,7 @@ async def tg_home(request, tg):
     """홈 줄: 이어보기 + 채널마다 최신 영상 몇 개. 채널들을 동시에, 오래된 쪽 채우기 없이."""
     async def one(ch):
         try:
-            data = await tg.videos([ch], limit=12, fill=False, user=username(request), kind="video")
+            data = await tg.videos([ch], limit=12, fill=False, user=username(request), kind="video", group=True)
         except telegram_src.TgError:
             raise
         except Exception as e:
@@ -1036,11 +1037,24 @@ async def tg_video(request, tg):
     if not row:
         return _json_error(404, "색인에 없는 영상입니다.")
     row = {**row, "parts": telegram_src.video_parts(tg.sid, channel, msg, user=username(request)),
-           "subs": telegram_src.video_subs(tg.sid, channel, msg)}
+           "subs": telegram_src.video_subs(tg.sid, channel, msg),
+           "series": telegram_src.series_of(tg.sid, channel, msg)}
     if request.query.get("probe"):
         await tg.authorized_client()
         row = {**row, "play": await _tg_decision(request, tg, channel, msg)}
     return web.json_response({"success": True, "item": row})
+
+
+@telegram_api
+async def tg_series(request, tg):
+    """시리즈 회차 목록 GET /api/tg/{sid}/series/{channel}?key=작품이름키"""
+    channel = int(request.match_info["channel"])
+    if channel not in _user_channels(request, tg):
+        return _json_error(404, "설정에서 고르지 않은 채널입니다.")
+    data = telegram_src.series_episodes(tg.sid, channel, request.query.get("key", ""), user=username(request))
+    if not data:
+        return _json_error(404, "시리즈를 찾을 수 없습니다.")
+    return web.json_response({"success": True, **data})
 
 
 @telegram_api
@@ -2101,6 +2115,7 @@ def create_app(require_auth=True):
     app.router.add_get(r"/api/tg/{sid}/thumb/{channel:-?\d+}/{msg:\d+}", tg_thumb)
     app.router.add_get(r"/api/tg/{sid}/image/{channel:-?\d+}/{msg:\d+}", tg_image)
     app.router.add_get(r"/api/tg/{sid}/sub/{channel:-?\d+}/{msg:\d+}", tg_subtitle)
+    app.router.add_get(r"/api/tg/{sid}/series/{channel:-?\d+}", tg_series)
     app.router.add_post("/api/tg/{sid}/progress", tg_progress)
     app.router.add_route("*", "/api/plex/{sid}/{tail:.*}", plex_proxy)
     app.router.add_get("/s/{token}/{path:.+}", versioned_static)
