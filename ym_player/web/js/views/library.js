@@ -65,7 +65,7 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
             countEl,
             randomBtn,
             p.kind === 'plex' ? h('label', { class: 'check' }, unwatchedChk, ' 안 본 것만') : null,
-            kindSel ? h('label', { class: 'muted' }, '보기 ', kindSel) : null,
+            kindSel ? h('label', { class: 'muted' }, `${p.libraryKindLabel ? p.libraryKindLabel() : '보기'} `, kindSel) : null,
             h('label', { class: 'muted' }, '정렬 ', sortSel)),
         grid, sentinel);
 

@@ -231,19 +231,42 @@ export async function renderSettings(main, _params, query, ctx) {
      * 비워 두고 저장하면 서버가 기본 재즈 방송국 3개를 넣는다.
      */
     function stationEditor(src) {
-        const toText = (list) => (list || []).map((s) => [s.name, s.url, s.subtitle, s.homepage].filter((v, k) => v || k < 2).join(' | ')).join('\n');
+        // 한 줄에 하나: 이름 | 스트림 주소 | 설명 | 홈페이지 | 분류(지역 등). 뒤쪽 빈 칸은 줄인다
+        const toText = (list) => (list || []).map((s) => {
+            const cols = [s.name, s.url, s.subtitle || '', s.homepage || '', s.group || ''];
+            while (cols.length > 2 && !cols[cols.length - 1]) cols.pop();
+            return cols.join(' | ');
+        }).join('\n');
         const area = h('textarea', {
-            class: 'input url-list', rows: Math.max(3, (src.stations || []).length + 1), spellcheck: false, text: toText(src.stations),
-            placeholder: '이름 | 스트림 주소 | 설명 | 홈페이지\n비워 두고 저장하면 기본 재즈 방송국 3개(RelaxingJazz, Radio Swiss Jazz, Jazz24)를 넣습니다.',
+            class: 'input url-list', rows: Math.min(14, Math.max(3, (src.stations || []).length + 1)), spellcheck: false, text: toText(src.stations),
+            placeholder: '이름 | 스트림 주소 | 설명 | 홈페이지 | 분류\n비워 두고 저장하면 기본 재즈 방송국 3개(RelaxingJazz, Radio Swiss Jazz, Jazz24)를 넣습니다.',
         });
-        area.addEventListener('input', () => {
+        const parse = () => {
             const old = new Map((src.stations || []).map((s) => [s.name, s.id]));
             src.stations = area.value.split('\n').map((line) => line.split('|').map((x) => x.trim()))
                 .filter(([name, url]) => name && url)
-                .map(([name, url, subtitle = '', homepage = '']) => ({ id: old.get(name), name, url, subtitle, homepage }));
+                .map(([name, url, subtitle = '', homepage = '', group = '']) => ({ id: old.get(name), name, url, subtitle, homepage, group }));
             touch();
-        });
-        return field('방송국', area, 'MP3/AAC 인터넷 라디오(Icecast/SHOUTcast) 주소. 곡 정보를 보내는 방송국은 지금 나오는 곡과 앨범 표지가 보입니다.');
+        };
+        area.addEventListener('input', parse);
+        // 한국 지역 라디오(radio.bsod.kr 지역별 목록)를 지역 분류와 함께 더한다. 이미 있는 주소는 건너뜀
+        const krBtn = h('button', { class: 'btn btn-sm', type: 'button', on: { click: async (e) => {
+            e.preventDefault();
+            const { KR_RADIO } = await import('../data/kr_radio.js');
+            parse();
+            const have = new Set((src.stations || []).map((st) => st.url));
+            const add = KR_RADIO.filter((st) => !have.has(st.url));
+            if (!add.length) { toast('한국 지역 라디오가 이미 다 들어 있습니다.'); return; }
+            area.value = [area.value.trim(), toText(add)].filter(Boolean).join('\n');
+            area.rows = 14;
+            parse();
+            toast(`한국 지역 라디오 ${add.length}개를 더했습니다. [저장]을 누르면 적용됩니다.`);
+        } } }, icon('map-location-dot'), ' 한국 지역 라디오 넣기');
+        return h('div', {},
+            field('방송국', area, 'MP3/AAC/Ogg(Icecast/SHOUTcast)·HLS 인터넷 라디오 주소. 곡 정보를 보내는 방송국은 지금 나오는 곡과 앨범 표지가 보입니다. '
+                + '분류를 적으면 방송국 화면에서 분류(지역)별로 골라 볼 수 있습니다.'),
+            h('div', { class: 'toolbar' }, krBtn,
+                h('span', { class: 'field-hint', text: 'KBS·MBC·SBS 지역국, EBS, CBS, TBN, 공동체 라디오 등 194개 (전국 + 9개 지역, radio.bsod.kr 목록)' })));
     }
 
     function bindInput(src, key, input, kind = 'value') {

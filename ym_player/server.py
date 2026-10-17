@@ -410,13 +410,22 @@ async def _radio_now(app, station):
     return now
 
 
+RADIO_NOW_MAX = 60   # 한 번에 곡 정보를 알아보는 방송국 수 (방송국이 많으면 화면에 보이는 것만 ?ids=로)
+
+
 async def radio_now(request):
-    """GET /api/radio/{sid}/now -> 방송국마다 지금 나오는 곡 (15초 캐시)."""
+    """GET /api/radio/{sid}/now[?ids=a,b] -> 방송국마다 지금 나오는 곡 (15초 캐시).
+    방송국이 수백 개일 수 있어서 ids(화면에 보이는 것·재생 중인 것)만, 없으면 앞에서 RADIO_NOW_MAX개만."""
     src = _source_or_404(request.match_info["sid"], "radio", request)
     stations = src.get("stations") or []
     allowed = auth.allowed_libraries(request.get("user"), src["id"])
     if allowed is not None:
         stations = [st for st in stations if st["id"] in allowed]
+    ids = [x for x in request.query.get("ids", "").split(",") if x]
+    if ids:
+        want = set(ids)
+        stations = [st for st in stations if st["id"] in want]
+    stations = stations[:RADIO_NOW_MAX]
     nows = await asyncio.gather(*(_radio_now(request.app, st) for st in stations))
     return web.json_response({"success": True, "now": {st["id"]: n for st, n in zip(stations, nows)}})
 
