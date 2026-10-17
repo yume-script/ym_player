@@ -223,8 +223,17 @@ class Player {
         v.addEventListener('volumechange', () => this._syncVolume());
         v.addEventListener('waiting', () => { if (this.pb && !this.msgEl.classList.contains('error')) this._spinner(true); });
         v.addEventListener('playing', () => this._spinner(false));
-        v.addEventListener('enterpictureinpicture', () => this._onPipEnter());
-        v.addEventListener('leavepictureinpicture', () => this._onPipLeave());
+        v.addEventListener('enterpictureinpicture', () => {
+            // 라디오를 브라우저 쪽 방법(도구막대 미디어 조작, 오른쪽 클릭 PIP, 탭 전환 자동 PIP, 아이패드 홈 버튼)으로
+            // 띄워도 영상이 없어 검게 나온다 -> 그림 창으로 바로 바꾼다 (이미 PiP 중이면 다시 누르지 않아도 바꿀 수 있음)
+            if (this.pb && this.pb.audioOnly && PipArt.supported()) this._openPipArt(true);
+            this._onPipEnter();
+        });
+        v.addEventListener('leavepictureinpicture', () => {
+            // 그림 창으로 바꾸느라 원래 <video>의 PiP가 닫힌 것이면 무시 (안 그러면 새 창까지 닫아 버림)
+            if (this._pipSwap || (this.pipArt && (this.pipArt.active || document.pictureInPictureElement === this.pipArt.video))) return;
+            this._onPipLeave();
+        });
         return v;
     }
 
@@ -791,6 +800,8 @@ class Player {
             else this.seekBy(30);
         });
         on('seekbackward', () => this.seekBy(-10));
+        // Chrome 도구막대 미디어 조작의 PIP 버튼·탭 전환 자동 PIP -> 우리 방식으로 (라디오는 그림 창)
+        on('enterpictureinpicture', () => this.togglePip());
         on('seekforward', () => this.seekBy(30));
     }
 
@@ -840,12 +851,26 @@ class Player {
         try {
             if (document.pictureInPictureElement) return await document.exitPictureInPicture();
             // 라디오처럼 소리만 있으면 영상 대신 앨범 표지·시각화를 그린 창으로 (pipart.js). 안 되면 원래대로
-            if (this.pb && this.pb.audioOnly && PipArt.supported()) {
-                this.pipArt = this.pipArt || new PipArt(this);
-                try { return await this.pipArt.open(); } catch (e) { console.warn('[Player] 그림 PiP 실패, 원래 방식으로:', e); }
-            }
+            if (this.pb && this.pb.audioOnly && PipArt.supported() && await this._openPipArt()) return;
             await this.video.requestPictureInPicture();
         } catch (e) { toast('이 브라우저는 화면 속 화면을 지원하지 않습니다.', 'error'); }
+    }
+
+    /** 라디오 그림 PiP 창 열기. 실패하면 이유를 화면에 알리고 false (원래 방식으로) */
+    async _openPipArt(swap = false) {
+        this.pipArt = this.pipArt || new PipArt(this);
+        if (this.pipArt.active) return true;
+        this._pipSwap = true;
+        try {
+            await this.pipArt.open();
+            return true;
+        } catch (e) {
+            console.warn('[Player] 그림 PiP 실패:', e);
+            toast(`앨범 표지 PiP를 열지 못했습니다${swap ? '' : ' (검은 화면 PiP로 엽니다)'}: ${e.name || ''} ${e.message || e}`, 'error', 8000);
+            return false;
+        } finally {
+            setTimeout(() => { this._pipSwap = false; }, 500);
+        }
     }
 
     /**
