@@ -661,7 +661,7 @@ def test_existing_index_titles_are_repaired_once(monkeypatch, tmp_path):
     row = telegram_src.get_video("tg", 1, 2)
     assert row["title"] == "영화" and row["file_name"] == "영화.mkv"
     with telegram_src.db() as c:
-        assert c.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert c.execute("PRAGMA user_version").fetchone()[0] == 7
 
 
 def test_split_parts_are_grouped(monkeypatch, tmp_path):
@@ -876,3 +876,35 @@ def test_channel_kind_limits_lists(monkeypatch, tmp_path):
     src = config_store._clean_source({"id": "t", "type": "telegram", "name": "t", "channels": [
         {"id": 1, "title": "a", "kind": "video"}, {"id": 2, "title": "b", "kind": "bogus"}]}, None)
     assert src["channels"] == [{"id": 1, "title": "a", "kind": "video"}, {"id": 2, "title": "b"}]
+
+
+def test_subtitle_files_are_indexed_linked_and_hidden(monkeypatch, tmp_path):
+    from ym_player import subtitles
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    telegram_src._migrated.discard(str(tmp_path))
+    # 자막 파일 메시지 -> kind subtitle (영상/사진이 아님)
+    sub = video_msg(5, size=2000, name="Movie.2026.1080p.WEB-DL.ko.srt", mime="application/x-subrip",
+                    attrs=[DocumentAttributeFilename("Movie.2026.1080p.WEB-DL.ko.srt")])
+    item = telegram_src.message_to_media(sub)
+    assert item["kind"] == "subtitle" and item["file_name"].endswith(".srt")
+    rows = [(1, "video", "Movie 2026", "Movie.2026.1080p.WEB-DL.mkv"),
+            (2, "image", "포스터", ""),
+            (3, "video", "쇼.E05.261001.1080p", "Show.E05.mkv"),
+            (4, "subtitle", "쇼 5화", "쇼 5화.smi"),                       # 이름은 달라도 회차가 같고 바로 옆
+            (5, "subtitle", "Movie.2026.1080p.WEB-DL.ko", "Movie.2026.1080p.WEB-DL.ko.srt"),  # 파일 이름이 같으면 멀어도
+            (6, "subtitle", "Movie.2026.1080p.WEB-DL.en", "Movie.2026.1080p.WEB-DL.en.srt"),
+            (7, "subtitle", "아무 자막", "random.ass")]                    # 짝 없음
+    with telegram_src.db() as conn:
+        conn.executemany(
+            "INSERT INTO videos(source,channel,msg,title,caption,file_name,mime,duration,size,width,height,date,has_thumb,kind)"
+            " VALUES('tg',1,?,?,'',?,'video/mp4',60,1,1,1,'2026-10-14T10:00:00+00:00',0,?)",
+            [(m, t, f, k) for m, k, t, f in rows])
+    assert telegram_src.link_subs("tg", 1) == 3
+    assert [s["msg"] for s in telegram_src.video_subs("tg", 1, 1)] == [5, 6]
+    assert [s["msg"] for s in telegram_src.video_subs("tg", 1, 3)] == [4]
+    listed, total = telegram_src.query_videos("tg", [1], limit=50)
+    assert {r["kind"] for r in listed} == {"video", "image"} and total == 3   # 자막 파일은 목록에 없음
+    # 서버 변환 스트림용: 자막 시각을 당긴다
+    vtt = subtitles.to_vtt(b"1\n00:00:05,000 --> 00:00:07,000\nA\n\n2\n00:01:05,000 --> 00:01:07,500\nB\n", "srt")
+    shifted = subtitles.shift_vtt(vtt, 60)
+    assert "A" not in shifted.split("\n") and "00:00:05.000 --> 00:00:07.500" in shifted and "B" in shifted

@@ -166,6 +166,8 @@ def fix_text(value):
 
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif", ".heic", ".heif"}
+SUB_EXTS = {".srt", ".smi", ".sami", ".ass", ".ssa", ".vtt"}   # 영상 옆에 올린 자막 파일 (영상에 자동으로 붙임)
+SUB_MAX_BYTES = 5 * 1024 * 1024
 IMAGE_MAX_BYTES = 40 * 1024 * 1024   # 뷰어로 열 이미지 파일 크기 한도 (그보다 크면 썸네일만)
 
 
@@ -214,6 +216,12 @@ def message_to_media(msg):
         if getattr(attr, "file_name", None):
             file_name = fix_text(attr.file_name)
     ext = os.path.splitext(file_name.lower())[1]
+    if not is_video and ext in SUB_EXTS and int(getattr(doc, "size", 0) or 0) <= SUB_MAX_BYTES:
+        date = getattr(msg, "date", None)
+        return {"msg": int(msg.id), "kind": "subtitle", "title": os.path.splitext(file_name)[0][:300],
+                "caption": fix_text(getattr(msg, "message", "") or "")[:4000], "file_name": file_name,
+                "mime": mime or "text/plain", "duration": 0, "size": int(getattr(doc, "size", 0) or 0),
+                "width": 0, "height": 0, "date": date.isoformat() if date else "", "has_thumb": 0}
     is_image = not is_video and ((mime.startswith("image/") and mime != "image/svg+xml") or ext in IMAGE_EXTS)
     if is_image:
         for attr in getattr(doc, "attributes", None) or []:
@@ -278,6 +286,8 @@ CREATE TABLE IF NOT EXISTS user_progress(source TEXT, user TEXT, channel INTEGER
 CREATE TABLE IF NOT EXISTS posters(source TEXT, channel INTEGER, video INTEGER, image INTEGER,
     PRIMARY KEY(source, channel, video));
 CREATE INDEX IF NOT EXISTS posters_by_image ON posters(source, channel, image);
+CREATE TABLE IF NOT EXISTS subs(source TEXT, channel INTEGER, video INTEGER, sub INTEGER,
+    PRIMARY KEY(source, channel, sub));
 """
 # 이어보기는 사용자마다 따로 (user_progress). 예전 progress(사용자 구분 없음)는 처음 한 번 MIGRATE_USER 몫으로 옮긴다.
 MIGRATE_USER = ""
@@ -312,6 +322,11 @@ def db():
             for sid, ch in conn.execute("SELECT DISTINCT source, channel FROM videos").fetchall():
                 _link_posters(conn, sid, ch)
             conn.execute("PRAGMA user_version = 6")
+        if conn.execute("PRAGMA user_version").fetchone()[0] < 7:
+            # 자막 파일도 색인한다 -> 예전에 훑은 채널은 자막을 건너뛰었으니 처음부터 다시 훑게
+            with conn:
+                conn.execute("DELETE FROM sync_state")
+            conn.execute("PRAGMA user_version = 7")
     return conn
 
 
@@ -413,8 +428,8 @@ def _ts(date):
 
 
 def _link_posters(conn, sid, channel):
-    rows = conn.execute("SELECT msg, kind, title, file_name, date FROM videos WHERE source=? AND channel=? ORDER BY msg",
-                        (sid, channel)).fetchall()
+    rows = conn.execute("SELECT msg, kind, title, file_name, date FROM videos WHERE source=? AND channel=? "
+                        "AND kind IN ('video','image') ORDER BY msg", (sid, channel)).fetchall()
     keys = [_media_key(r["title"], r["file_name"]) for r in rows]
     times = [_ts(r["date"]) for r in rows]
     links = []
@@ -467,6 +482,64 @@ def _log_posters(rows, keys, links, channel):
 def link_posters(sid, channel):
     with db() as conn:
         return _link_posters(conn, sid, channel)
+
+
+# ---------------------------------------------------------------------------
+# 자막 짝짓기: 영상 옆에 올린 자막 파일(.srt/.smi/.ass...)을 그 영상의 자막으로.
+#  1) 파일 이름이 같으면 (언어 꼬리 .ko/.kor/.en 따위는 빼고) 거리와 상관없이
+#  2) 아니면 앞뒤 3개 메시지 안의 영상 중 작품 이름이나 회차가 맞는 것 (포스터 짝짓기와 같은 규칙)
+# 영상 하나에 자막 여러 개(한국어/영어)도 된다.
+# ---------------------------------------------------------------------------
+SUB_NEAR = 3
+_SUB_LANG_TAIL = re.compile(r"[._ -](?:ko|kor|korean|kr|en|eng|english|jp|jpn|ja|chs|cht|zh|한글|한국어|영어)$", re.I)
+
+
+def _stem(name):
+    stem = os.path.splitext(name or "")[0].strip()
+    return _SUB_LANG_TAIL.sub("", stem).casefold()
+
+
+def _link_subs(conn, sid, channel):
+    rows = conn.execute("SELECT msg, kind, title, file_name FROM videos WHERE source=? AND channel=? "
+                        "AND kind IN ('video','subtitle') ORDER BY msg", (sid, channel)).fetchall()
+    by_stem = {}
+    for r in rows:
+        if r["kind"] == "video" and r["file_name"]:
+            by_stem.setdefault(_stem(r["file_name"]), r["msg"])
+    links = []
+    for i, r in enumerate(rows):
+        if r["kind"] != "subtitle":
+            continue
+        video = by_stem.get(_stem(r["file_name"]))
+        if video is None:
+            key = _media_key(r["title"], r["file_name"])
+            best = 0
+            for j in range(max(0, i - SUB_NEAR), min(len(rows), i + SUB_NEAR + 1)):
+                if rows[j]["kind"] != "video":
+                    continue
+                score = _poster_score(key, _media_key(rows[j]["title"], rows[j]["file_name"])) - 0.01 * abs(i - j)
+                if score >= 1.4 and score > best:
+                    video, best = rows[j]["msg"], score
+        if video is not None:
+            links.append((sid, channel, video, r["msg"]))
+    with conn:
+        conn.execute("DELETE FROM subs WHERE source=? AND channel=?", (sid, channel))
+        conn.executemany("INSERT INTO subs(source,channel,video,sub) VALUES(?,?,?,?)", links)
+    return len(links)
+
+
+def link_subs(sid, channel):
+    with db() as conn:
+        return _link_subs(conn, sid, channel)
+
+
+def video_subs(sid, channel, msg):
+    """이 영상에 붙은 자막 파일들 [{msg, name}] (메시지 순서)"""
+    with db() as conn:
+        rows = conn.execute("SELECT v.msg, v.file_name FROM subs s JOIN videos v ON v.source=s.source AND v.channel=s.channel "
+                            "AND v.msg=s.sub WHERE s.source=? AND s.channel=? AND s.video=? ORDER BY v.msg",
+                            (sid, channel, msg)).fetchall()
+    return [{"msg": r["msg"], "name": r["file_name"]} for r in rows]
 
 
 def _poster_map(conn, sid, rows):
@@ -538,6 +611,7 @@ def query_videos(sid, channels, offset=0, limit=40, q="", sort="latest", user=""
         where += " AND kind=?"
         args.append(kind)
     else:
+        where += " AND kind IN ('video','image')"   # 자막 파일은 목록에 안 보임 (영상에 붙음)
         where += (" AND NOT (kind='image' AND EXISTS (SELECT 1 FROM posters p WHERE p.source=videos.source"
                   " AND p.channel=videos.channel AND p.image=videos.msg))")
     if q:
@@ -696,7 +770,7 @@ def forget_source(sid):
     """소스를 지우면 그 색인/진행 기록도 지운다 (세션 파일은 TelegramSource.logout이)."""
     media_cache.STORE.drop_prefix(f"tg:{sid}:")
     with db() as conn:
-        for table in ("videos", "sync_state", "peers", "progress", "user_progress", "probes"):
+        for table in ("videos", "sync_state", "peers", "progress", "user_progress", "probes", "posters", "subs"):
             conn.execute(f"DELETE FROM {table} WHERE source=?", (sid,))
     shutil.rmtree(os.path.join(config_store.DATA_DIR, "telegram_images", sid), ignore_errors=True)
 
@@ -890,6 +964,7 @@ class TelegramSource:
         upsert_videos(self.sid, channel, items)
         if items:
             link_posters(self.sid, channel)
+            link_subs(self.sid, channel)
         # 새로 찾은 영상의 썸네일은 화면이 달라고 하기 전에 뒤에서 미리 받아 둔다
         wanted = [it["msg"] for it in items if it["has_thumb"]][:THUMB_PREFETCH]
         if wanted:
@@ -1030,6 +1105,26 @@ class TelegramSource:
 
     def _thumb_path(self, channel, msg):
         return os.path.join(config_store.DATA_DIR, "telegram_thumbs", self.sid, f"{int(channel)}_{int(msg)}.jpg")
+
+    def _sub_path(self, channel, msg):
+        return os.path.join(config_store.DATA_DIR, "telegram_subs", self.sid, f"{int(channel)}_{int(msg)}.bin")
+
+    async def subtitle_bytes(self, channel, msg):
+        """자막 파일 내용 (작아서 통째로 받고 data/telegram_subs/에 둔다)"""
+        path = self._sub_path(channel, msg)
+        if os.path.exists(path):
+            with open(path, "rb") as f:
+                return f.read()
+        client = await self.authorized_client()
+        m = await self._message(channel, msg)
+        data = await client.download_media(m, file=bytes)
+        if not data:
+            raise TgError("자막 파일을 받지 못했습니다.")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path + ".tmp", "wb") as f:
+            f.write(data)
+        os.replace(path + ".tmp", path)
+        return data
 
     async def thumbnail(self, channel, msg):
         """썸네일 파일 경로. 같은 썸네일을 여러 요청이 동시에 달라고 해도 한 번만 받는다."""

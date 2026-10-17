@@ -157,6 +157,35 @@ def ass_to_vtt(text):
     return _vtt(cues)
 
 
+_VTT_CUE = re.compile(r"^(\d{2,}):(\d{2}):(\d{2})\.(\d{3}) --> (\d{2,}):(\d{2}):(\d{2})\.(\d{3})(.*)$")
+
+
+def shift_vtt(vtt: str, sec: float) -> str:
+    """WebVTT의 모든 자막 시각을 sec초 앞당긴다 (서버 변환 스트림은 요청한 위치가 0초라서).
+    다 지나간 자막은 빼고, 걸쳐 있는 자막은 0초부터."""
+    if not sec:
+        return vtt
+    shift = int(round(sec * 1000))
+    out, skip = [], False
+    for line in vtt.split("\n"):
+        m = _VTT_CUE.match(line.strip())
+        if m:
+            g = [int(x) for x in m.groups()[:8]]
+            start = ((g[0] * 60 + g[1]) * 60 + g[2]) * 1000 + g[3] - shift
+            end = ((g[4] * 60 + g[5]) * 60 + g[6]) * 1000 + g[7] - shift
+            skip = end <= 0
+            if not skip:
+                out.append(f"{_ts(max(0, start))} --> {_ts(end)}{m.group(9)}")
+            continue
+        if skip:
+            if not line.strip():
+                skip = False
+                out.append(line)
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
 def to_vtt(data: bytes, codec: str = "") -> str:
     """codec(Plex가 알려준 형식)을 우선하되, 내용을 보고도 판단한다."""
     text = decode(data)
