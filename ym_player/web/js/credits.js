@@ -95,6 +95,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 54,
+        "version": "1.1.17",
+        "date": "2026-10-17",
+        "title": "텔레그램: 회차 영상을 시리즈 카드로 묶기 (회차 목록, 다음 볼 회차 재생, 끝나면 다음 회차, 시리즈 전체 봤음)"
+    },
+    {
         "pr": 53,
         "version": "1.1.16",
         "date": "2026-10-17",
