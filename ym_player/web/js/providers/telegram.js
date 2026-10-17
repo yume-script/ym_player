@@ -112,7 +112,7 @@ export class TelegramProvider {
             // 시리즈(회차 묶음) 카드: 가장 최근 회차가 대표. 누르면 회차 목록
             const sid = `series:${v.channel}:${v.series.key}`;
             return {
-                pid: this.id, id: sid, type: 'show', title: v.series.title,
+                pid: this.id, id: sid, type: 'show', playable: true, title: v.series.title,
                 subtitle: [this.channelTitle(v.channel), `${v.series.count}화`, (v.date || '').slice(0, 10)].filter(Boolean).join(' · '),
                 thumb, wideThumb: thumb, shape: 'wide',
                 unwatched: v.series.unwatched, progress: 0,
@@ -222,7 +222,7 @@ export class TelegramProvider {
      * [재생]을 누를 때는 이미 결과가 있게 한다 (텔레그램에서 파일 머리를 받느라 몇 초 걸리는 걸 숨김).
      */
     warm(id) {
-        if (this._warmed.has(id)) return;
+        if (String(id).startsWith('series:') || this._warmed.has(id)) return;
         this._warmed.add(id);
         const [channel, msg] = String(id).split(':');
         fetch(`${this.base}/probe/${channel}/${msg}`, { method: 'POST' }).catch(() => {});
@@ -262,6 +262,11 @@ export class TelegramProvider {
             children, childrenTitle: '회차', childrenStyle: 'episode',
             onDeck: deck ? { ...deck, subtitle: `${deck.epLabel} ${resumeIdx >= 0 ? '이어보기' : '재생'}` } : null,
         };
+    }
+
+    async _seriesNext(id) {
+        const d = await this._seriesDetail(id);
+        return (d.onDeck && d.onDeck.id) || (d.children[0] && d.children[0].id) || null;
     }
 
     async getDetail(id) {
@@ -313,6 +318,8 @@ export class TelegramProvider {
      * 묻지 않는 경우: 조각 이름이 아님 / 다음 조각 자동 재생 / 이 조각을 보던 중 / 앞 조각을 다 봤음
      */
     async confirmPlay(id, opts = {}) {
+        // 시리즈 카드의 [재생] 등 시리즈 아이디로 오면 다음 볼 회차(보던 회차 -> 안 본 첫 회차)로 바꿔서
+        if (String(id).startsWith('series:')) return this._seriesNext(id);
         if (opts.auto) return id;
         const seen = this._seen.get(id);
         if (seen && !looksLikePart(seen)) return id;
@@ -354,6 +361,7 @@ export class TelegramProvider {
      * opts.startAt  이 위치(초)부터 (탐색/다시 시도)
      */
     async getPlayback(id, { fromStart = false, startAt = null } = {}) {
+        if (String(id).startsWith('series:')) id = await this._seriesNext(id);   // (confirmPlay를 거치지 않은 경우에도)
         const v = await this._video(id, true);
         const [channel, msg] = String(id).split(':');
         const play = v.play || { mode: 'direct' };
