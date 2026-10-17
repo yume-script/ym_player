@@ -214,6 +214,7 @@ async function boot() {
     try {
         registry.user = (await api('/api/auth/me')).user;
         const [, prefs] = await Promise.all([registry.load(), loadFavorites()]);
+        registry.prefs = prefs || {};
         if (prefs) loadMyTheme(prefs);
         initVersionNotice(prefs, registry.isAdmin());
     } catch (e) {

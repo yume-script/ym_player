@@ -1011,9 +1011,14 @@ async def tg_home(request, tg):
 
     mine = _user_channels(request, tg)
     rows = [r for r in await asyncio.gather(*(one(ch) for ch in mine)) if r]
+    # 채널이 여럿이면 채널들을 합친 "새로 올라온 영상" 줄도 (사진만 보는 채널은 빼고)
+    recent = []
+    vid_channels = [c for c in mine if tg.kinds.get(c, "") != "image"]
+    if len(vid_channels) > 1:
+        recent = (await tg.videos(vid_channels, limit=30, fill=False, user=username(request), kind="video"))["items"]
     return web.json_response({"success": True,
                               "continue": telegram_src.continue_watching(tg.sid, mine, user=username(request)),
-                              "channels": rows})
+                              "channels": rows, "recent": recent})
 
 
 def _ids(request, tg):

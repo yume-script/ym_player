@@ -95,6 +95,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 52,
+        "version": "1.1.15",
+        "date": "2026-10-17",
+        "title": "텔레그램: 홈에 채널들을 합친 \"새로 올라온 영상\" 줄, 지난번 방문 뒤 올라왔고 아직 안 본 영상에 NEW"
+    },
+    {
         "pr": 51,
         "version": "1.1.14",
         "date": "2026-10-17",

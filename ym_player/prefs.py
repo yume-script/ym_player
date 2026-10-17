@@ -49,8 +49,16 @@ def _version(value):
     return value
 
 
+def _iso_time(value):
+    """텔레그램 "새로 올라온 영상"을 마지막으로 본 시각 (ISO, 영상 date와 같은 꼴)"""
+    value = str(value or "")
+    if value and (len(value) > 40 or not re.fullmatch(r"\d{4}-\d\d-\d\dT[0-9:.+\-Z]*", value)):
+        raise ValueError(f"시각 형식이 아닙니다: {value}")
+    return value
+
+
 # 받아 주는 키와 검사 함수
-KEYS = {"fav_channels": _str_list, "theme": _choice(THEMES), "accent": _choice(ACCENTS), "seen_version": _version}
+KEYS = {"fav_channels": _str_list, "theme": _choice(THEMES), "accent": _choice(ACCENTS), "seen_version": _version, "tg_seen": _iso_time}
 
 
 def _path():
