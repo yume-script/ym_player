@@ -2,11 +2,15 @@
 // 검은 화면만 나왔다. 앨범 표지 + 시각화 + 방송국·곡 이름을 캔버스에 그리고, 그 캔버스를 영상 스트림
 // (canvas.captureStream)으로 만든 작은 <video>를 대신 PiP로 띄운다. 소리는 원래 <video>에서 그대로 나온다.
 // PiP 창의 재생/일시정지 버튼은 이 <video>에 오므로 원래 재생으로 넘겨 준다.
+// Safari(아이패드)는 버튼을 누른 "그 순간"에 PiP를 요청해야 받아 주고, 영상 조각이 하나도 안 나온 <video>는
+// "영상 트랙 없음"으로 거절한다. 그래서 라디오를 틀 때 그림 영상을 미리 만들어 재생해 두고(prepare),
+// 버튼을 누르면 기다리지 않고 바로 요청한다(open).
 import { h } from './util.js';
 import { streamProxyUrl } from './providers/iptv.js';
 
 const SIZE = 480;   // 정사각형 (앨범 표지 모양)
-const FPS = 20;
+const FPS = 20;      // PiP 창이 떠 있을 때
+const IDLE_FPS = 4;  // 미리 준비만 해 둘 때 (라디오 재생 중)
 
 export class PipArt {
     constructor(player) {
@@ -35,8 +39,28 @@ export class PipArt {
     _left() {
         if (!this.active) return;
         this.active = false;
-        this._stop();
+        const pb = this.player.pb;
+        if (pb && pb.audioOnly) this._start(IDLE_FPS); else this.release();
         this.player._onPipLeave();
+    }
+
+    /** 라디오를 틀면 미리: 그림 영상을 만들어 (소리 없이) 재생해 둔다 */
+    prepare() {
+        if (!this.stream) {
+            this._draw();
+            this.stream = this.canvas.captureStream(FPS);
+        }
+        if (this.video.srcObject !== this.stream) this.video.srcObject = this.stream;
+        if (!this.video.isConnected) document.body.appendChild(this.video);
+        if (!this.timer) this._start(IDLE_FPS);
+        if (this.video.paused) this.video.play().catch(() => {});
+    }
+
+    /** 라디오가 아니게 되면(영상 재생·재생 종료) 그리기를 멈춘다 */
+    release() {
+        if (this.active) return;
+        this._stop();
+        if (!this.video.paused) this.video.pause();
     }
 
     /** 원래 재생이 멈추거나 다시 나오면 PiP 창의 버튼 모양도 맞춘다 */
@@ -47,25 +71,22 @@ export class PipArt {
         if (playing) this.video.play().then(done, done); else { this.video.pause(); done(); }
     }
 
-    async open() {
+    /** 누른 그 순간에 불러야 한다 (async가 아님 - 요청 전에 기다리는 일이 없게) */
+    open() {
+        this.prepare();
+        this._start(FPS);
         this._draw();
-        if (!this.stream) this.stream = this.canvas.captureStream(FPS);
-        if (this.video.srcObject !== this.stream) this.video.srcObject = this.stream;
-        if (!this.video.isConnected) document.body.appendChild(this.video);
-        this._start();
-        if (!document.pictureInPictureEnabled) {
-            // Safari 전용 PiP는 누른 그 순간(기다리지 않고) 불러야 받아 준다
-            const playing = this.video.play();
-            await requestPip(this.video);
-            await playing;
-            return;
-        }
-        await this.video.play();
-        await requestPip(this.video);
+        // 미리 준비돼 영상이 나오고 있으면 바로 요청 (Safari는 이때만 받아 줌)
+        if (this.video.readyState >= 2 && !this.video.paused) return Promise.resolve(requestPip(this.video));
+        // 아직이면 재생을 기다렸다가 (Chrome은 받아 줌, Safari는 거절할 수 있음 - 잠시 뒤 다시 누르면 됨)
+        return this.video.play().then(() => requestPip(this.video));
     }
 
-    _start() {
-        if (!this.timer) this.timer = setInterval(() => this._draw(), 1000 / FPS);
+    _start(fps) {
+        if (this.timer && this.fps === fps) return;
+        clearInterval(this.timer);
+        this.fps = fps;
+        this.timer = setInterval(() => this._draw(), 1000 / fps);
     }
 
     _stop() {
