@@ -10,7 +10,7 @@ import { h, icon, clear, fmtClock, fmtHM, storeGet, storeSet, toast, IS_IOS } fr
 import { channelHealth, isFavorite, toggleFavorite } from './providers/iptv.js';
 import { registry } from './providers/index.js';
 import { MODES, Visualizer } from './visualizer.js';
-import { PipArt } from './pipart.js';
+import { PipArt, requestPip, watchWebkitPip } from './pipart.js';
 
 const START_TIMEOUT_MS = 20000;
 const PROGRESS_EVERY_SEC = 10;
@@ -192,7 +192,10 @@ class Player {
         this.root = h('div', { class: 'player hidden' }, this.stage, this.top, this.bottom, this.drawer, this.subMenu, this.optMenu, this.lpMenu, this.vizMenu);
         this._setupMediaSession();
 
+        // 라디오(소리만)는 작은 화면에 영상이 없으니 앨범 표지를 덮어 보여 준다 (곡이 바뀌면 같이)
+        this.miniArt = h('div', { class: 'mini-art hidden' }, icon('radio'));
         this.miniSlot = h('div', { class: 'mini-video', on: { click: () => this.expand() } },
+            this.miniArt,
             h('div', { class: 'mini-pip-note' }, icon('clone'), h('span', { text: '화면 속 화면에서 재생 중' })));
         this.miniTitle = h('b');
         this.miniSub = h('span');
@@ -229,6 +232,7 @@ class Player {
             if (this.pb && this.pb.audioOnly && PipArt.supported()) this._openPipArt(true);
             this._onPipEnter();
         });
+        watchWebkitPip(v, () => this._onPipEnter(), () => this._onPipLeave());
         v.addEventListener('leavepictureinpicture', () => {
             // 그림 창으로 바꾸느라 원래 <video>의 PiP가 닫힌 것이면 무시 (안 그러면 새 창까지 닫아 버림)
             if (this._pipSwap || (this.pipArt && (this.pipArt.active || document.pictureInPictureElement === this.pipArt.video))) return;
@@ -306,6 +310,8 @@ class Player {
         // 라디오 그림 PiP 창을 띄운 채 영상을 틀면 그 창은 닫는다 (영상은 원래 <video>로 다시 PiP)
         if (!pb.audioOnly && this.pipArt && this.pipArt.active) document.exitPictureInPicture().catch(() => {});
         this.posterEl.classList.toggle('hidden', !pb.audioOnly);
+        this.miniArt.classList.toggle('hidden', !pb.audioOnly);
+        this._setMiniArt(pb.audioOnly ? pb.poster : '');
         this.posterEl.style.backgroundImage = pb.audioOnly && pb.poster ? `url("${pb.poster}")` : '';
         this.engineEl.textContent = '';
         this.subMenu.classList.add('hidden');
@@ -847,13 +853,20 @@ class Player {
         else if (this.video.webkitEnterFullscreen) this.video.webkitEnterFullscreen(); // iOS
     }
 
+    _setMiniArt(url) {
+        this.miniArt.style.backgroundImage = url ? `url("${url}")` : '';
+        this.miniArt.classList.toggle('has-img', !!url);
+    }
+
     async togglePip() {
         try {
             if (document.pictureInPictureElement) return await document.exitPictureInPicture();
+            const webkitPip = [this.video, this.pipArt && this.pipArt.video].find((v) => v && v.webkitPresentationMode === 'picture-in-picture');
+            if (webkitPip) return webkitPip.webkitSetPresentationMode('inline');
             // 라디오처럼 소리만 있으면 영상 대신 앨범 표지·시각화를 그린 창으로 (pipart.js). 안 되면 원래대로
             if (this.pb && this.pb.audioOnly && PipArt.supported() && await this._openPipArt()) return;
-            await this.video.requestPictureInPicture();
-        } catch (e) { toast('이 브라우저는 화면 속 화면을 지원하지 않습니다.', 'error'); }
+            await requestPip(this.video);
+        } catch (e) { toast(`이 브라우저는 화면 속 화면을 지원하지 않습니다. (${e.name || ''} ${e.message || e})`, 'error', 6000); }
     }
 
     /** 라디오 그림 PiP 창 열기. 실패하면 이유를 화면에 알리고 false (원래 방식으로) */
@@ -1188,6 +1201,7 @@ class Player {
             if (art && art !== pb.poster) {
                 pb.poster = art;
                 this.posterEl.style.backgroundImage = `url("${art}")`;
+                this._setMiniArt(art);
             }
         }
         this._mediaMeta();
