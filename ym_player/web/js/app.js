@@ -114,7 +114,8 @@ async function buildNav() {
     clear(nav);
     nav.appendChild(navLink('#/home', 'house', '홈'));
     const iptvs = registry.ofKind('iptv');
-    if (iptvs.length) nav.appendChild(navLink('#/live', 'tower-broadcast', '라이브 TV'));
+    // 모든 IPTV 소스를 합친 편성표. 소스가 하나뿐이면 그 소스의 "채널 편성표"와 똑같아서 메뉴에서 뺀다
+    if (iptvs.length > 1) nav.appendChild(navLink('#/live', 'tower-broadcast', '라이브 TV'));
 
     const accordion = registry.providers.length > 1;
     for (const p of registry.providers) {

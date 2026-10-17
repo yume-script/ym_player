@@ -90,6 +90,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 50,
+        "version": "1.1.13",
+        "date": "2026-10-17",
+        "title": "사이드바: IPTV 소스가 하나뿐이면 \"라이브 TV\"(합친 편성표) 메뉴를 빼고 그 소스의 채널 편성표만"
+    },
+    {
         "pr": 49,
         "version": "1.1.12",
         "date": "2026-10-17",
