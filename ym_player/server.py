@@ -1035,11 +1035,32 @@ async def tg_video(request, tg):
     row = telegram_src.get_video(tg.sid, channel, msg, user=username(request))
     if not row:
         return _json_error(404, "색인에 없는 영상입니다.")
-    row = {**row, "parts": telegram_src.video_parts(tg.sid, channel, msg, user=username(request))}
+    row = {**row, "parts": telegram_src.video_parts(tg.sid, channel, msg, user=username(request)),
+           "subs": telegram_src.video_subs(tg.sid, channel, msg)}
     if request.query.get("probe"):
         await tg.authorized_client()
         row = {**row, "play": await _tg_decision(request, tg, channel, msg)}
     return web.json_response({"success": True, "item": row})
+
+
+@telegram_api
+async def tg_subtitle(request, tg):
+    """영상 옆에 올린 자막 파일 -> WebVTT (<track>용). ?shift=초 - 서버 변환 스트림처럼 그 위치가 0초인 경우"""
+    channel, msg = _ids(request, tg)
+    row = telegram_src.get_video(tg.sid, channel, msg)
+    if not row or row.get("kind") != "subtitle":
+        return _json_error(404, "색인에 없는 자막입니다.")
+    try:
+        data = await tg.subtitle_bytes(channel, msg)
+    except telegram_src.TgError as e:
+        return _json_error(404, str(e))
+    ext = os.path.splitext(row.get("file_name") or "")[1].lstrip(".").lower()
+    try:
+        shift = max(0.0, float(request.query.get("shift") or 0))
+    except ValueError:
+        shift = 0.0
+    vtt = subtitles.shift_vtt(subtitles.to_vtt(data, ext), shift)
+    return web.Response(text=vtt, content_type="text/vtt", charset="utf-8", headers={"Cache-Control": "private, max-age=3600"})
 
 
 @telegram_api
@@ -2079,6 +2100,7 @@ def create_app(require_auth=True):
     app.router.add_get("/internal/tg/{token}", internal_tg)
     app.router.add_get(r"/api/tg/{sid}/thumb/{channel:-?\d+}/{msg:\d+}", tg_thumb)
     app.router.add_get(r"/api/tg/{sid}/image/{channel:-?\d+}/{msg:\d+}", tg_image)
+    app.router.add_get(r"/api/tg/{sid}/sub/{channel:-?\d+}/{msg:\d+}", tg_subtitle)
     app.router.add_post("/api/tg/{sid}/progress", tg_progress)
     app.router.add_route("*", "/api/plex/{sid}/{tail:.*}", plex_proxy)
     app.router.add_get("/s/{token}/{path:.+}", versioned_static)

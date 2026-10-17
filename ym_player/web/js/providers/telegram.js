@@ -1,6 +1,6 @@
 // 텔레그램 채널 소스. 서버(/api/tg/{id}/...)가 Telethon으로 채널 영상을 색인하고 스트림을 이어 준다.
 // 설정에서 고른 채널 하나하나가 라이브러리처럼 보인다. 항목 id는 "채널id:메시지id".
-import { api, fmtDuration, h, modal, IS_SAFARI } from '../util.js';
+import { api, fmtDuration, h, modal, storeGet, storeSet, IS_SAFARI } from '../util.js';
 import { registry } from './index.js';
 
 // "새로 올라온 영상"의 NEW: 지난번 방문(서버 설정 tg_seen) 뒤 올라왔고 아직 안 본 영상.
@@ -17,6 +17,16 @@ function seenBefore() {
     } catch (e) {
         return (registry.prefs && registry.prefs.tg_seen) || '';
     }
+}
+
+// 영상 옆에 올린 자막 파일 (서버가 짝지어 v.subs로 준다). 이름으로 언어를 짐작해 한국어를 먼저 켠다
+const SUB_LANGS = [[/(^|[._ -])(ko|kor|korean|kr)([._ -]|$)|한글|한국어/i, 'ko', '한국어'], [/(^|[._ -])(en|eng|english)([._ -]|$)|영어/i, 'en', '영어'],
+    [/(^|[._ -])(ja|jp|jpn)([._ -]|$)|일본어/i, 'ja', '일본어'], [/(^|[._ -])(zh|chs|cht|chi)([._ -]|$)|중국어/i, 'zh', '중국어']];
+function subInfo(s) {
+    const stem = (s.name || '').replace(/\.[^.]+$/, '');
+    const hit = SUB_LANGS.find(([re]) => re.test(stem));
+    const ext = ((s.name || '').match(/\.([^.]+)$/) || ['', ''])[1].toUpperCase();
+    return { id: String(s.msg), msg: s.msg, text: true, lang: hit ? hit[1] : '', label: `${hit ? `${hit[2]} · ` : ''}${stem || '자막'}${ext ? ` (${ext})` : ''}` };
 }
 
 /** 이번에 본 가장 새 영상 시각을 서버에 (다음 방문의 NEW 기준) */
@@ -209,7 +219,7 @@ export class TelegramProvider {
         const v = await this._video(id);
         const item = this.toItem(v);
         const metaLine = [(v.date || '').slice(0, 10), v.duration ? fmtDuration(v.duration * 1000) : '',
-            v.height ? `${v.height}p` : '', fmtSize(v.size)].filter(Boolean);
+            v.height ? `${v.height}p` : '', fmtSize(v.size), v.subs && v.subs.length ? `자막 ${v.subs.length}개` : ''].filter(Boolean);
         const facts = this.channelTitle(v.channel);
         return {
             ...item,
@@ -307,6 +317,29 @@ export class TelegramProvider {
             onStop: (sec) => report(sec),
             getNext: null,
         };
+        // 자막 파일: 고른 것은 영상마다 기억 (처음엔 한국어, 없으면 첫 자막). 서버 변환 스트림은 요청 위치가 0초라
+        // 자막 시각도 그만큼 당겨 받는다 (shift)
+        const subs = (v.subs || []).map(subInfo);
+        const subKey = `yp_tg_sub_${channel}:${msg}`;
+        let activeSub = storeGet(subKey, null);
+        if (activeSub == null || (activeSub !== '0' && !subs.some((x) => x.id === activeSub))) {
+            activeSub = subs.length ? (subs.find((x) => x.lang === 'ko') || subs[0]).id : '0';
+        }
+        const trackFor = (shift) => {
+            const st = subs.find((x) => x.id === activeSub);
+            return st ? { id: st.id, src: `${this.base}/sub/${channel}/${st.msg}?shift=${Math.floor(shift || 0)}`, lang: st.lang, label: st.label } : null;
+        };
+        const withSubs = (pb, shift) => (subs.length ? {
+            ...pb,
+            subtitles: subs,
+            activeSubtitle: activeSub,
+            textTrack: trackFor(shift),
+            selectSubtitle: async (id) => {
+                activeSub = id;
+                storeSet(subKey, id);
+                return { track: trackFor(shift) };
+            },
+        } : pb);
         // 나눠진 파일이면 끝난 뒤 다음 조각을 이어서 재생
         const parts = v.parts || [];
         const nextPart = parts[parts.findIndex((p) => p.msg === v.msg) + 1];
@@ -314,7 +347,7 @@ export class TelegramProvider {
             common.getNext = async () => ({ pid: this.id, id: `${channel}:${nextPart.msg}`, title: nextPart.title });
             common.nextIsPart = true; // 랜덤 재생 중에도 다음 조각은 이어서
         }
-        const streamed = (at, mode) => ({
+        const streamed = (at, mode) => withSubs({
             ...common,
             url: `${this.base}/transcode/${channel}/${msg}?${new URLSearchParams({ start: Math.floor(at), mode })}`,
             kind: 'direct',
@@ -322,12 +355,12 @@ export class TelegramProvider {
             timeOffset: Math.floor(at),
             engineNote: TRANSCODE_NOTE[mode] || '서버 변환',
             reloadAt: async (sec) => streamed(sec, mode),
-        });
+        }, at);
         // Safari: 서버가 HLS 조각을 만들기 시작하고 첫 조각이 나오면 재생목록 주소를 준다
         const viaHls = async (at, mode) => {
             const j = await api(`${this.base}/hls/${channel}/${msg}?${new URLSearchParams({ start: Math.floor(at), mode })}`,
                 { method: 'POST' });
-            return {
+            return withSubs({
                 ...common,
                 url: j.url,
                 kind: 'hls',
@@ -335,17 +368,17 @@ export class TelegramProvider {
                 timeOffset: Math.floor(at),
                 engineNote: `${TRANSCODE_NOTE[j.mode] || '서버 변환'} · HLS`,
                 reloadAt: async (sec) => viaHls(sec, mode),
-            };
+            }, at);
         };
         const converted = (at, mode) => (IS_SAFARI ? viaHls(at, mode) : streamed(at, mode));
         if (play.mode !== 'direct') return converted(begin, play.mode);
-        return {
+        return withSubs({
             ...common,
             url: `${this.base}/stream/${channel}/${msg}`,
             kind: 'direct',
             startTime: begin,
             // 형식을 몰랐거나(ffprobe 실패) 판단이 틀려 브라우저가 못 열면 다시 압축해서
             fallback: play.available ? async (at) => converted(at || begin, 'transcode') : null,
-        };
+        }, 0);
     }
 }

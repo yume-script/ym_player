@@ -95,6 +95,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 53,
+        "version": "1.1.16",
+        "date": "2026-10-17",
+        "title": "텔레그램: 영상 옆에 올린 자막 파일(srt/smi/ass/vtt)을 그 영상의 자막으로 자동 연결, 한국어 자막 먼저 켜기"
+    },
+    {
         "pr": 52,
         "version": "1.1.15",
         "date": "2026-10-17",
