@@ -13,13 +13,13 @@ export class PipArt {
         this.player = player;
         this.canvas = h('canvas', { width: SIZE, height: SIZE });
         this.g = this.canvas.getContext('2d');
-        this.video = h('video', { class: 'pip-art-video', muted: true, playsinline: true, autoplay: true });
+        this.video = h('video', { class: 'pip-art-video', muted: true, playsinline: true });
         this.video.muted = true;
         this.timer = 0;
         this.active = false;
         this.art = { url: '', img: null };
         this._mirroring = false;
-        this.video.addEventListener('enterpictureinpicture', () => { this.active = true; player._onPipEnter(); });
+        this.video.addEventListener('enterpictureinpicture', () => { this.active = true; player.inPip = false; player._onPipEnter(); });
         this.video.addEventListener('leavepictureinpicture', () => {
             this.active = false;
             this._stop();

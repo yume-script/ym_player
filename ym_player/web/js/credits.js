@@ -90,6 +90,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 46,
+        "version": "1.1.9",
+        "date": "2026-10-17",
+        "title": "라디오 PiP 보완: 브라우저 쪽에서 PiP를 열어도 그림 창으로 바꾸기, Chrome 미디어 조작의 PIP 버튼 연결, 실패하면 이유를 화면에"
+    },
+    {
         "pr": 45,
         "version": "1.1.8",
         "date": "2026-10-17",
