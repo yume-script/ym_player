@@ -103,6 +103,8 @@ def _clean_source(raw, old):
                 ch = {"id": int(c["id"]), "title": str(c.get("title") or c["id"])[:200]}
                 if c.get("kind") in ("video", "image"):   # 영상만 / 사진만 (없으면 둘 다)
                     ch["kind"] = c["kind"]
+                if c.get("ep_order") in ("asc", "desc"):  # 시리즈 회차 목록 순서 (없으면 1화부터)
+                    ch["ep_order"] = c["ep_order"]
                 channels.append(ch)
         src["channels"] = channels
     elif stype == "radio":

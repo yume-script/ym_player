@@ -876,6 +876,9 @@ def test_channel_kind_limits_lists(monkeypatch, tmp_path):
     src = config_store._clean_source({"id": "t", "type": "telegram", "name": "t", "channels": [
         {"id": 1, "title": "a", "kind": "video"}, {"id": 2, "title": "b", "kind": "bogus"}]}, None)
     assert src["channels"] == [{"id": 1, "title": "a", "kind": "video"}, {"id": 2, "title": "b"}]
+    src = config_store._clean_source({"id": "t", "type": "telegram", "name": "t", "channels": [
+        {"id": 1, "title": "a", "ep_order": "desc"}, {"id": 2, "title": "b", "ep_order": "sideways"}]}, None)
+    assert src["channels"] == [{"id": 1, "title": "a", "ep_order": "desc"}, {"id": 2, "title": "b"}]
 
 
 def test_subtitle_files_are_indexed_linked_and_hidden(monkeypatch, tmp_path):

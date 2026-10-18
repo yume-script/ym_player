@@ -342,20 +342,27 @@ export async function renderSettings(main, _params, query, ctx) {
                     const kindSel = h('select', { class: 'select select-sm', title: '이 채널에서 보여 줄 것' },
                         [['', '영상+사진'], ['video', '영상만'], ['image', '사진만']].map(([v, label]) =>
                             h('option', { value: v, text: label, selected: ((chosen.get(id) || {}).kind || '') === v })));
-                    kindSel.disabled = !chk.checked;
+                    // 시리즈(회차 묶음) 상세의 회차 순서
+                    const orderSel = h('select', { class: 'select select-sm', title: '시리즈 회차 목록 순서' },
+                        [['asc', '1화부터'], ['desc', '최신 회차부터']].map(([v, label]) =>
+                            h('option', { value: v, text: label, selected: ((chosen.get(id) || {}).ep_order || 'asc') === v })));
+                    kindSel.disabled = orderSel.disabled = !chk.checked;
                     const save = () => {
-                        if (chk.checked) chosen.set(id, { id: c.id, title: c.title, ...(kindSel.value ? { kind: kindSel.value } : {}) });
-                        else chosen.delete(id);
-                        kindSel.disabled = !chk.checked;
+                        if (chk.checked) {
+                            chosen.set(id, { id: c.id, title: c.title, ...(kindSel.value ? { kind: kindSel.value } : {}),
+                                ...(orderSel.value === 'desc' ? { ep_order: 'desc' } : {}) });
+                        } else chosen.delete(id);
+                        kindSel.disabled = orderSel.disabled = !chk.checked;
                         src.channels = [...chosen.values()];
                         touch();
                     };
                     chk.addEventListener('change', save);
                     kindSel.addEventListener('change', save);
+                    orderSel.addEventListener('change', save);
                     list.appendChild(h('div', { class: 'lib-check-row' },
                         h('label', { class: 'check lib-check', title: c.username ? `@${c.username}` : '' },
                             chk, icon(c.kind === 'group' ? 'users' : 'bullhorn'), ` ${c.title}`),
-                        kindSel));
+                        kindSel, orderSel));
                 });
             } catch (e) {
                 clear(list).appendChild(say(`채널 목록 실패: ${e.message}`, 'muted error'));

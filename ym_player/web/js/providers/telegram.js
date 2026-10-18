@@ -76,7 +76,8 @@ export class TelegramProvider {
         this.name = src.name;
         this.kind = 'telegram';
         // kind: 관리자가 정한 채널 종류 ("video" 영상만 / "image" 사진만 / "" 둘 다)
-        this.channels = (src.channels || []).map((c) => ({ id: String(c.id), title: c.title, kind: c.kind || '' }));
+        // epOrder: 시리즈 회차 목록 순서 ("asc" 1화부터 / "desc" 최신 회차부터)
+        this.channels = (src.channels || []).map((c) => ({ id: String(c.id), title: c.title, kind: c.kind || '', epOrder: c.ep_order || 'asc' }));
         this.base = `/api/tg/${encodeURIComponent(src.id)}`;
         this._warmed = new Set();
         this._seen = new Map(); // 항목 id -> 목록에서 받은 영상 정보 (조각 파일인지 미리 보려고)
@@ -251,6 +252,9 @@ export class TelegramProvider {
         const posterOf = (v) => (v.poster ? `${this.base}/thumb/${v.channel}/${v.poster}` : '');
         const poster = posterOf(latest) || [...eps].reverse().map(posterOf).find(Boolean) || '';
         const unwatched = eps.filter((v) => !v.watched).length;
+        // 채널 설정이 "최신 회차부터"면 목록만 거꾸로 (다음 회차 이어 재생은 그대로 시간순)
+        const ch = this.channels.find((c) => c.id === String(channel));
+        if (ch && ch.epOrder === 'desc') children.reverse();
         return {
             pid: this.id, id, type: 'show', title: data.title, subtitle: '',
             poster: poster || (deck && deck.thumb) || '', posterShape: poster ? 'poster' : 'wide', art: '',
