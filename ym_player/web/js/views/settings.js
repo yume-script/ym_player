@@ -19,25 +19,44 @@ export async function renderSettings(main, _params, query, ctx) {
 
     const list = h('div', { class: 'src-list' });
     const saveBtn = h('button', { class: 'btn btn-accent', on: { click: save } }, icon('check'), ' 저장');
+    // 소스는 종류마다 하위 탭으로 (한 화면에 다 늘어놓으면 너무 길어서). [저장]은 모든 탭 공통
+    const SRC_TYPES = [
+        ['plex', 'server', 'Plex', () => [
+            h('button', { class: 'btn', on: { click: plexLogin } }, icon('right-to-bracket'), ' Plex 계정으로 추가'),
+            h('button', { class: 'btn', on: { click: () => add({ type: 'plex', name: 'Plex', url: '', enabled: true, verify_ssl: true }) } },
+                icon('server'), ' Plex 직접 입력')],
+        'Plex 토큰은 이 서버(data/config.json)에만 저장되고 브라우저로는 내려오지 않습니다. 토큰 칸을 비워두고 저장하면 기존 토큰을 그대로 씁니다.'],
+        ['iptv', 'tower-broadcast', 'IPTV', () => [
+            h('button', { class: 'btn', on: { click: () => add({ type: 'iptv', name: 'IPTV', m3u: '', epg: '', enabled: true }) } },
+                icon('tower-broadcast'), ' IPTV 추가')],
+        'M3U·EPG 주소는 한 줄에 하나씩 여러 개를 넣으면 하나로 합쳐집니다.'],
+        ['telegram', 'paper-plane', '텔레그램', () => [
+            h('button', {
+                class: 'btn',
+                on: { click: () => add({ type: 'telegram', name: 'Telegram', api_id: '', api_hash: '', phone: '', channels: [], enabled: true }) },
+            }, icon('paper-plane'), ' 텔레그램 추가')],
+        'API Hash는 이 서버에만 저장됩니다. 칸을 비워두고 저장하면 기존 값을 그대로 씁니다.'],
+        ['radio', 'radio', '라디오', () => [
+            h('button', { class: 'btn', on: { click: () => add({ type: 'radio', name: '라디오', enabled: true }) } },
+                icon('radio'), ' 라디오 추가')],
+        ''],
+    ];
+    let srcType = storeGet('yp_settings_srctype', '');
+    if (!SRC_TYPES.some(([t]) => t === srcType)) srcType = (drafts[0] && drafts[0].type) || 'plex';
+    const srcTabs = h('div', { class: 'tabs src-tabs', role: 'tablist' });
+    const addBar = h('div', { class: 'toolbar pane-toolbar' });
+    const srcNote = h('p', { class: 'muted settings-note' });
+    const showSrcType = (t) => {
+        srcType = t;
+        storeSet('yp_settings_srctype', t);
+        const [, , , buttons, note] = SRC_TYPES.find(([x]) => x === t);
+        clear(addBar).append(...buttons(), saveBtn);
+        srcNote.textContent = note;
+        srcNote.classList.toggle('hidden', !note);
+        draw();
+    };
     const panes = {
-        sources: h('div', { class: 'settings-pane' },
-            h('div', { class: 'toolbar pane-toolbar' },
-                h('button', { class: 'btn', on: { click: plexLogin } }, icon('right-to-bracket'), ' Plex 계정으로 추가'),
-                h('button', { class: 'btn', on: { click: () => add({ type: 'plex', name: 'Plex', url: '', enabled: true, verify_ssl: true }) } },
-                    icon('server'), ' Plex 직접 입력'),
-                h('button', { class: 'btn', on: { click: () => add({ type: 'iptv', name: 'IPTV', m3u: '', epg: '', enabled: true }) } },
-                    icon('tower-broadcast'), ' IPTV 추가'),
-                h('button', {
-                    class: 'btn',
-                    on: { click: () => add({ type: 'telegram', name: 'Telegram', api_id: '', api_hash: '', phone: '', channels: [], enabled: true }) },
-                }, icon('paper-plane'), ' 텔레그램 추가'),
-                h('button', { class: 'btn', on: { click: () => add({ type: 'radio', name: '라디오', enabled: true }) } },
-                    icon('radio'), ' 라디오 추가'),
-                saveBtn),
-            h('p', { class: 'muted settings-note' },
-                'Plex 토큰은 이 서버(data/config.json)에만 저장되고 브라우저로는 내려오지 않습니다. ',
-                '토큰 칸을 비워두고 저장하면 기존 토큰을 그대로 씁니다. (텔레그램 API Hash도 같습니다)'),
-            list),
+        sources: h('div', { class: 'settings-pane' }, srcTabs, addBar, srcNote, list),
         users: h('div', { class: 'settings-pane' }, usersBox()),
         status: h('div', { class: 'settings-pane' }),
         cache: h('div', { class: 'settings-pane' }),
@@ -222,7 +241,7 @@ export async function renderSettings(main, _params, query, ctx) {
     function add(src) {
         drafts.push(src);
         touch();
-        draw();
+        if (src.type !== srcType) showSrcType(src.type); else draw();
         list.lastElementChild && list.lastElementChild.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
 
@@ -433,10 +452,19 @@ export async function renderSettings(main, _params, query, ctx) {
 
     function draw() {
         clear(list);
-        if (!drafts.length) {
-            list.appendChild(h('div', { class: 'empty small' }, h('p', { text: '위 버튼으로 Plex 서버나 IPTV 재생목록을 추가하세요.' })));
+        // 하위 탭 (소스 수와 함께)
+        clear(srcTabs).append(...SRC_TYPES.map(([t, ic, label]) => {
+            const n = drafts.filter((d) => d.type === t).length;
+            return h('button', {
+                class: `tab${t === srcType ? ' active' : ''}`, role: 'tab', on: { click: () => showSrcType(t) },
+            }, icon(ic), ` ${label}`, n ? h('span', { class: 'tab-count', text: String(n) }) : null);
+        }));
+        if (!drafts.some((d) => d.type === srcType)) {
+            const label = SRC_TYPES.find(([t]) => t === srcType)[2];
+            list.appendChild(h('div', { class: 'empty small' }, h('p', { text: `${label} 소스가 없습니다. 위 버튼으로 추가하세요.` })));
         }
         drafts.forEach((src, i) => {
+            if (src.type !== srcType) return;
             const isPlex = src.type === 'plex';
             const isTg = src.type === 'telegram';
             const isRadio = src.type === 'radio';
@@ -469,7 +497,13 @@ export async function renderSettings(main, _params, query, ctx) {
                     placeholder: '선택 - .xml 또는 .xml.gz (여러 개면 한 줄에 하나씩)',
                 })), '편성표 채널 매칭: tvg-id → 채널 표시명 순서로 찾습니다.'),
             ];
-            const move = (d) => { const j = i + d; if (j < 0 || j >= drafts.length) return; [drafts[i], drafts[j]] = [drafts[j], drafts[i]]; touch(); draw(); };
+            // 같은 종류끼리만 자리를 바꾼다 (다른 탭의 소스를 건너뛰고 가장 가까운 같은 종류와)
+            const move = (d) => {
+                let j = i + d;
+                while (j >= 0 && j < drafts.length && drafts[j].type !== src.type) j += d;
+                if (j < 0 || j >= drafts.length) return;
+                [drafts[i], drafts[j]] = [drafts[j], drafts[i]]; touch(); draw();
+            };
             list.appendChild(h('div', { class: `src-card${src.enabled ? '' : ' disabled'}` },
                 h('div', { class: 'src-head' },
                     h('span', { class: `src-type ${src.type}` },
@@ -547,7 +581,7 @@ export async function renderSettings(main, _params, query, ctx) {
         if (document.body.contains(m.el)) { clear(body).appendChild(h('p', { text: '시간이 지나 로그인을 취소했습니다. 다시 시도해 주세요.' })); }
     }
 
-    draw();
+    showSrcType(srcType);
     showTab((query && query.get('tab')) || storeGet('yp_settings_tab', 'sources'));
 }
 
