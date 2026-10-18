@@ -23,7 +23,7 @@ DATA_DIR = os.environ.get("MP_DATA_DIR") or os.path.join(os.path.dirname(os.path
 CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
 
 SOURCE_TYPES = ("plex", "iptv", "telegram", "radio")
-_SECRET_FIELDS = ("token", "api_hash")
+_SECRET_FIELDS = ("token", "api_hash", "tmdb_key")
 _lock = threading.Lock()
 
 
@@ -68,6 +68,7 @@ def public_config(cfg):
         pub = {k: v for k, v in s.items() if k not in _SECRET_FIELDS}
         pub["has_token"] = bool(s.get("token"))
         pub["has_api_hash"] = bool(s.get("api_hash"))
+        pub["has_tmdb_key"] = bool(s.get("tmdb_key"))
         out.append(pub)
     return {"client_id": cfg.get("client_id"), "sources": out}
 
@@ -96,6 +97,10 @@ def _clean_source(raw, old):
         src["api_id"] = str(raw.get("api_id") or "").strip()
         api_hash = str(raw.get("api_hash") or "").strip()
         src["api_hash"] = api_hash or (old or {}).get("api_hash", "")
+        # 작품 정보(TMDB) API 키 - 비밀값이라 브라우저로 안 내보내고, 빈 칸이면 기존 값 유지
+        tmdb_key = str(raw.get("tmdb_key") or "").strip()[:400]
+        if tmdb_key or (old or {}).get("tmdb_key"):
+            src["tmdb_key"] = tmdb_key or (old or {}).get("tmdb_key", "")
         src["phone"] = str(raw.get("phone") or "").strip()
         channels = []
         for c in raw.get("channels") or []:

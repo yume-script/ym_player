@@ -961,3 +961,56 @@ def test_three_digit_season_is_grouped(monkeypatch, tmp_path):
     grouped, total = telegram_src.query_videos("tg", [1], limit=50, group=True)
     assert total == 1 and grouped[0]["series"]["count"] == 8 and grouped[0]["series"]["title"] == "킬러들의 쇼핑몰"
     assert [e["ep"] for e in telegram_src.series_episodes("tg", 1, "킬러들의쇼핑몰")["episodes"]] == list(range(1, 9))
+
+
+def test_tmdb_find_details_and_targets(monkeypatch, tmp_path):
+    from ym_player import tmdb
+    calls = []
+
+    async def fake_get(self, path, **params):
+        calls.append((path, params.get("query"), params.get("language")))
+        if path == "/search/tv":
+            return {"results": [{"id": 9, "name": "다른 쇼", "first_air_date": "2020-01-01"},
+                                {"id": 7, "name": "킬러들의 쇼핑몰", "original_name": "Killer's Shopping Mall", "first_air_date": "2024-01-17"}]}
+        if path == "/search/movie":
+            return {"results": [] if params.get("query") == "호프" else [{"id": 5, "title": "호프", "original_title": "Hope", "release_date": "2026-07-01"}]}
+        if path == "/tv/7":
+            return {"id": 7, "name": "킬러들의 쇼핑몰", "overview": "줄거리", "first_air_date": "2024-01-17", "poster_path": "/p.jpg",
+                    "genres": [{"name": "액션"}], "vote_average": 8.12, "created_by": [{"name": "이권"}],
+                    "credits": {"cast": [{"name": "이동욱", "character": "정진만", "profile_path": "/a.jpg"}]}, "seasons": [{"season_number": 1}, {"season_number": 2}]}
+        if path == "/tv/7/season/2":
+            return {"episodes": [{"episode_number": 8, "name": "잘 들어", "overview": "8화 줄거리", "still_path": "/s.jpg"}]}
+        if path == "/movie/5":
+            return {"id": 5, "title": "호프", "release_date": "2026-07-01", "runtime": 160, "credits": {"crew": [{"job": "Director", "name": "나홍진"}]}}
+        return None
+    monkeypatch.setattr(tmdb.Tmdb, "_get", fake_get)
+
+    async def run():
+        api = tmdb.Tmdb(None, "k" * 32)
+        assert await api.find("tv", ["킬러들의 쇼핑몰"]) == 7               # 이름이 맞는 것 (인기순 첫 결과가 아니라)
+        assert await api.find("movie", ["호프", "Hope"], "2026") == 5      # 우리말로 못 찾으면 다음 이름으로
+        d = await api.details("tv", 7)
+        assert d["title"] == "킬러들의 쇼핑몰" and d["rating"] == 8.1 and d["directors"] == ["이권"]
+        assert d["poster"].endswith("/w500/p.jpg") and d["cast"][0]["role"] == "정진만"
+        assert (await api.season(7, 2))[8]["name"] == "잘 들어"
+        assert (await api.details("movie", 5))["directors"] == ["나홍진"]
+    asyncio.run(run())
+
+    # 무엇을 찾을지: 시리즈 회차 -> tv, 그 밖 -> movie (우리말 포스터 제목 먼저)
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    telegram_src._migrated.discard(str(tmp_path))
+    rows = [(1, "image", "호프 [2026]", ""), (2, "video", "Hope.2026.1080p.AMZN.WEB-DL", "Hope.2026.1080p.AMZN.WEB-DL.mkv"),
+            (3, "video", "킬러들의_쇼핑몰_S102E07_x", "a.mkv"), (4, "video", "킬러들의_쇼핑몰_S102E08_y", "b.mkv")]
+    with telegram_src.db() as conn:
+        conn.executemany(
+            "INSERT INTO videos(source,channel,msg,title,caption,file_name,mime,duration,size,width,height,date,has_thumb,kind)"
+            " VALUES('tg',1,?,?,'',?,'video/mp4',60,1,1,1,'2026-08-14T10:00:00+00:00',0,?)", [(m, t, f, k) for m, k, t, f in rows])
+    telegram_src.link_posters("tg", 1)
+    telegram_src.link_series("tg", 1)
+    movie = telegram_src.meta_target("tg", 1, msg=2)
+    assert movie["kind"] == "movie" and movie["titles"][0] == "호프" and "Hope" in movie["titles"] and movie["year"] == "2026"
+    ep = telegram_src.meta_target("tg", 1, msg=4)
+    assert (ep["kind"], ep["mkey"], ep["season"], ep["ep"]) == ("tv", "tv:킬러들의쇼핑몰", 2, 8)
+    assert telegram_src.meta_target("tg", 1, series_key="킬러들의쇼핑몰")["mkey"] == ep["mkey"]
+    telegram_src.meta_put("tg", ep["mkey"], "tv", 7, {"title": "킬러들의 쇼핑몰"})
+    assert telegram_src.meta_get("tg", ep["mkey"])["data"]["title"] == "킬러들의 쇼핑몰"

@@ -229,6 +229,80 @@ export class TelegramProvider {
         fetch(`${this.base}/probe/${channel}/${msg}`, { method: 'POST' }).catch(() => {});
     }
 
+    // ----- 작품 정보 (TMDB, 서버가 찾아 저장) -----
+    /** {meta, episodes: {시즌: {회차: {name, overview, still}}}, target} 또는 null (키가 없거나 못 찾음) */
+    async _meta(channel, msg, seriesKey = null, seasons = []) {
+        try {
+            const path = seriesKey != null
+                ? `${this.base}/meta/${channel}?${new URLSearchParams({ series: seriesKey, seasons: seasons.join(',') })}`
+                : `${this.base}/meta/${channel}/${msg}`;
+            return await api(path);
+        } catch (e) {
+            return null;
+        }
+    }
+
+    /** 상세 모양에 작품 정보를 입힌다 */
+    _withMeta(d, m) {
+        if (!m) return d;
+        return {
+            ...d,
+            title: m.title || d.title,
+            poster: m.poster || d.poster,
+            posterShape: m.poster ? 'poster' : d.posterShape,
+            art: m.backdrop || d.art,
+            summary: m.overview || d.summary,
+            tagline: m.tagline || d.tagline,
+            genres: m.genres || [],
+            directors: m.directors || [],
+            cast: m.cast || [],
+            rating: m.rating || null,
+            metaLine: [m.year, ...d.metaLine].filter(Boolean),
+        };
+    }
+
+    /** 관리자: [정보 고치기] - 다른 작품을 직접 찾아 고르거나 정보 없음으로 */
+    _fixAction(target, query, kind) {
+        if (!registry.isAdmin()) return [];
+        return [{ icon: 'wand-magic-sparkles', label: '정보 고치기', title: 'TMDB에서 맞는 작품을 직접 고르기',
+            onClick: (ctx) => this._openFix(target, query, kind, ctx) }];
+    }
+
+    _openFix(target, query, kind, ctx) {
+        const kindSel = h('select', { class: 'select' },
+            [['movie', '영화'], ['tv', 'TV 시리즈']].map(([v, label]) => h('option', { value: v, text: label, selected: v === kind })));
+        const q = h('input', { class: 'input', value: query || '', placeholder: '작품 이름' });
+        const list = h('div', { class: 'meta-results' });
+        const choose = async (id, k) => {
+            try {
+                await api(`${this.base}/meta-fix`, { method: 'POST', json: { ...target, kind: k, tmdb_id: id } });
+                m.close();
+                ctx.rerender();
+            } catch (e) { list.prepend(h('p', { class: 'muted error', text: e.message })); }
+        };
+        const search = async () => {
+            list.replaceChildren(h('p', { class: 'muted', text: '찾는 중...' }));
+            try {
+                const { results } = await api(`${this.base}/meta-search?${new URLSearchParams({ kind: kindSel.value, q: q.value })}`);
+                list.replaceChildren(...(results.length ? results.map((r) => h('button', {
+                    class: 'meta-result', type: 'button', on: { click: () => choose(r.id, r.kind) },
+                }, r.poster ? h('img', { src: r.poster, alt: '', loading: 'lazy' }) : h('span', { class: 'meta-noimg' }),
+                h('span', { class: 'meta-text' },
+                    h('b', { text: `${r.title}${r.year ? ` (${r.year})` : ''}` }),
+                    r.original && r.original !== r.title ? h('small', { text: r.original }) : null,
+                    h('span', { class: 'muted', text: (r.overview || '').slice(0, 120) })))) : [h('p', { class: 'muted', text: '찾은 작품이 없습니다.' })]));
+            } catch (e) { list.replaceChildren(h('p', { class: 'muted error', text: e.message })); }
+        };
+        q.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); search(); } });
+        const m = modal('작품 정보 고치기', h('div', { class: 'meta-fix' },
+            h('div', { class: 'toolbar' }, kindSel, q, h('button', { class: 'btn btn-accent', on: { click: search } }, '찾기')), list), [
+            h('button', { class: 'btn', on: { click: () => choose(0, kindSel.value) } }, '정보 없이 두기'),
+            h('button', { class: 'btn', on: { click: () => m.close() } }, '닫기'),
+        ]);
+        search();
+        q.focus();
+    }
+
     /** 시리즈(회차 묶음) 상세: 회차 목록 + [다음 볼 회차] */
     async _seriesDetail(id) {
         const [, channel, ...rest] = String(id).split(':');
@@ -255,7 +329,17 @@ export class TelegramProvider {
         // 채널 설정이 "최신 회차부터"면 목록만 거꾸로 (다음 회차 이어 재생은 그대로 시간순)
         const ch = this.channels.find((c) => c.id === String(channel));
         if (ch && ch.epOrder === 'desc') children.reverse();
-        return {
+        // 작품 정보: 회차 제목·줄거리·장면 사진도
+        const mr = await this._meta(channel, null, key, [...new Set(eps.map((v) => v.season))]);
+        if (mr && mr.meta) {
+            for (const c of children) {
+                const info = ((mr.episodes || {})[String(c.raw.season)] || {})[String(c.raw.ep)];
+                if (!info) continue;
+                c.raw = { ...c.raw, title: info.name || c.raw.title, summary: info.overview || '' };
+                if (info.still) c.wideThumb = info.still;
+            }
+        }
+        return this._withMeta({
             pid: this.id, id, type: 'show', title: data.title, subtitle: '',
             poster: poster || (deck && deck.thumb) || '', posterShape: poster ? 'poster' : 'wide', art: '',
             metaLine: [`${eps.length}화`, unwatched ? `안 본 회차 ${unwatched}` : '다 봄'],
@@ -265,7 +349,8 @@ export class TelegramProvider {
             parent: { label: this.channelTitle(channel), route: `#/library/${this.id}/${channel}` },
             children, childrenTitle: '회차', childrenStyle: 'episode',
             onDeck: deck ? { ...deck, subtitle: `${deck.epLabel} ${resumeIdx >= 0 ? '이어보기' : '재생'}` } : null,
-        };
+            extraActions: this._fixAction({ channel: Number(channel), series: key }, data.title, 'tv'),
+        }, mr && mr.meta);
     }
 
     async _seriesNext(id) {
@@ -281,7 +366,15 @@ export class TelegramProvider {
         const metaLine = [(v.date || '').slice(0, 10), v.duration ? fmtDuration(v.duration * 1000) : '',
             v.height ? `${v.height}p` : '', fmtSize(v.size), v.subs && v.subs.length ? `자막 ${v.subs.length}개` : ''].filter(Boolean);
         const facts = this.channelTitle(v.channel);
-        return {
+        const mr = await this._meta(v.channel, v.msg);
+        const m = mr && mr.meta;
+        // 시리즈 회차면 위쪽 링크는 그 시리즈로, 회차 제목·줄거리도
+        const t = mr && mr.target;
+        const epInfo = m && t && t.season != null ? ((mr.episodes || {})[String(t.season)] || {})[String(t.ep)] : null;
+        const parent = v.series
+            ? { label: v.series.title, route: `#/item/${this.id}/${encodeURIComponent(`series:${v.channel}:${v.series.key}`)}` }
+            : (facts ? { label: facts, route: `#/library/${this.id}/${v.channel}` } : null);
+        const base = {
             ...item,
             subtitle: '',
             poster: item.posterImg || item.thumb,
@@ -299,10 +392,20 @@ export class TelegramProvider {
             playable: true,
             viewOffset: (v.position || 0) * 1000,
             duration: (v.duration || 0) * 1000,
-            parent: facts ? { label: facts, route: `#/library/${this.id}/${v.channel}` } : null,
+            parent,
             children: [],
             onDeck: null,
+            extraActions: this._fixAction({ channel: v.channel, msg: v.msg }, t && t.kind === 'tv' && v.series ? v.series.title : (m ? m.title : item.title),
+                t ? t.kind : 'movie'),
         };
+        if (!m) return base;
+        const d = this._withMeta(base, m);
+        if (t && t.season != null) {
+            d.metaLine = [`시즌 ${t.season} · ${t.ep}화${epInfo && epInfo.name ? ` ${epInfo.name}` : ''}`, ...d.metaLine];
+            if (epInfo && epInfo.overview) d.summary = epInfo.overview;
+        }
+        d.extraFacts = [['파일', v.file_name || v.title]];
+        return d;
     }
 
     async setWatched(id, watched) {
