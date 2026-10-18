@@ -95,6 +95,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 57,
+        "version": "1.1.20",
+        "date": "2026-10-18",
+        "title": "텔레그램: 채널마다 시리즈 회차 목록 순서(1화부터 / 최신 회차부터) 설정"
+    },
+    {
         "pr": 56,
         "version": "1.1.19",
         "date": "2026-10-17",
