@@ -477,6 +477,10 @@ export async function renderSettings(main, _params, query, ctx) {
                     })))),
                 h('span', { class: 'field-hint' }, 'my.telegram.org → API development tools에서 발급합니다. 바꾼 뒤에는 먼저 [저장]하세요.'),
                 field('전화번호', bindInput(src, 'phone', h('input', { class: 'input', value: src.phone || '', placeholder: '+821012345678 (국가번호 포함)' }))),
+                field('작품 정보 - TMDB API 키 (선택)', bindInput(src, 'tmdb_key', h('input', {
+                    class: 'input', type: 'password', value: '', autocomplete: 'off',
+                    placeholder: src.has_tmdb_key ? '저장된 키 사용 중 (바꿀 때만 입력)' : 'API 키(32자) 또는 읽기 액세스 토큰',
+                })), 'themoviedb.org 가입 → 설정 > API에서 무료로 발급. 넣으면 영상·시리즈 상세에 포스터·줄거리·출연진·회차 제목을 붙입니다.'),
                 telegramLogin(src),
             ] : isPlex ? [
                 field('서버 주소', bindInput(src, 'url', h('input', { class: 'input', value: src.url || '', placeholder: 'http://192.168.0.10:32400' }))),

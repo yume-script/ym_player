@@ -95,6 +95,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 59,
+        "version": "1.1.22",
+        "date": "2026-10-18",
+        "title": "텔레그램: TMDB 작품 정보(포스터·배경·줄거리·장르·출연진·평점·회차 제목) 입히기, [정보 고치기]"
+    },
+    {
         "pr": 58,
         "version": "1.1.21",
         "date": "2026-10-18",

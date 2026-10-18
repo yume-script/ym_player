@@ -291,6 +291,9 @@ CREATE TABLE IF NOT EXISTS subs(source TEXT, channel INTEGER, video INTEGER, sub
 CREATE TABLE IF NOT EXISTS series(source TEXT, channel INTEGER, video INTEGER, skey TEXT, title TEXT,
     season INTEGER, ep INTEGER, rep INTEGER DEFAULT 0, PRIMARY KEY(source, channel, video));
 CREATE INDEX IF NOT EXISTS series_by_key ON series(source, channel, skey);
+CREATE TABLE IF NOT EXISTS meta(source TEXT, mkey TEXT, kind TEXT, tmdb_id INTEGER, data TEXT, fetched REAL,
+    manual INTEGER DEFAULT 0, PRIMARY KEY(source, mkey));
+CREATE TABLE IF NOT EXISTS meta_season(tmdb_id INTEGER, season INTEGER, data TEXT, fetched REAL, PRIMARY KEY(tmdb_id, season));
 """
 # 이어보기는 사용자마다 따로 (user_progress). 예전 progress(사용자 구분 없음)는 처음 한 번 MIGRATE_USER 몫으로 옮긴다.
 MIGRATE_USER = ""
@@ -678,6 +681,68 @@ def series_of(sid, channel, msg):
             "next": {"msg": nxt["video"], "title": nxt["title"]} if nxt else None}
 
 
+# ---------------------------------------------------------------------------
+# 작품 정보(TMDB) - 무엇을 찾을지 정하고, 찾은 결과를 저장한다 (tmdb.py가 실제 검색).
+# mkey: 시리즈/회차 영상은 "tv:{작품 이름 키}", 그 밖의 영상은 "movie:{이름 키}:{연도}". 같은 소스 안에서 채널끼리 같이 쓴다.
+# ---------------------------------------------------------------------------
+def meta_target(sid, channel, msg=None, series_key=None):
+    """{mkey, kind, titles[], year, season, ep} - 찾을 이름은 우리말 포스터 제목을 먼저"""
+    with db() as conn:
+        if series_key is not None:
+            s = conn.execute("SELECT title FROM series WHERE source=? AND channel=? AND skey=? LIMIT 1",
+                             (sid, channel, series_key)).fetchone()
+            if not s:
+                return None
+            return {"mkey": f"tv:{series_key}", "kind": "tv", "titles": [s["title"]], "year": "", "season": None, "ep": None}
+        r = conn.execute("SELECT * FROM videos WHERE source=? AND channel=? AND msg=?", (sid, channel, msg)).fetchone()
+        if not r or r["kind"] != "video":
+            return None
+        srow = conn.execute("SELECT skey, title, season, ep FROM series WHERE source=? AND channel=? AND video=?",
+                            (sid, channel, msg)).fetchone()
+        prow = conn.execute("SELECT v.title FROM posters p JOIN videos v ON v.source=p.source AND v.channel=p.channel "
+                            "AND v.msg=p.image WHERE p.source=? AND p.channel=? AND p.video=?", (sid, channel, msg)).fetchone()
+    poster_title = _display_title(prow["title"]) if prow else ""
+    if srow:
+        return {"mkey": f"tv:{srow['skey']}", "kind": "tv", "titles": [srow["title"], poster_title],
+                "year": "", "season": srow["season"], "ep": srow["ep"]}
+    name, ep, year = _media_key(r["title"], r["file_name"])
+    titles = [poster_title, _display_title(r["title"]), _display_title(r["file_name"])]
+    titles = [t for i, t in enumerate(titles) if t and t not in titles[:i]]
+    if not name:
+        return None
+    info = _episode_info(r["title"], r["file_name"])
+    if info:
+        return {"mkey": f"tv:{info[0]}", "kind": "tv", "titles": titles, "year": "", "season": info[1], "ep": info[2]}
+    return {"mkey": f"movie:{name}:{year}", "kind": "movie", "titles": titles, "year": year, "season": None, "ep": None}
+
+
+def meta_get(sid, mkey):
+    with db() as conn:
+        r = conn.execute("SELECT * FROM meta WHERE source=? AND mkey=?", (sid, mkey)).fetchone()
+    if not r:
+        return None
+    return {"kind": r["kind"], "tmdb_id": r["tmdb_id"], "data": json.loads(r["data"]) if r["data"] else None,
+            "fetched": r["fetched"], "manual": bool(r["manual"])}
+
+
+def meta_put(sid, mkey, kind, tmdb_id, data, manual=False):
+    with db() as conn:
+        conn.execute("INSERT OR REPLACE INTO meta(source,mkey,kind,tmdb_id,data,fetched,manual) VALUES(?,?,?,?,?,?,?)",
+                     (sid, mkey, kind, tmdb_id, json.dumps(data, ensure_ascii=False) if data else None, time.time(), int(manual)))
+
+
+def season_get(tmdb_id, season):
+    with db() as conn:
+        r = conn.execute("SELECT data, fetched FROM meta_season WHERE tmdb_id=? AND season=?", (tmdb_id, season)).fetchone()
+    return (json.loads(r["data"]), r["fetched"]) if r else (None, 0)
+
+
+def season_put(tmdb_id, season, data):
+    with db() as conn:
+        conn.execute("INSERT OR REPLACE INTO meta_season(tmdb_id,season,data,fetched) VALUES(?,?,?,?)",
+                     (tmdb_id, season, json.dumps(data, ensure_ascii=False), time.time()))
+
+
 def video_subs(sid, channel, msg):
     """이 영상에 붙은 자막 파일들 [{msg, name}] (메시지 순서)"""
     with db() as conn:
@@ -925,7 +990,7 @@ def forget_source(sid):
     """소스를 지우면 그 색인/진행 기록도 지운다 (세션 파일은 TelegramSource.logout이)."""
     media_cache.STORE.drop_prefix(f"tg:{sid}:")
     with db() as conn:
-        for table in ("videos", "sync_state", "peers", "progress", "user_progress", "probes", "posters", "subs", "series"):
+        for table in ("videos", "sync_state", "peers", "progress", "user_progress", "probes", "posters", "subs", "series", "meta"):
             conn.execute(f"DELETE FROM {table} WHERE source=?", (sid,))
     shutil.rmtree(os.path.join(config_store.DATA_DIR, "telegram_images", sid), ignore_errors=True)
 

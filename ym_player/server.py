@@ -43,7 +43,7 @@ from urllib.parse import urlencode
 from aiohttp import ClientSession, ClientTimeout, web
 from yarl import URL
 
-from . import __version__, auth, config_store, iptv, media_cache, prefs, radio, subtitles, telegram_src, transcode, updates
+from . import __version__, auth, config_store, iptv, media_cache, prefs, radio, subtitles, telegram_src, tmdb, transcode, updates
 
 log = logging.getLogger("ym_player")
 
@@ -1043,6 +1043,116 @@ async def tg_video(request, tg):
         await tg.authorized_client()
         row = {**row, "play": await _tg_decision(request, tg, channel, msg)}
     return web.json_response({"success": True, "item": row})
+
+
+# ----- 작품 정보 (TMDB) -----
+META_FRESH_SEC = 30 * 86400      # 찾은 정보는 30일 동안 그대로
+META_MISS_SEC = 7 * 86400        # 못 찾았으면 7일 뒤 다시
+SEASON_FRESH_SEC = 7 * 86400
+
+
+def _tmdb_for(request, tg):
+    src = config_store.get_source(config_store.load(), tg.sid) or {}
+    return tmdb.Tmdb(request.app[HTTP], src.get("tmdb_key", ""))
+
+
+async def _tg_meta(request, tg, target, refresh=False):
+    """target(meta_target) -> 저장한 정보 또는 새로 찾은 정보. 키가 없으면 None"""
+    api = _tmdb_for(request, tg)
+    if not api.key or not target:
+        return None
+    hit = telegram_src.meta_get(tg.sid, target["mkey"])
+    if hit and not refresh:
+        age = time.time() - (hit["fetched"] or 0)
+        if hit["manual"] or (hit["data"] and age < META_FRESH_SEC) or (not hit["data"] and age < META_MISS_SEC):
+            return hit["data"]
+    tmdb_id = hit["tmdb_id"] if hit and hit["manual"] else None
+    tmdb_id = tmdb_id or await api.find(target["kind"], target["titles"], target["year"])
+    data = await api.details(target["kind"], tmdb_id) if tmdb_id else None
+    telegram_src.meta_put(tg.sid, target["mkey"], target["kind"], tmdb_id, data, manual=bool(hit and hit["manual"]))
+    return data
+
+
+async def _tg_seasons(request, tg, meta, seasons):
+    """{시즌: {회차: 정보}} - TV 작품의 고른 시즌들"""
+    out = {}
+    if not meta or meta.get("kind") != "tv":
+        return out
+    api = _tmdb_for(request, tg)
+    for s in sorted({int(x) for x in seasons if x is not None}):
+        data, fetched = telegram_src.season_get(meta["id"], s)
+        if data is None or time.time() - fetched > SEASON_FRESH_SEC:
+            try:
+                data = await api.season(meta["id"], s)
+            except tmdb.TmdbError:
+                data = data or {}
+            telegram_src.season_put(meta["id"], s, data)
+        out[str(s)] = data
+    return out
+
+
+@telegram_api
+async def tg_meta(request, tg):
+    """GET /api/tg/{sid}/meta/{channel}/{msg} (영상) 또는 /meta/{channel}?series=키 -> {meta, episodes}"""
+    channel = int(request.match_info["channel"])
+    if channel not in _user_channels(request, tg):
+        return _json_error(404, "설정에서 고르지 않은 채널입니다.")
+    msg = request.match_info.get("msg")
+    target = telegram_src.meta_target(tg.sid, channel, msg=int(msg) if msg else None,
+                                      series_key=None if msg else request.query.get("series", ""))
+    if not _tmdb_for(request, tg).key:
+        return web.json_response({"success": True, "meta": None, "reason": "nokey"})
+    try:
+        meta = await _tg_meta(request, tg, target, refresh=request.query.get("refresh") == "1" and is_admin(request))
+    except tmdb.TmdbError as e:
+        return web.json_response({"success": True, "meta": None, "error": str(e)})
+    except Exception as e:  # TMDB에 못 붙어도 화면은 나오게
+        log.warning("TMDB 실패: %s", e)
+        return web.json_response({"success": True, "meta": None, "error": f"{type(e).__name__}: {e}"})
+    seasons = []
+    if target and target.get("season") is not None:
+        seasons = [target["season"]]
+    elif msg is None and meta and meta.get("kind") == "tv":
+        seasons = [s for s in request.query.get("seasons", "").split(",") if s.isdigit()]
+    episodes = await _tg_seasons(request, tg, meta, seasons) if meta else {}
+    return web.json_response({"success": True, "meta": meta, "episodes": episodes,
+                              "target": {k: target[k] for k in ("kind", "season", "ep")} if target else None})
+
+
+@telegram_api
+async def tg_meta_search(request, tg):
+    """[정보 고치기] 검색: ?kind=movie|tv&q=이름&year= (관리자)"""
+    if not is_admin(request):
+        return _json_error(403, "관리자만 할 수 있습니다.")
+    kind = request.query.get("kind") if request.query.get("kind") in ("movie", "tv") else "movie"
+    try:
+        res = await _tmdb_for(request, tg).search(kind, request.query.get("q", "").strip(), request.query.get("year", ""))
+    except tmdb.TmdbError as e:
+        return _json_error(400, str(e))
+    return web.json_response({"success": True, "results": [{k: v for k, v in r.items() if k != "_raw"} for r in res[:20]]})
+
+
+@telegram_api
+async def tg_meta_fix(request, tg):
+    """[정보 고치기] 고른 작품으로 정하기 (관리자). {channel, msg | series, kind, tmdb_id(0이면 정보 없음)}"""
+    if not is_admin(request):
+        return _json_error(403, "관리자만 할 수 있습니다.")
+    body = await _json_body(request)
+    channel = int(body.get("channel") or 0)
+    if channel not in _user_channels(request, tg):
+        return _json_error(404, "설정에서 고르지 않은 채널입니다.")
+    target = telegram_src.meta_target(tg.sid, channel, msg=int(body["msg"]) if body.get("msg") else None,
+                                      series_key=None if body.get("msg") else str(body.get("series") or ""))
+    if not target:
+        return _json_error(404, "영상을 찾을 수 없습니다.")
+    kind = body.get("kind") if body.get("kind") in ("movie", "tv") else target["kind"]
+    tmdb_id = int(body.get("tmdb_id") or 0) or None
+    try:
+        data = await _tmdb_for(request, tg).details(kind, tmdb_id) if tmdb_id else None
+    except tmdb.TmdbError as e:
+        return _json_error(400, str(e))
+    telegram_src.meta_put(tg.sid, target["mkey"], kind, tmdb_id, data, manual=True)
+    return web.json_response({"success": True, "meta": data})
 
 
 @telegram_api
@@ -2116,6 +2226,10 @@ def create_app(require_auth=True):
     app.router.add_get(r"/api/tg/{sid}/image/{channel:-?\d+}/{msg:\d+}", tg_image)
     app.router.add_get(r"/api/tg/{sid}/sub/{channel:-?\d+}/{msg:\d+}", tg_subtitle)
     app.router.add_get(r"/api/tg/{sid}/series/{channel:-?\d+}", tg_series)
+    app.router.add_get(r"/api/tg/{sid}/meta/{channel:-?\d+}/{msg:\d+}", tg_meta)
+    app.router.add_get(r"/api/tg/{sid}/meta/{channel:-?\d+}", tg_meta)
+    app.router.add_get("/api/tg/{sid}/meta-search", tg_meta_search)
+    app.router.add_post("/api/tg/{sid}/meta-fix", tg_meta_fix)
     app.router.add_post("/api/tg/{sid}/progress", tg_progress)
     app.router.add_route("*", "/api/plex/{sid}/{tail:.*}", plex_proxy)
     app.router.add_get("/s/{token}/{path:.+}", versioned_static)

@@ -874,3 +874,13 @@ body.viewer-open { overflow: hidden; }
 .viz-ios { font-size: 0.8rem; line-height: 1.45; color: #c9cdd2; align-items: flex-start; }
 .viz-ios, .viz-ios span { white-space: normal; }
 .viz-ios input { flex-shrink: 0; margin-top: 0.2rem; }
+/* 텔레그램 [정보 고치기] - TMDB 검색 결과 */
+.meta-fix .toolbar { flex-wrap: nowrap; margin-bottom: 0.75rem; }
+.meta-fix .toolbar .input { flex: 1; min-width: 0; }
+.meta-results { display: flex; flex-direction: column; gap: 0.4rem; max-height: 55vh; overflow-y: auto; }
+.meta-result { display: flex; gap: 0.75rem; align-items: flex-start; text-align: left; padding: 0.5rem; border-radius: var(--radius);
+    border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer; }
+.meta-result:hover { border-color: var(--accent); }
+.meta-result img, .meta-noimg { width: 46px; height: 69px; object-fit: cover; border-radius: 4px; flex-shrink: 0; background: var(--bg-elev); }
+.meta-text { display: flex; flex-direction: column; gap: 0.15rem; font-size: 0.85rem; min-width: 0; }
+.meta-text small { color: var(--muted); }

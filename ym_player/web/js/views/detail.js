@@ -76,6 +76,11 @@ export async function renderDetail(main, [pid, id], _query, ctx) {
         }, icon(isWatched ? 'eye-slash' : 'check'), isWatched ? ' 안 봄으로' : ' 봤음'));
     }
 
+    // 소스가 더 붙이는 버튼 (텔레그램: [정보 고치기])
+    for (const a of d.extraActions || []) {
+        actions.appendChild(h('button', { class: 'btn', title: a.title || '', on: { click: () => a.onClick(ctx) } }, icon(a.icon), ` ${a.label}`));
+    }
+
     const poster = h('div', { class: `detail-poster shape-${d.posterShape}` });
     if (d.poster) poster.appendChild(h('img', { src: d.poster, alt: '' }));
     const bar = progressBar(d.progress);
@@ -85,6 +90,7 @@ export async function renderDetail(main, [pid, id], _query, ctx) {
     if (d.directors.length) facts.push(['감독', d.directors.join(', ')]);
     if (d.genres.length) facts.push(['장르', d.genres.join(', ')]);
     if (d.subtitles && d.subtitles.length) facts.push(['자막', d.subtitles.join(', ')]);
+    for (const f of d.extraFacts || []) facts.push(f);
 
     const hero = h('div', { class: 'detail-hero' },
         poster,
