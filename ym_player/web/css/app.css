@@ -686,6 +686,13 @@ body.login-body { overflow: auto; min-height: 100vh; display: flex; align-items:
 .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
 .settings-pane { max-width: 900px; }
 .pane-toolbar { margin-bottom: 1rem; }
+/* 소스 종류별 하위 탭 (Plex / IPTV / 텔레그램 / 라디오) - 위쪽 설정 탭과 구별되게 알약 모양 */
+.src-tabs { border-bottom: none; gap: 0.4rem; margin-bottom: 0.9rem; flex-wrap: wrap; }
+.src-tabs .tab { border: 1px solid var(--border); border-radius: 999px; padding: 0.35rem 0.9rem; margin-bottom: 0; }
+.src-tabs .tab.active { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.tab-count { display: inline-block; margin-left: 0.4rem; min-width: 1.3rem; padding: 0 0.35rem; border-radius: 999px;
+    background: rgba(var(--fg-rgb), 0.12); font-size: 0.72rem; text-align: center; font-variant-numeric: tabular-nums; }
+.src-tabs .tab.active .tab-count { background: rgba(0, 0, 0, 0.18); }
 .pane-title { font-size: 1rem; margin: 1.25rem 0 0.6rem; display: flex; align-items: center; gap: 0.5rem; }
 .backup-card .pane-title { margin-top: 0; }
 .backup-card { margin-bottom: 1rem; display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem; }

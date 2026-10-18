@@ -95,6 +95,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 58,
+        "version": "1.1.21",
+        "date": "2026-10-18",
+        "title": "설정 > 소스를 종류별 하위 탭(Plex / IPTV / 텔레그램 / 라디오)으로 나눔"
+    },
+    {
         "pr": 57,
         "version": "1.1.20",
         "date": "2026-10-18",
