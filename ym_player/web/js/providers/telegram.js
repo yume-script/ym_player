@@ -2,6 +2,7 @@
 // 설정에서 고른 채널 하나하나가 라이브러리처럼 보인다. 항목 id는 "채널id:메시지id".
 import { api, fmtDuration, h, modal, storeGet, storeSet, IS_SAFARI } from '../util.js';
 import { registry } from './index.js';
+import { openReader } from '../reader.js';
 
 // "새로 올라온 영상"의 NEW: 지난번 방문(서버 설정 tg_seen) 뒤 올라왔고 아직 안 본 영상.
 // 이번 방문 동안은 같은 기준을 쓰도록 처음 값을 세션에 붙잡아 둔다 (홈을 다시 열어도 NEW가 바로 사라지지 않게)
@@ -75,7 +76,7 @@ export class TelegramProvider {
         this.id = src.id;
         this.name = src.name;
         this.kind = 'telegram';
-        // kind: 관리자가 정한 채널 종류 ("video" 영상만 / "image" 사진만 / "" 둘 다)
+        // kind: 관리자가 정한 채널 종류 ("video" 영상만 / "image" 사진만 / "webtoon" 웹툰 압축 파일 / "" 영상+사진)
         // epOrder: 시리즈 회차 목록 순서 ("asc" 1화부터 / "desc" 최신 회차부터)
         this.channels = (src.channels || []).map((c) => ({ id: String(c.id), title: c.title, kind: c.kind || '', epOrder: c.ep_order || 'asc' }));
         this.base = `/api/tg/${encodeURIComponent(src.id)}`;
@@ -109,15 +110,32 @@ export class TelegramProvider {
                 raw: v,
             };
         }
+        const book = v.kind === 'book';
         if (v.series) {
             // 시리즈(회차 묶음) 카드: 가장 최근 회차가 대표. 누르면 회차 목록
             const sid = `series:${v.channel}:${v.series.key}`;
+            this._seen.set(sid, v);
+            const cover = thumb || (v.series.cover ? `${this.base}/thumb/${v.channel}/${v.series.cover}` : '');
             return {
                 pid: this.id, id: sid, type: 'show', playable: true, title: v.series.title,
                 subtitle: [this.channelTitle(v.channel), `${v.series.count}화`, (v.date || '').slice(0, 10)].filter(Boolean).join(' · '),
-                thumb, wideThumb: thumb, shape: 'wide',
+                thumb: cover, wideThumb: cover, shape: book ? 'poster' : 'wide', cardClass: book ? 'card-book' : '',
                 unwatched: v.series.unwatched, progress: 0,
                 route: `#/item/${this.id}/${encodeURIComponent(sid)}`,
+                ts: v.updated || 0,
+                isNew: !!(seenBefore() && v.date && v.date > seenBefore() && !v.watched && !(v.position > 0)),
+                raw: v,
+            };
+        }
+        if (book) {
+            // 웹툰 한 화 (zip/cbz): 누르면 웹툰 보기로 (reader.js). duration = 쪽 수 (한 번 열어 본 뒤에 앎)
+            return {
+                pid: this.id, id, type: 'book', playable: true, title: v.title,
+                subtitle: [this.channelTitle(v.channel), (v.date || '').slice(0, 10), fmtSize(v.size)].filter(Boolean).join(' · '),
+                thumb, wideThumb: thumb, shape: 'poster', cardClass: 'card-book',
+                progress: v.duration && v.position ? Math.min(1, v.position / v.duration) : 0,
+                watched: !!v.watched,
+                onOpen: () => this.read(id),
                 ts: v.updated || 0,
                 isNew: !!(seenBefore() && v.date && v.date > seenBefore() && !v.watched && !(v.position > 0)),
                 raw: v,
@@ -162,8 +180,9 @@ export class TelegramProvider {
         markSeen([...(data.recent || []), ...(data.channels || []).flatMap((r) => r.items)]);
         for (const row of data.channels || []) {
             if (!row.items.length) continue;
+            const webtoon = (this.channels.find((c) => c.id === String(row.channel)) || {}).kind === 'webtoon';
             hubs.push({
-                title: `${this.channelTitle(row.channel) || '채널'} 최신 영상`, source: this.name,
+                title: `${this.channelTitle(row.channel) || '채널'} ${webtoon ? '최신 웹툰' : '최신 영상'}`, source: this.name,
                 items: row.items.map((v) => this.toItem(v)), more: `#/library/${this.id}/${row.channel}`,
             });
         }
@@ -189,6 +208,12 @@ export class TelegramProvider {
         return { items: data.items.map((v) => this.toItem(v)), total, shown: data.total, approx: !!data.more };
     }
 
+    /** 사진/웹툰 채널에는 랜덤 재생할 영상이 없다 */
+    canRandom(channel) {
+        const c = this.channels.find((x) => x.id === String(channel));
+        return !(c && (c.kind === 'image' || c.kind === 'webtoon'));
+    }
+
     /**
      * 랜덤 재생할 영상 하나 (채널 하나 또는 libId가 없으면 볼 수 있는 채널 전부, 사진 제외).
      * exclude: 이번 랜덤 재생에서 이미 튼 "pid/id"들. 반환 {pid, id, title} 또는 null
@@ -205,9 +230,12 @@ export class TelegramProvider {
     async search(query) {
         const data = await api(`${this.base}/videos?${new URLSearchParams({ q: query, limit: 40 })}`);
         const items = data.items.map((v) => this.toItem(v));
-        const videos = items.filter((it) => it.type !== 'photo'), photos = items.filter((it) => it.type === 'photo');
+        const isBook = (it) => it.raw && it.raw.kind === 'book';
+        const videos = items.filter((it) => it.type !== 'photo' && !isBook(it)), photos = items.filter((it) => it.type === 'photo');
+        const books = items.filter(isBook);
         return [
             videos.length ? { title: `영상 · ${this.name}`, items: videos } : null,
+            books.length ? { title: `웹툰 · ${this.name}`, items: books } : null,
             photos.length ? { title: `사진 · ${this.name}`, items: photos } : null,
         ].filter(Boolean);
     }
@@ -309,6 +337,7 @@ export class TelegramProvider {
         const key = rest.join(':');
         const data = await api(`${this.base}/series/${channel}?${new URLSearchParams({ key })}`);
         const eps = data.episodes || [];
+        if (eps.length && eps[0].kind === 'book') return this._bookSeriesDetail(id, channel, data);
         const children = eps.map((v) => {
             const it = this.toItem({ ...v, series: undefined });
             const multiSeason = eps.some((x) => x.season !== eps[0].season);
@@ -353,6 +382,92 @@ export class TelegramProvider {
         }, mr && mr.meta);
     }
 
+    /** 웹툰 작품(회차 묶음) 상세: 회차 목록 + [이어 보기 / 1화 보기] */
+    _bookSeriesDetail(id, channel, data) {
+        const eps = data.episodes;
+        const multiSeason = eps.some((x) => x.season !== eps[0].season);
+        const children = eps.map((v) => {
+            const it = this.toItem({ ...v, series: undefined });
+            return {
+                ...it,
+                epLabel: `${multiSeason ? `시즌 ${v.season} ` : ''}${v.ep}화`,
+                raw: { ...v, index: multiSeason ? `S${v.season}·${v.ep}` : v.ep, title: v.title,
+                    originallyAvailableAt: [(v.date || '').slice(0, 10), v.duration ? `${v.duration}쪽` : ''].filter(Boolean).join(' · '),
+                    duration: 0, summary: '' },
+            };
+        });
+        const resumeIdx = eps.findIndex((v) => v.position > 0 && !v.watched);
+        const nextIdx = resumeIdx >= 0 ? resumeIdx : Math.max(0, eps.findIndex((v) => !v.watched));
+        const deck = children[nextIdx];
+        const unread = eps.filter((v) => !v.watched).length;
+        const cover = [...children].reverse().map((c) => c.thumb).find(Boolean) || '';
+        const ch = this.channels.find((c) => c.id === String(channel));
+        if (ch && ch.epOrder === 'desc') children.reverse();
+        return {
+            pid: this.id, id, type: 'show', title: data.title, subtitle: '',
+            poster: cover, posterShape: 'poster', art: '',
+            metaLine: ['웹툰', `${eps.length}화`, unread ? `안 본 회차 ${unread}` : '다 봄'],
+            rating: null, summary: '', tagline: '', genres: [], directors: [], cast: [],
+            playable: false, unwatched: unread, watched: unread === 0,
+            viewOffset: 0, duration: 0, progress: 0,
+            parent: { label: this.channelTitle(channel), route: `#/library/${this.id}/${channel}` },
+            children, childrenTitle: '회차', childrenStyle: 'episode',
+            onDeck: deck ? { ...deck, subtitle: `${deck.epLabel} ${resumeIdx >= 0 ? '이어 보기' : '보기'}` } : null,
+        };
+    }
+
+    // ----- 웹툰 보기 (reader.js) -----
+    /** 재생기 대신 이 소스가 직접 여는 항목이면 열고 true (웹툰 한 화 / 웹툰 작품 -> 다음 볼 회차) */
+    async openItem(id) {
+        const v = this._seen.get(String(id));
+        if (!v || v.kind !== 'book') return false;
+        const target = String(id).startsWith('series:') ? await this._seriesNext(id) : id;
+        if (target) this.read(target);
+        return true;
+    }
+
+    read(id) {
+        openReader({
+            load: (bid, onProgress, cancelled) => this._loadBook(bid, onProgress, cancelled),
+            save: (bid, position, total, done) => {
+                const [channel, msg] = String(bid).split(':');
+                const v = this._seen.get(String(bid));
+                if (v) Object.assign(v, { position: done ? 0 : position, duration: total, watched: done || v.watched });
+                return api(`${this.base}/progress`, { method: 'POST', json: { channel, msg, position, duration: total, ...(done ? { watched: true } : {}) } });
+            },
+            // 닫으면 회차 목록 화면의 진행 표시를 새로 (긴 목록은 스크롤 위치를 잃지 않게 그대로)
+            onClose: () => { if (location.hash.startsWith('#/item/')) window.dispatchEvent(new HashChangeEvent('hashchange')); },
+        }, id);
+    }
+
+    /** 압축 파일을 서버가 받을 때까지 기다렸다가 쪽 주소들 */
+    async _loadBook(id, onProgress, cancelled) {
+        const [channel, msg] = String(id).split(':');
+        let data;
+        for (;;) {
+            data = await api(`${this.base}/book/${channel}/${msg}`);
+            if (data.ready || cancelled()) break;
+            onProgress(data.progress || 0);
+            await new Promise((r) => setTimeout(r, 1000));
+        }
+        if (cancelled()) return null;
+        const v = data.item;
+        this._seen.set(String(id), v);
+        const s = data.series;
+        const ref = (x) => (x ? { id: `${channel}:${x.msg}`, title: x.title } : null);
+        if (s) for (const x of [s.prev, s.next]) if (x) this._seen.set(`${channel}:${x.msg}`, { ...x, kind: 'book', channel: Number(channel) });
+        return {
+            id,
+            title: v.title,
+            sub: [s ? `${s.title} · ${s.ep}화` : this.channelTitle(channel), `${data.pages.length}쪽`].join(' · '),
+            pages: data.pages.map((_n, i) => `${this.base}/book/${channel}/${msg}/${i}`),
+            position: v.watched ? 0 : (v.position || 0),
+            series: !!s,
+            prev: ref(s && s.prev),
+            next: ref(s && s.next),
+        };
+    }
+
     async _seriesNext(id) {
         const d = await this._seriesDetail(id);
         return (d.onDeck && d.onDeck.id) || (d.children[0] && d.children[0].id) || null;
@@ -360,6 +475,7 @@ export class TelegramProvider {
 
     async getDetail(id) {
         if (String(id).startsWith('series:')) return this._seriesDetail(id);
+
         this.warm(id);
         const v = await this._video(id);
         const item = this.toItem(v);

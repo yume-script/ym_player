@@ -106,7 +106,7 @@ def _clean_source(raw, old):
         for c in raw.get("channels") or []:
             if isinstance(c, dict) and str(c.get("id", "")).lstrip("-").isdigit():
                 ch = {"id": int(c["id"]), "title": str(c.get("title") or c["id"])[:200]}
-                if c.get("kind") in ("video", "image"):   # 영상만 / 사진만 (없으면 둘 다)
+                if c.get("kind") in ("video", "image", "webtoon"):   # 영상만 / 사진만 / 웹툰(압축 파일) (없으면 영상+사진)
                     ch["kind"] = c["kind"]
                 if c.get("ep_order") in ("asc", "desc"):  # 시리즈 회차 목록 순서 (없으면 1화부터)
                     ch["ep_order"] = c["ep_order"]

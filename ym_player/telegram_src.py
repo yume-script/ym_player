@@ -24,6 +24,7 @@ import shutil
 import sqlite3
 import time
 import unicodedata
+import zipfile
 from collections import OrderedDict
 from urllib.parse import unquote
 
@@ -169,6 +170,10 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif", ".heic"
 SUB_EXTS = {".srt", ".smi", ".sami", ".ass", ".ssa", ".vtt"}   # 영상 옆에 올린 자막 파일 (영상에 자동으로 붙임)
 SUB_MAX_BYTES = 5 * 1024 * 1024
 IMAGE_MAX_BYTES = 40 * 1024 * 1024   # 뷰어로 열 이미지 파일 크기 한도 (그보다 크면 썸네일만)
+# 웹툰/만화 압축 파일 (그림 묶음). 채널 종류를 "웹툰"으로 정한 채널에서만 목록에 보인다
+BOOK_EXTS = {".zip", ".cbz"}
+BOOK_MIMES = {"application/zip", "application/x-zip-compressed", "application/x-cbz", "application/vnd.comicbook+zip"}
+BOOK_MAX_BYTES = 1024 * 1024 * 1024
 
 
 def _caption_title(msg, file_name, fallback):
@@ -232,6 +237,13 @@ def message_to_media(msg):
         return {"msg": int(msg.id), "kind": "image", "title": title, "caption": caption[:4000], "file_name": file_name,
                 "mime": mime or "image/jpeg", "duration": 0, "size": int(getattr(doc, "size", 0) or 0),
                 "width": width, "height": height, "date": date.isoformat() if date else "",
+                "has_thumb": 1 if (getattr(doc, "thumbs", None) or []) else 0}
+    if not is_video and (ext in BOOK_EXTS or (not ext and mime in BOOK_MIMES)):
+        caption, title = _caption_title(msg, file_name, "웹툰")
+        date = getattr(msg, "date", None)
+        return {"msg": int(msg.id), "kind": "book", "title": title, "caption": caption[:4000], "file_name": file_name,
+                "mime": mime or "application/zip", "duration": 0, "size": int(getattr(doc, "size", 0) or 0),
+                "width": 0, "height": 0, "date": date.isoformat() if date else "",
                 "has_thumb": 1 if (getattr(doc, "thumbs", None) or []) else 0}
     if not (is_video or mime.startswith("video/") or ext in VIDEO_EXTS):
         return None
@@ -345,6 +357,11 @@ def db():
                 _link_subs(conn, sid, ch)
                 _link_series(conn, sid, ch)
             conn.execute("PRAGMA user_version = 9")
+        if conn.execute("PRAGMA user_version").fetchone()[0] < 10:
+            # 웹툰 압축 파일(zip/cbz)도 색인한다 -> 예전에 훑은 채널은 압축 파일을 건너뛰었으니 처음부터 다시 훑게
+            with conn:
+                conn.execute("DELETE FROM sync_state")
+            conn.execute("PRAGMA user_version = 10")
     return conn
 
 
@@ -583,15 +600,15 @@ def _display_title(text):
 
 
 def _link_series(conn, sid, channel):
-    rows = conn.execute("SELECT msg, title, file_name FROM videos WHERE source=? AND channel=? AND kind='video' ORDER BY msg",
-                        (sid, channel)).fetchall()
+    rows = conn.execute("SELECT msg, kind, title, file_name FROM videos WHERE source=? AND channel=? AND kind IN ('video','book') "
+                        "ORDER BY msg", (sid, channel)).fetchall()
     posters = {p["video"]: p["image"] for p in conn.execute(
         "SELECT video, image FROM posters WHERE source=? AND channel=?", (sid, channel)).fetchall()}
     groups = {}
     for r in rows:
         info = _episode_info(r["title"], r["file_name"])
-        if info:
-            groups.setdefault(info[0], []).append((r, info[1], info[2]))
+        if info:   # 웹툰(압축 파일)은 같은 이름의 영상과 섞이지 않게 키 앞에 "b:"
+            groups.setdefault(("b:" if r["kind"] == "book" else "") + info[0], []).append((r, info[1], info[2]))
     links = []
     for key, eps in groups.items():
         if len({(s, e) for _, s, e in eps}) < 2:   # 회차 하나뿐이면 묶지 않는다
@@ -625,12 +642,13 @@ def link_series(sid, channel):
 
 def _series_map(conn, sid, rows, user=""):
     """목록의 대표 회차 -> 시리즈 정보 {key, title, count, unwatched}"""
-    reps = {(r["channel"], r["msg"]) for r in rows if r["kind"] == "video"}
+    reps = {(r["channel"], r["msg"]) for r in rows if r["kind"] in ("video", "book")}
     if not reps:
         return {}
     chans = {c for c, _ in reps}
     marks = ",".join("?" * len(chans))
-    srows = conn.execute(f"SELECT channel, video, skey, title, rep FROM series WHERE source=? AND channel IN ({marks})",
+    srows = conn.execute(f"SELECT s.channel, s.video, s.skey, s.title, s.rep, v.has_thumb FROM series s LEFT JOIN videos v "
+                         f"ON v.source=s.source AND v.channel=s.channel AND v.msg=s.video WHERE s.source=? AND s.channel IN ({marks})",
                          [sid, *chans]).fetchall()
     keys = {(s["channel"], s["skey"]) for s in srows if s["rep"] and (s["channel"], s["video"]) in reps}
     if not keys:
@@ -647,6 +665,8 @@ def _series_map(conn, sid, rows, user=""):
         d["unwatched"] += (s["channel"], s["video"]) not in watched
         if s["rep"]:
             d["rep"] = s["video"]
+        if s["has_thumb"] and s["video"] > d.get("cover", 0):
+            d["cover"] = s["video"]   # 대표 회차에 그림이 없을 때 카드에 쓸 회차 (웹툰은 한 번 열어 본 회차만 그림이 있음)
     return {(c, d["rep"]): {k: v for k, v in d.items() if k != "rep"} for (c, _), d in info.items()}
 
 
@@ -677,8 +697,14 @@ def series_of(sid, channel, msg):
             "SELECT s.video, v.title FROM series s JOIN videos v ON v.source=s.source AND v.channel=s.channel AND v.msg=s.video "
             "WHERE s.source=? AND s.channel=? AND s.skey=? AND (s.season > ? OR (s.season = ? AND s.ep > ?)) "
             "ORDER BY s.season, s.ep, s.video LIMIT 1", (sid, channel, me["skey"], me["season"], me["season"], me["ep"])).fetchone()
+        prv = conn.execute(
+            "SELECT s.video, v.title FROM series s JOIN videos v ON v.source=s.source AND v.channel=s.channel AND v.msg=s.video "
+            "WHERE s.source=? AND s.channel=? AND s.skey=? AND (s.season < ? OR (s.season = ? AND s.ep < ?)) "
+            "ORDER BY s.season DESC, s.ep DESC, s.video DESC LIMIT 1",
+            (sid, channel, me["skey"], me["season"], me["season"], me["ep"])).fetchone()
     return {"key": me["skey"], "title": me["title"], "season": me["season"], "ep": me["ep"],
-            "next": {"msg": nxt["video"], "title": nxt["title"]} if nxt else None}
+            "next": {"msg": nxt["video"], "title": nxt["title"]} if nxt else None,
+            "prev": {"msg": prv["video"], "title": prv["title"]} if prv else None}
 
 
 # ---------------------------------------------------------------------------
@@ -785,6 +811,8 @@ def _row(r, prog, posters=None):
     d["position"] = p["position"] if p else 0
     d["watched"] = bool(p and p["watched"])
     d["poster"] = (posters or {}).get((d["channel"], d["msg"]), 0)
+    if d.get("kind") == "book":   # 웹툰: 보던 위치는 쪽, duration은 쪽 수 (처음 열어 봐야 앎)
+        d["duration"] = p["duration"] if p else 0
     return d
 
 
@@ -797,31 +825,40 @@ def _progress_map(conn, sid, rows, user=""):
     return {(p["channel"], p["msg"]): dict(p) for p in got if (p["channel"], p["msg"]) in keys}
 
 
+CHANNEL_KINDS = ("video", "image", "webtoon")
+
+
 def _channel_clause(channels, kinds, col=""):
-    """채널마다 정한 종류(영상만/사진만)를 지키는 WHERE 조각. kinds: {채널: "video"|"image"|""}"""
+    """채널마다 정한 종류를 지키는 WHERE 조각. kinds: {채널: "video"|"image"|"webtoon"|""}
+    웹툰 압축 파일(book)은 "웹툰" 채널에서만, 웹툰 채널에서는 압축 파일만 (다른 채널의 zip은 자막 묶음 따위일 수 있음)"""
     groups = {}
     for c in channels:
-        groups.setdefault((kinds or {}).get(c, "") if (kinds or {}).get(c, "") in ("video", "image") else "", []).append(c)
+        groups.setdefault((kinds or {}).get(c, "") if (kinds or {}).get(c, "") in CHANNEL_KINDS else "", []).append(c)
     parts, args = [], []
     for k, chans in groups.items():
         marks = ",".join("?" * len(chans))
-        parts.append(f"({col}channel IN ({marks})" + (f" AND {col}kind=?)" if k else ")"))
-        args += [*chans, *([k] if k else [])]
+        if k == "webtoon":
+            parts.append(f"({col}channel IN ({marks}) AND {col}kind='book')")
+        elif k:
+            parts.append(f"({col}channel IN ({marks}) AND {col}kind=?)")
+        else:
+            parts.append(f"({col}channel IN ({marks}) AND {col}kind!='book')")
+        args += [*chans, *([k] if k and k != "webtoon" else [])]
     return "(" + " OR ".join(parts) + ")", args
 
 
 def query_videos(sid, channels, offset=0, limit=40, q="", sort="latest", user="", kind="", kinds=None, group=False):
-    """kind: "video" / "image" / ""(둘 다 - 영상의 포스터로 짝지은 사진은 뺌). kinds: 채널마다 정한 종류"""
+    """kind: "video" / "image" / "book" / ""(전부 - 영상의 포스터로 짝지은 사진은 뺌). kinds: 채널마다 정한 종류"""
     if not channels:
         return [], 0
     clause, cargs = _channel_clause(channels, kinds)
     where = f"source=? AND {clause}"
     args = [sid, *cargs]
-    if kind in ("video", "image"):
+    if kind in ("video", "image", "book"):
         where += " AND kind=?"
         args.append(kind)
     else:
-        where += " AND kind IN ('video','image')"   # 자막 파일은 목록에 안 보임 (영상에 붙음)
+        where += " AND kind IN ('video','image','book')"   # 자막 파일은 목록에 안 보임 (영상에 붙음)
         where += (" AND NOT (kind='image' AND EXISTS (SELECT 1 FROM posters p WHERE p.source=videos.source"
                   " AND p.channel=videos.channel AND p.image=videos.msg))")
     if group and kind != "image":
@@ -902,7 +939,7 @@ def random_video(sid, channels, user="", unwatched=False, exclude=(), kinds=None
     unwatched=True면 다 본 영상은 뺀다. exclude는 방금 틀었던 (채널, 메시지)들 (연달아 같은 게 안 나오게).
     나눠 올린 영상의 중간 조각이 뽑히면 그 묶음의 첫 조각으로 바꾼다 (다음 조각은 이어서 재생됨).
     """
-    channels = [c for c in channels if (kinds or {}).get(c, "") != "image"]  # 사진만 보는 채널은 빼고
+    channels = [c for c in channels if (kinds or {}).get(c, "") not in ("image", "webtoon")]  # 사진/웹툰 채널은 빼고
     if not channels:
         return None
     marks = ",".join("?" * len(channels))
@@ -940,12 +977,20 @@ def continue_watching(sid, channels, limit=20, user=""):
     marks = ",".join("?" * len(channels))
     with db() as conn:
         rows = conn.execute(
-            f"""SELECT v.*, p.position, p.watched, p.updated FROM user_progress p JOIN videos v
+            f"""SELECT v.*, p.position, p.watched, p.updated, p.duration AS pages FROM user_progress p JOIN videos v
                 ON v.source=p.source AND v.channel=p.channel AND v.msg=p.msg
-                WHERE p.source=? AND p.user=? AND p.channel IN ({marks}) AND p.watched=0 AND p.position > 30
+                WHERE p.source=? AND p.user=? AND p.channel IN ({marks}) AND p.watched=0
+                  AND (p.position > 30 OR (v.kind='book' AND p.position > 0))
                 ORDER BY p.updated DESC LIMIT ?""", [sid, user, *channels, limit]).fetchall()
         posters = _poster_map(conn, sid, rows)
-    return [{**dict(r), "poster": posters.get((r["channel"], r["msg"]), 0)} for r in rows]
+    out = []
+    for r in rows:
+        d = {**dict(r), "poster": posters.get((r["channel"], r["msg"]), 0)}
+        pages = d.pop("pages", 0)
+        if d["kind"] == "book":
+            d["duration"] = pages
+        out.append(d)
+    return out
 
 
 def save_progress(sid, channel, msg, position, duration, watched=None, user=""):
@@ -993,6 +1038,80 @@ def forget_source(sid):
         for table in ("videos", "sync_state", "peers", "progress", "user_progress", "probes", "posters", "subs", "series", "meta"):
             conn.execute(f"DELETE FROM {table} WHERE source=?", (sid,))
     shutil.rmtree(os.path.join(config_store.DATA_DIR, "telegram_images", sid), ignore_errors=True)
+    shutil.rmtree(os.path.join(config_store.DATA_DIR, "telegram_books", sid), ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# 웹툰 압축 파일 (zip/cbz) - 안의 그림을 이름순(숫자는 숫자 크기로)으로 한 쪽씩
+# ---------------------------------------------------------------------------
+BOOK_PAGE_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp",
+                   ".gif": "image/gif", ".bmp": "image/bmp", ".avif": "image/avif"}
+BOOK_PAGE_MAX = 50 * 1024 * 1024     # 쪽 하나 (압축을 풀었을 때) 한도
+_book_pages_cache = OrderedDict()    # (경로, 바뀐 시각) -> 쪽 목록 [(ZipInfo 순번, 이름)]
+
+
+def _zip_name(info):
+    """zip 안의 파일 이름. UTF-8 표시가 없는 이름은 cp437로 읽혀 있어서 우리말(cp949)로 다시 읽어 본다"""
+    name = info.filename
+    if not info.flag_bits & 0x800:
+        try:
+            name = name.encode("cp437").decode("cp949")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            pass
+    return unicodedata.normalize("NFC", name)
+
+
+def _natural_key(name):
+    return [(0, int(t), "") if t.isdigit() else (1, 0, t) for t in re.split(r"(\d+)", name.casefold()) if t]
+
+
+def book_pages(path):
+    """압축 파일 안의 그림 [(순번, 이름)] - 맥 찌꺼기(__MACOSX, ._파일)와 그림이 아닌 파일은 빼고 이름순"""
+    key = (path, os.path.getmtime(path))
+    got = _book_pages_cache.get(key)
+    if got is not None:
+        _book_pages_cache.move_to_end(key)
+        return got
+    try:
+        with zipfile.ZipFile(path) as z:
+            infos = z.infolist()
+    except (zipfile.BadZipFile, OSError) as e:
+        raise TgError(f"압축 파일을 열지 못했습니다 ({e}). zip/cbz만 볼 수 있습니다.") from e
+    pages = []
+    for i, info in enumerate(infos):
+        name = _zip_name(info)
+        base = name.rsplit("/", 1)[-1]
+        if info.is_dir() or name.startswith("__MACOSX/") or base.startswith("."):
+            continue
+        if os.path.splitext(base.lower())[1] in BOOK_PAGE_TYPES:
+            pages.append((i, name))
+    pages.sort(key=lambda p: _natural_key(p[1]))
+    _book_pages_cache[key] = pages
+    while len(_book_pages_cache) > 64:
+        _book_pages_cache.popitem(last=False)
+    return pages
+
+
+def book_page(path, n):
+    """n번째 쪽 (bytes, mime)"""
+    pages = book_pages(path)
+    if not 0 <= n < len(pages):
+        raise TgError("없는 쪽입니다.")
+    idx, name = pages[n]
+    with zipfile.ZipFile(path) as z:
+        info = z.infolist()[idx]
+        if info.file_size > BOOK_PAGE_MAX:
+            raise TgError("그림이 너무 큽니다.")
+        try:
+            data = z.read(info)
+        except (RuntimeError, NotImplementedError) as e:   # 암호가 걸렸거나 모르는 압축 방식
+            raise TgError(f"이 압축 파일의 그림을 풀지 못했습니다 ({e}).") from e
+    return data, BOOK_PAGE_TYPES[os.path.splitext(name.lower())[1]]
+
+
+def set_has_thumb(sid, channel, msg):
+    with db() as conn:
+        conn.execute("UPDATE videos SET has_thumb=1 WHERE source=? AND channel=? AND msg=?", (sid, channel, msg))
 
 
 # ---------------------------------------------------------------------------
@@ -1014,14 +1133,15 @@ class TelegramSource:
         self._thumb_sem = asyncio.Semaphore(THUMB_CONCURRENCY)
         self._thumb_inflight = {}
         self._dl_sem = asyncio.Semaphore(DOWNLOAD_CONCURRENCY)  # 이 계정으로 동시에 받는 파일 조각 수
+        self._books = {}            # (channel, msg) -> 웹툰 압축 파일 받는 중 {task, done, total, error}
         if not fast_crypto():
             log.warning("cryptg가 없어 텔레그램 암호화를 순수 파이썬으로 처리합니다 (느림): pip install cryptg")
 
     def set_channels(self, src):
-        """설정에서 고른 채널과 채널마다 정한 종류 (영상만 "video" / 사진만 "image" / 둘 다 "")"""
+        """설정에서 고른 채널과 채널마다 정한 종류 (영상만 "video" / 사진만 "image" / 웹툰 "webtoon" / 영상+사진 "")"""
         chans = src.get("channels") or []
         self.channels = [int(c["id"]) for c in chans]
-        self.kinds = {int(c["id"]): c.get("kind", "") for c in chans if c.get("kind") in ("video", "image")}
+        self.kinds = {int(c["id"]): c.get("kind", "") for c in chans if c.get("kind") in CHANNEL_KINDS}
 
     def matches(self, src):
         return (str(src.get("api_id") or "").strip(), str(src.get("api_hash") or "").strip()) == (self.api_id, self.api_hash)
@@ -1425,6 +1545,99 @@ class TelegramSource:
         total = sum(f[1] for f in files)
         for _mtime, size, path in sorted(files):
             if total <= self.IMAGE_CACHE_MAX:
+                break
+            try:
+                os.remove(path)
+                total -= size
+            except OSError:
+                pass
+
+    # ----- 웹툰 압축 파일 -----
+    BOOK_CACHE_MAX = 4 * 1024 * 1024 * 1024  # 받아 둔 압축 파일은 합쳐서 4GB까지 (넘으면 오래 안 본 것부터 지움)
+
+    def _book_dir(self):
+        return os.path.join(config_store.DATA_DIR, "telegram_books", self.sid)
+
+    def book_path(self, channel, msg):
+        return os.path.join(self._book_dir(), f"{int(channel)}_{int(msg)}.zip")
+
+    def book_state(self, channel, msg, row):
+        """(받아 둔 파일 경로 또는 None, 받은 비율 0~1, 오류). 아직 없으면 뒤에서 받기 시작한다 (같은 파일은 한 번만)"""
+        path = self.book_path(channel, msg)
+        if os.path.exists(path):
+            os.utime(path)  # 최근에 본 것 (캐시 정리 순서)
+            return path, 1.0, ""
+        size = int(row.get("size") or 0)
+        if size > BOOK_MAX_BYTES:
+            return None, 0.0, f"압축 파일이 너무 큽니다 ({size // (1024 * 1024)}MB). 텔레그램 앱에서 받아 주세요."
+        key = (int(channel), int(msg))
+        job = self._books.get(key)
+        if job and job.get("error"):
+            self._books.pop(key, None)   # 오류는 한 번 알려 주고, 다음에 다시 열면 다시 받는다
+            return None, 0.0, job["error"]
+        if job is None:
+            job = self._books[key] = {"done": 0, "total": size, "error": ""}
+            job["task"] = asyncio.ensure_future(self._fetch_book(channel, msg, path, job))
+        return None, (job["done"] / job["total"]) if job["total"] else 0.0, ""
+
+    async def _fetch_book(self, channel, msg, path, job):
+        from telethon.errors import FileReferenceExpiredError
+        key = (int(channel), int(msg))
+        tmp = path + ".part"
+
+        def progress(done, total):
+            job["done"], job["total"] = done, total or job["total"]
+        try:
+            client = await self.authorized_client()
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            try:
+                got = await client.download_media(await self._message(channel, msg), file=tmp, progress_callback=progress)
+            except FileReferenceExpiredError:
+                got = await client.download_media(await self._message(channel, msg, fresh=True), file=tmp, progress_callback=progress)
+            if not got or not os.path.exists(tmp):
+                raise TgError("텔레그램에서 압축 파일을 받지 못했습니다.")
+            pages = await asyncio.to_thread(book_pages, tmp)   # 열리는지 먼저 (깨진 파일은 남기지 않음)
+            if not pages:
+                raise TgError("압축 파일 안에 그림(jpg/png/webp/gif)이 없습니다.")
+            os.replace(tmp, path)
+            self._books.pop(key, None)
+            await asyncio.to_thread(self._trim_books)
+            await self._book_cover(channel, msg, path)
+        except Exception as e:
+            log.warning("telegram 웹툰 %s/%s 받기 실패: %s", channel, msg, e)
+            job["error"] = str(e) if isinstance(e, TgError) else f"압축 파일을 받지 못했습니다: {e}"
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+    async def _book_cover(self, channel, msg, path):
+        """썸네일이 없는 압축 파일은 첫 쪽을 카드 그림으로"""
+        thumb = self._thumb_path(channel, msg)
+        if os.path.exists(thumb):
+            return
+        try:
+            data, _mime = await asyncio.to_thread(book_page, path, 0)
+        except TgError:
+            return
+        if len(data) > 4 * 1024 * 1024:
+            return
+        os.makedirs(os.path.dirname(thumb), exist_ok=True)
+        with open(thumb + ".tmp", "wb") as f:
+            f.write(data)
+        os.replace(thumb + ".tmp", thumb)
+        set_has_thumb(self.sid, channel, msg)
+
+    def _trim_books(self):
+        folder = self._book_dir()
+        try:
+            files = [(e.stat().st_mtime, e.stat().st_size, e.path) for e in os.scandir(folder)
+                     if e.is_file() and e.name.endswith(".zip")]
+        except OSError:
+            return
+        total = sum(f[1] for f in files)
+        for _mtime, size, path in sorted(files)[:-1]:   # 방금 받은 것(가장 최근)은 남긴다
+            if total <= self.BOOK_CACHE_MAX:
                 break
             try:
                 os.remove(path)

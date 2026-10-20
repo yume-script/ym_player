@@ -1002,7 +1002,8 @@ async def tg_home(request, tg):
     """홈 줄: 이어보기 + 채널마다 최신 영상 몇 개. 채널들을 동시에, 오래된 쪽 채우기 없이."""
     async def one(ch):
         try:
-            data = await tg.videos([ch], limit=12, fill=False, user=username(request), kind="video", group=True)
+            data = await tg.videos([ch], limit=12, fill=False, user=username(request),
+                                   kind="book" if tg.kinds.get(ch) == "webtoon" else "video", group=True)
         except telegram_src.TgError:
             raise
         except Exception as e:
@@ -1014,7 +1015,7 @@ async def tg_home(request, tg):
     rows = [r for r in await asyncio.gather(*(one(ch) for ch in mine)) if r]
     # 채널이 여럿이면 채널들을 합친 "새로 올라온 영상" 줄도 (사진만 보는 채널은 빼고)
     recent = []
-    vid_channels = [c for c in mine if tg.kinds.get(c, "") != "image"]
+    vid_channels = [c for c in mine if tg.kinds.get(c, "") not in ("image", "webtoon")]
     if len(vid_channels) > 1:
         recent = (await tg.videos(vid_channels, limit=30, fill=False, user=username(request), kind="video"))["items"]
     return web.json_response({"success": True,
@@ -1569,6 +1570,43 @@ async def tg_image(request, tg):
     ctype = _IMAGE_TYPES.get(os.path.splitext(path)[1], "image/jpeg")
     return web.FileResponse(path, headers={"Cache-Control": "private, max-age=86400", "Content-Type": ctype,
                                            "X-Content-Type-Options": "nosniff"})
+
+
+@telegram_api
+async def tg_book(request, tg):
+    """웹툰 압축 파일 GET /api/tg/{sid}/book/{c}/{m} -> 받아 두었으면 {ready, pages: [이름...], item, series},
+    아직이면 서버가 텔레그램에서 받기 시작하고 {ready: false, progress: 0~1} (화면이 1초마다 다시 물어봄)"""
+    channel, msg = _ids(request, tg)
+    row = telegram_src.get_video(tg.sid, channel, msg, user=username(request))
+    if not row or row.get("kind") != "book":
+        return _json_error(404, "색인에 없는 웹툰 파일입니다.")
+    await tg.authorized_client()
+    path, progress, error = tg.book_state(channel, msg, row)
+    if error:
+        return _json_error(502, error)
+    if not path:
+        return web.json_response({"success": True, "ready": False, "progress": round(progress, 3), "size": row.get("size", 0)})
+    try:
+        pages = await asyncio.to_thread(telegram_src.book_pages, path)
+    except telegram_src.TgError as e:
+        return _json_error(502, str(e))
+    return web.json_response({"success": True, "ready": True, "pages": [name for _i, name in pages], "item": row,
+                              "series": telegram_src.series_of(tg.sid, channel, msg)})
+
+
+@telegram_api
+async def tg_book_page(request, tg):
+    """웹툰 한 쪽 GET /api/tg/{sid}/book/{c}/{m}/{n} (n은 0부터, 받아 둔 압축 파일에서 꺼냄)"""
+    channel, msg = _ids(request, tg)
+    path = tg.book_path(channel, msg)
+    if not os.path.exists(path):
+        return _json_error(404, "아직 받지 않은 웹툰 파일입니다.")
+    try:
+        data, ctype = await asyncio.to_thread(telegram_src.book_page, path, int(request.match_info["n"]))
+    except telegram_src.TgError as e:
+        return _json_error(404, str(e))
+    return web.Response(body=data, headers={"Content-Type": ctype, "Cache-Control": "private, max-age=604800, immutable",
+                                            "X-Content-Type-Options": "nosniff"})
 
 
 @telegram_api
@@ -2226,6 +2264,8 @@ def create_app(require_auth=True):
     app.router.add_get(r"/api/tg/{sid}/image/{channel:-?\d+}/{msg:\d+}", tg_image)
     app.router.add_get(r"/api/tg/{sid}/sub/{channel:-?\d+}/{msg:\d+}", tg_subtitle)
     app.router.add_get(r"/api/tg/{sid}/series/{channel:-?\d+}", tg_series)
+    app.router.add_get(r"/api/tg/{sid}/book/{channel:-?\d+}/{msg:\d+}", tg_book)
+    app.router.add_get(r"/api/tg/{sid}/book/{channel:-?\d+}/{msg:\d+}/{n:\d+}", tg_book_page)
     app.router.add_get(r"/api/tg/{sid}/meta/{channel:-?\d+}/{msg:\d+}", tg_meta)
     app.router.add_get(r"/api/tg/{sid}/meta/{channel:-?\d+}", tg_meta)
     app.router.add_get("/api/tg/{sid}/meta-search", tg_meta_search)

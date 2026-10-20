@@ -977,6 +977,8 @@ class Player {
     async playItem(provider, id, opts) {
         // 직접 고른 영상이면 랜덤 재생을 끝낸다 (랜덤으로 뽑은 것/이어지는 조각은 opts.shuffle)
         if (!(opts && opts.shuffle)) this._setShuffle(null);
+        // 재생기가 아니라 소스가 직접 여는 항목 (텔레그램 웹툰 -> 웹툰 보기)
+        if (provider.openItem && await provider.openItem(id, opts || {})) return;
         // 재생 전에 물어볼 게 있으면 (텔레그램 나눠진 파일의 두 번째 이후 조각 등) 먼저 묻는다
         if (provider.confirmPlay) {
             const ask = ++this.prepSeq;
