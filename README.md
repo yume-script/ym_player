@@ -48,7 +48,7 @@ sudo systemctl enable --now ym_player
 - **관리자**: 사이드바 맨 아래 ⚙️ **설정**에서 탭으로 관리합니다 — **소스** / **사용자**(추가·삭제, 권한, 비밀번호, 볼 수 있는 범위) /
   **상태**(소스마다 실제 연결 점검, 서버 정보, 최근 경고) / **캐시** / **화면**(왼쪽 위 이름과 아이콘 - 로그인 화면과 브라우저 탭에도 쓰임, 아이콘의 버전 배지 켜기/끄기, 모든 사용자의 **기본 테마**) /
   **백업**(설정·사용자·즐겨찾기·아이콘을 JSON으로 받기, 그 파일로 복원) / **Thanks to**(참고한 저장소, 쓰는 오픈소스, 변경 이력).
-- **버전**: `ym_player/__init__.py`의 `__version__` 한 곳에서 정합니다. 왼쪽 위 아이콘 배지(예: 1.1.23), 설정 > 상태,
+- **버전**: `ym_player/__init__.py`의 `__version__` 한 곳에서 정합니다. 왼쪽 위 아이콘 배지(예: 1.1.24), 설정 > 상태,
   시작 로그에 그대로 나오므로 버전을 올릴 때 아이콘 그림을 다시 만들 필요가 없습니다(배지는 화면에서 글자로 얹음).
   업데이트(PR)마다 셋째 자리를 하나씩 올리고, `web/js/credits.js` CHANGELOG 맨 위 줄에 같은 `version`을 적습니다.
 - **새 버전 알림**: 아이콘 옆에 **[NEW]**가 뜨면 아직 안 본 새 버전입니다. 누르면 그 뒤로 새로워진 점이 나오고, 본 버전은 사람마다
@@ -130,6 +130,7 @@ ym_player/                       저장소 루트
     ├── server.py                aiohttp 서버 - 정적 파일 + 아래 API
     ├── iptv.py                  M3U 파싱, XMLTV 파싱(iterparse, gzip), HLS 재생목록 주소 바꾸기 (순수 함수)
     ├── config_store.py          data/config.json 읽기/쓰기, 토큰 숨기기
+    ├── mcp.py                   MCP 서버: AI 앱용 토큰 저장소와 JSON-RPC (도구가 하는 일은 server.py)
     ├── auth.py                  사용자(users.json)·비밀번호 해시·로그인 쿠키·실패 제한·볼 수 있는 범위
     ├── prefs.py                 사용자별 작은 설정(prefs.json) - IPTV 즐겨찾기
     ├── subtitles.py             자막 SRT/SMI/ASS/VTT -> WebVTT 변환 (순수 함수)
@@ -172,6 +173,7 @@ ym_player/                       저장소 루트
 | `GET /api/tg/{id}/channels · videos · video/{c}/{m} · home` | 채널 목록, 영상 목록(색인·과거 채우기), 영상 하나, 홈 줄 |
 | `GET /api/tg/{id}/stream/{c}/{m}` · `thumb/{c}/{m}` · `POST progress` | Range 스트림, 썸네일, 재생 위치 저장 (설정에서 고른 채널만) |
 | `GET /api/tg/{id}/video/{c}/{m}?probe=1` · `GET /api/tg/{id}/transcode/{c}/{m}?start=초&mode=` | 재생 방법 판단(ffprobe), ffmpeg 서버 변환 스트림 (조각난 MP4) |
+| `POST /mcp` (Bearer 토큰) · `POST /mcp/{토큰}` · `GET/POST /api/admin/mcp`, `DELETE /api/admin/mcp/{id}` | MCP 서버 (JSON-RPC) / 토큰 목록·만들기·지우기 (관리자만) |
 | `GET /api/tg/{id}/book/{c}/{m}` · `book/{c}/{m}/{쪽}` | 웹툰 압축 파일 (받는 중이면 `ready:false`와 비율, 다 받으면 쪽 목록) / 한 쪽 그림 |
 | `GET /api/tg/{id}/meta/{c}/{m}` · `meta/{c}?series=` · `meta-search` · `POST meta-fix` | TMDB 작품 정보 (찾기·고치기는 관리자만) |
 | `GET /api/tg/{id}/videos?kind=video\|image` · `GET /api/tg/{id}/image/{c}/{m}` | 영상/사진 골라 목록, 사진 원본 (뷰어) |
@@ -298,6 +300,21 @@ Jazz24)가 들어갑니다. 방송국은 한 줄에 하나 `이름 | 스트림 �
 - **`cryptg`**(requirements에 포함): 텔레그램 데이터 복호화를 C로 합니다. 없으면 순수 파이썬이라 2MB 복호화에
   약 300ms(약 7MB/s)가 걸리고 그동안 서버의 다른 요청까지 멈칫합니다. 있으면 약 20ms(약 90MB/s). 빠져 있으면 설정의
   텔레그램 카드와 서버 로그에 경고가 나옵니다. x86_64와 ARM 모두 미리 빌드된 패키지가 있어 따로 빌드할 필요 없습니다.
+
+## MCP 서버 (AI 앱 연결)
+
+Claude 같은 AI 앱에 YMPlayer를 [MCP](https://modelcontextprotocol.io) 서버로 연결하면 "호프 찾아서 링크 줘", "이어볼 거 뭐 있어?",
+"재즈 라디오 지금 무슨 곡이야?"처럼 물어볼 수 있습니다. 결과마다 YMPlayer 화면에서 바로 열리는 주소가 붙습니다.
+
+- **설정 > MCP**에서 이름과 사용자를 골라 **[토큰 만들기]** → 토큰과 연결 방법(Claude Code 명령, 주소)이 한 번만 보입니다.
+  서버에는 토큰의 해시만 남습니다(`data/mcp_tokens.json`). 토큰은 그 사용자의 권한으로 동작해서 **그 사용자가 볼 수 있는 소스·라이브러리만** 보입니다.
+  사용자를 지우면 그 사람의 토큰도 지워집니다.
+- **Claude Code**: `claude mcp add --transport http ymplayer https://내주소/mcp --header "Authorization: Bearer ymp_…"`
+- **Claude 앱 (claude.ai 사용자 지정 커넥터) / 헤더를 못 넣는 앱**: `https://내주소/mcp/ymp_…` (주소에 토큰이 들어감 - 서버 접속 기록에는 `/mcp/***`로 가려서 남김).
+  claude.ai 커넥터는 Anthropic 서버에서 접속하므로 인터넷에서 열리는 **https** 주소여야 합니다.
+- 도구(모두 읽기만): `get_status`(버전·새 버전·소스), `list_libraries`, `search`(Plex·텔레그램 영상/웹툰·라디오 방송국),
+  `continue_watching`(Plex 이어보기 + 텔레그램), `recently_added`, `radio_now_playing`. 재생 기록이나 설정은 바꾸지 않습니다.
+- 방식: MCP Streamable HTTP(요청마다 JSON 응답, SSE·세션 없음). 리버스 프록시 뒤면 `X-Forwarded-Proto/Host`로 결과 주소를 만듭니다.
 
 ## 동영상 캐시
 

@@ -38,12 +38,12 @@ import platform
 import secrets
 import shutil
 import time
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from aiohttp import ClientSession, ClientTimeout, web
 from yarl import URL
 
-from . import __version__, auth, config_store, iptv, media_cache, prefs, radio, subtitles, telegram_src, tmdb, transcode, updates
+from . import __version__, auth, config_store, iptv, mcp, media_cache, prefs, radio, subtitles, telegram_src, tmdb, transcode, updates
 
 log = logging.getLogger("ym_player")
 
@@ -116,7 +116,8 @@ async def auth_middleware(request, handler):
     if user:
         request["user"] = auth.public_user(user)
         return await handler(request)
-    if request.path in _PUBLIC_PATHS or request.path.startswith(("/static/", "/s/", "/internal/tg/")):
+    # /mcp는 쿠키가 아니라 MCP 토큰으로 (mcp_endpoint가 확인)
+    if request.path in _PUBLIC_PATHS or request.path.startswith(("/static/", "/s/", "/internal/tg/", "/mcp/")) or request.path == "/mcp":
         return await handler(request)
     if request.path.startswith("/api/"):
         return web.json_response({"success": False, "error": "로그인이 필요합니다.", "login": True}, status=401)
@@ -881,7 +882,11 @@ def _telegram(request):
     if not src or src.get("type") != "telegram":
         raise web.HTTPNotFound(text="텔레그램 소스를 찾을 수 없습니다.")
     require_source(request, src["id"])
-    pool = request.app[TELEGRAM]
+    return _tg_source(request.app, src)
+
+
+def _tg_source(app, src):
+    pool = app[TELEGRAM]
     tg = pool.get(src["id"])
     if tg is None or not tg.matches(src):
         if tg is not None:
@@ -1742,7 +1747,299 @@ async def users_delete(request):
     except auth.AuthError as e:
         return _json_error(400, str(e))
     prefs.forget(request.match_info["name"])
+    mcp.forget_user(request.match_info["name"])
     return web.json_response({"success": True})
+
+
+# ---------------------------------------------------------------------------
+# MCP - AI 앱(Claude 등)이 쓰는 도구 (mcp.py가 JSON-RPC와 토큰을 맡고, 여기는 도구가 하는 일)
+# 토큰 주인(사용자)이 볼 수 있는 소스·라이브러리만. 읽기만 한다 (재생 기록을 바꾸거나 설정을 건드리지 않음).
+# ---------------------------------------------------------------------------
+MCP_LIMIT_MAX = 50
+
+
+def _public_base(request):
+    """화면 주소 (리버스 프록시 뒤면 X-Forwarded-* 를 따름)"""
+    proto = request.headers.get("X-Forwarded-Proto", request.scheme).split(",")[0].strip() or "http"
+    host = request.headers.get("X-Forwarded-Host", request.host).split(",")[0].strip()
+    return f"{proto}://{host}"
+
+
+def _item_url(base, sid, item_id):
+    return f"{base}/#/item/{quote(str(sid), safe='')}/{quote(str(item_id), safe=':')}"
+
+
+def _mcp_limit(args, default=10):
+    try:
+        return max(1, min(MCP_LIMIT_MAX, int(args.get("limit") or default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _mcp_sources(user, stype=None):
+    return [s for s in config_store.load()["sources"]
+            if auth.can_source(user, s["id"]) and (stype is None or s["type"] == stype)]
+
+
+def _mcp_tg_channels(user, src):
+    allowed = auth.allowed_libraries(user, src["id"])
+    return [c for c in src.get("channels") or [] if allowed is None or str(c["id"]) in allowed]
+
+
+def _mcp_tg_item(base, src, row):
+    titles = {int(c["id"]): c.get("title", "") for c in src.get("channels") or []}
+    kind = {"book": "webtoon", "image": "photo"}.get(row.get("kind"), "video")
+    out = {"source": src["name"], "channel": titles.get(row["channel"], ""), "date": (row.get("date") or "")[:10]}
+    s = row.get("series")
+    if s:
+        out.update(type=f"{kind}_series", title=s["title"], episodes=s["count"], unwatched=s["unwatched"],
+                   url=_item_url(base, src["id"], f"series:{row['channel']}:{s['key']}"))
+        return out
+    out.update(type=kind, title=row.get("title", ""), url=_item_url(base, src["id"], f"{row['channel']}:{row['msg']}"))
+    if row.get("duration"):
+        if kind == "webtoon":
+            out["pages"] = int(row["duration"])
+        else:
+            out["minutes"] = round(row["duration"] / 60)
+        if row.get("position"):
+            out["progress"] = round(min(1.0, row["position"] / row["duration"]), 2)
+    if row.get("watched"):
+        out["watched"] = True
+    return out
+
+
+async def _plex_json(app, cfg, src, path, params=None):
+    hdrs = {**plex_headers(cfg, src.get("token")), "Accept": "application/json"}
+    async with app[HTTP].get(f"{src['url']}{path}", params=params or {}, headers=hdrs,
+                             ssl=None if src.get("verify_ssl", True) else False, timeout=ClientTimeout(total=15)) as r:
+        if r.status >= 400:
+            raise RuntimeError(f"Plex HTTP {r.status}")
+        return await r.json(content_type=None)
+
+
+def _plex_visible(data, user, src):
+    """허락된 섹션 + 숨기지 않은 섹션의 항목만 [Metadata...]"""
+    allowed = auth.allowed_libraries(user, src["id"])
+    if allowed is not None:
+        data = filter_plex_json(data, allowed)
+    mc = (data or {}).get("MediaContainer") or {}
+    items = list(mc.get("Metadata") or [])
+    for hub in mc.get("Hub") or []:
+        items += hub.get("Metadata") or []
+    hidden = set(map(str, src.get("hidden_libraries") or []))
+    default = mc.get("librarySectionID")
+    return [m for m in items if isinstance(m, dict) and str(m.get("librarySectionID", default)) not in hidden]
+
+
+def _mcp_plex_item(base, src, m):
+    kind = m.get("type", "")
+    title = m.get("title", "")
+    if kind == "episode":
+        title = f"{m.get('grandparentTitle', '')} S{m.get('parentIndex', '?')}E{m.get('index', '?')} {title}".strip()
+    elif kind == "season":
+        title = f"{m.get('parentTitle', '')} {title}".strip()
+    elif kind in ("track", "album"):
+        title = f"{m.get('grandparentTitle') or m.get('parentTitle', '')} - {title}".strip(" -")
+    out = {"source": src["name"], "type": kind, "title": title, "url": _item_url(base, src["id"], m.get("ratingKey", ""))}
+    if m.get("year"):
+        out["year"] = m["year"]
+    if m.get("librarySectionTitle"):
+        out["library"] = m["librarySectionTitle"]
+    if m.get("duration") and m.get("viewOffset"):
+        out["progress"] = round(m["viewOffset"] / m["duration"], 2)
+    if m.get("summary"):
+        out["summary"] = m["summary"][:200]
+    return out
+
+
+async def _mcp_each(sources, fn):
+    """소스마다 fn(src)를 동시에. 실패한 소스는 errors로 (하나가 안 돼도 나머지는 보여 줌)"""
+    async def one(src):
+        try:
+            return src, await fn(src), None
+        except Exception as e:
+            return src, [], f"{src['name']}: {e}"
+    got = await asyncio.gather(*(one(s) for s in sources))
+    items = [it for _s, part, _e in got for it in part]
+    errors = [e for _s, _p, e in got if e]
+    return items, errors
+
+
+async def _mcp_call(request, user, name, args):
+    app, base, me = request.app, _public_base(request), user["username"]
+    cfg = config_store.load()
+    limit = _mcp_limit(args)
+    if name == "get_status":
+        up = app[UPDATES].info()
+        return {"version": __version__, "update_available": up.get("newer", False), "latest_version": up.get("latest", ""),
+                "user": me, "role": user["role"], "url": base,
+                "sources": [{"id": s["id"], "type": s["type"], "name": s["name"]} for s in _mcp_sources(user)]}
+    if name == "list_libraries":
+        async def libs(src):
+            if src["type"] == "plex":
+                data = await _plex_json(app, cfg, src, "/library/sections")
+                allowed = auth.allowed_libraries(user, src["id"])
+                hidden = set(map(str, src.get("hidden_libraries") or []))
+                dirs = ((data.get("MediaContainer") or {}).get("Directory")) or []
+                return [{"source": src["name"], "library": d.get("title"), "type": d.get("type"),
+                         "url": f"{base}/#/library/{quote(src['id'], safe='')}/{d.get('key')}"}
+                        for d in dirs if str(d.get("key")) not in hidden and (allowed is None or str(d.get("key")) in allowed)]
+            if src["type"] == "telegram":
+                kinds = {"video": "영상", "image": "사진", "webtoon": "웹툰"}
+                return [{"source": src["name"], "library": c.get("title"), "type": "telegram:" + (c.get("kind") or "video+photo"),
+                         "kind": kinds.get(c.get("kind"), "영상+사진"),
+                         "url": f"{base}/#/library/{quote(src['id'], safe='')}/{c['id']}"} for c in _mcp_tg_channels(user, src)]
+            if src["type"] == "radio":
+                stations = _mcp_stations(user, src)
+                groups = collections.Counter(st.get("group") or "" for st in stations)
+                return [{"source": src["name"], "library": g or "방송국", "type": "radio", "stations": n,
+                         "url": f"{base}/#/library/{quote(src['id'], safe='')}/stations"} for g, n in groups.items()]
+            return [{"source": src["name"], "library": "라이브 TV", "type": src["type"],
+                     "url": f"{base}/#/live/{quote(src['id'], safe='')}"}]
+        items, errors = await _mcp_each(_mcp_sources(user), libs)
+        return {"libraries": items, "errors": errors}
+    if name == "search":
+        query = str(args.get("query") or "").strip()
+        if not query:
+            raise mcp.McpError(-32602, "query가 비었습니다.")
+        q = query.casefold()
+
+        async def find(src):
+            if src["type"] == "plex":
+                data = await _plex_json(app, cfg, src, "/hubs/search", {"query": query, "limit": limit})
+                return [_mcp_plex_item(base, src, m) for m in _plex_visible(data, user, src)
+                        if m.get("type") in ("movie", "show", "season", "episode", "artist", "album", "track")][:limit]
+            if src["type"] == "telegram":
+                chans = [int(c["id"]) for c in _mcp_tg_channels(user, src)]
+                rows, _total = telegram_src.query_videos(src["id"], chans, limit=limit, q=query, user=me, kinds=_tg_kinds(src))
+                return [_mcp_tg_item(base, src, r) for r in rows]
+            if src["type"] == "radio":
+                hits = [st for st in _mcp_stations(user, src)
+                        if q in f"{st['name']} {st.get('subtitle', '')} {st.get('group', '')}".casefold()][:limit]
+                return [_mcp_station(base, src, st) for st in hits]
+            return []
+        items, errors = await _mcp_each(_mcp_sources(user), find)
+        return {"query": query, "results": items, "errors": errors}
+    if name == "continue_watching":
+        async def cont(src):
+            if src["type"] == "plex":
+                data = await _plex_json(app, cfg, src, "/library/onDeck", {"X-Plex-Container-Start": 0, "X-Plex-Container-Size": limit})
+                return [_mcp_plex_item(base, src, m) for m in _plex_visible(data, user, src)][:limit]
+            if src["type"] == "telegram":
+                chans = [int(c["id"]) for c in _mcp_tg_channels(user, src)]
+                return [_mcp_tg_item(base, src, r) for r in telegram_src.continue_watching(src["id"], chans, limit=limit, user=me)]
+            return []
+        items, errors = await _mcp_each(_mcp_sources(user), cont)
+        return {"items": items[:limit * 2], "errors": errors}
+    if name == "recently_added":
+        only = str(args.get("source") or "")
+
+        async def recent(src):
+            if src["type"] == "plex":
+                data = await _plex_json(app, cfg, src, "/library/recentlyAdded",
+                                        {"X-Plex-Container-Start": 0, "X-Plex-Container-Size": limit})
+                return [_mcp_plex_item(base, src, m) for m in _plex_visible(data, user, src)][:limit]
+            if src["type"] == "telegram":
+                chans = [int(c["id"]) for c in _mcp_tg_channels(user, src)]
+                rows, _total = telegram_src.query_videos(src["id"], chans, limit=limit, user=me, kinds=_tg_kinds(src), group=True)
+                return [_mcp_tg_item(base, src, r) for r in rows if r.get("kind") != "image"]
+            return []
+        items, errors = await _mcp_each([s for s in _mcp_sources(user) if not only or s["id"] == only], recent)
+        return {"items": items, "errors": errors}
+    if name == "radio_now_playing":
+        q = str(args.get("query") or "").strip().casefold()
+        picked = []
+        for src in _mcp_sources(user, "radio"):
+            for st in _mcp_stations(user, src):
+                if not q or q in f"{st['name']} {st.get('subtitle', '')} {st.get('group', '')}".casefold():
+                    picked.append((src, st))
+        picked = picked[:limit]
+        nows = await asyncio.gather(*(_radio_now(app, st) for _src, st in picked))
+        return {"stations": [{**_mcp_station(base, src, st), "now_playing": n.get("text", ""),
+                              "artist": n.get("artist", ""), "song": n.get("title", "")}
+                             for (src, st), n in zip(picked, nows)]}
+    raise mcp.McpError(-32602, f"없는 도구입니다: {name}")
+
+
+def _tg_kinds(src):
+    return {int(c["id"]): c["kind"] for c in src.get("channels") or [] if c.get("kind") in telegram_src.CHANNEL_KINDS}
+
+
+def _mcp_stations(user, src):
+    allowed = auth.allowed_libraries(user, src["id"])
+    return [st for st in src.get("stations") or [] if allowed is None or st["id"] in allowed]
+
+
+def _mcp_station(base, src, st):
+    return {"source": src["name"], "type": "radio", "title": st["name"], "group": st.get("group", ""),
+            "url": f"{base}/#/library/{quote(src['id'], safe='')}/stations"}
+
+
+async def mcp_endpoint(request):
+    """POST /mcp (Authorization: Bearer 토큰) · POST /mcp/{token}. GET은 SSE를 안 쓰므로 405 (MCP 규칙)."""
+    if request.method != "POST":
+        return web.Response(status=405, headers={"Allow": "POST"})
+    raw = request.match_info.get("token") or ""
+    authz = request.headers.get("Authorization", "")
+    if not raw and authz.lower().startswith("bearer "):
+        raw = authz[7:].strip()
+    rec = mcp.find_token(raw)
+    user = auth.find_user(rec["user"]) if rec else None
+    if not user:
+        return web.json_response({"jsonrpc": "2.0", "id": None, "error": {"code": -32001, "message": "MCP 토큰이 맞지 않습니다."}},
+                                 status=401, headers={"WWW-Authenticate": 'Bearer realm="YMPlayer"'})
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return web.json_response({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}}, status=400)
+    pub = auth.public_user(user)
+
+    async def call(name, args):
+        return await _mcp_call(request, pub, name, args)
+    if isinstance(body, list):   # 예전 규격의 묶음 요청
+        out = [r for r in [await mcp.handle(m, call) for m in body] if r is not None]
+        return web.json_response(out) if out else web.Response(status=202)
+    resp = await mcp.handle(body, call)
+    return web.json_response(resp) if resp is not None else web.Response(status=202)
+
+
+@admin_only
+async def admin_mcp_list(request):
+    return web.json_response({"success": True, "tokens": mcp.list_tokens(), "url": f"{_public_base(request)}/mcp"})
+
+
+@admin_only
+async def admin_mcp_create(request):
+    body = await _json_body(request)
+    user = auth.find_user(body.get("user") or username(request))
+    if not user:
+        return _json_error(400, "그런 사용자가 없습니다.")
+    try:
+        raw, rec = mcp.create_token(body.get("name"), user["username"])
+    except ValueError as e:
+        return _json_error(400, str(e))
+    base = _public_base(request)
+    return web.json_response({"success": True, "token": raw, "item": rec, "url": f"{base}/mcp", "url_with_token": f"{base}/mcp/{raw}"})
+
+
+@admin_only
+async def admin_mcp_delete(request):
+    if not mcp.delete_token(request.match_info["tid"]):
+        return _json_error(404, "없는 토큰입니다.")
+    return web.json_response({"success": True})
+
+
+class _HideMcpToken(logging.Filter):
+    """접속 기록에 /mcp/<토큰> 주소가 그대로 남지 않게"""
+    _re = re.compile(r"/mcp/[A-Za-z0-9_\-]+")
+
+    def filter(self, record):
+        if isinstance(record.msg, str) and "/mcp/" in record.msg:
+            record.msg = self._re.sub("/mcp/***", record.msg)
+        return True
+
+
+logging.getLogger("aiohttp.access").addFilter(_HideMcpToken())
 
 
 # ---------------------------------------------------------------------------
@@ -2227,6 +2524,11 @@ def create_app(require_auth=True):
     app.router.add_get("/api/admin/status", admin_status)
     app.router.add_get("/api/admin/backup", admin_backup)
     app.router.add_get("/api/admin/update", admin_update_get)
+    app.router.add_get("/api/admin/mcp", admin_mcp_list)
+    app.router.add_post("/api/admin/mcp", admin_mcp_create)
+    app.router.add_delete("/api/admin/mcp/{tid}", admin_mcp_delete)
+    app.router.add_route("*", "/mcp", mcp_endpoint)
+    app.router.add_route("*", "/mcp/{token}", mcp_endpoint)
     app.router.add_post("/api/admin/update/check", admin_update_check)
     app.router.add_get("/api/admin/cache", admin_cache_get)
     app.router.add_put("/api/admin/cache", admin_cache_put)
