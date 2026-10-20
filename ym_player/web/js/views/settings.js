@@ -62,9 +62,10 @@ export async function renderSettings(main, _params, query, ctx) {
         cache: h('div', { class: 'settings-pane' }),
         look: h('div', { class: 'settings-pane' }),
         backup: h('div', { class: 'settings-pane' }),
+        mcp: h('div', { class: 'settings-pane' }),
         thanks: h('div', { class: 'settings-pane' }),
     };
-    const TABS = [['sources', 'layer-group', '소스'], ['users', 'users', '사용자'], ['status', 'heart-pulse', '상태'], ['cache', 'hard-drive', '캐시'], ['look', 'palette', '화면'], ['backup', 'box-archive', '백업'], ['thanks', 'heart', 'Thanks to']];
+    const TABS = [['sources', 'layer-group', '소스'], ['users', 'users', '사용자'], ['status', 'heart-pulse', '상태'], ['cache', 'hard-drive', '캐시'], ['look', 'palette', '화면'], ['backup', 'box-archive', '백업'], ['mcp', 'robot', 'MCP'], ['thanks', 'heart', 'Thanks to']];
     const tabBar = h('div', { class: 'tabs', role: 'tablist' });
     const showTab = (key) => {
         if (!panes[key]) key = 'sources';
@@ -76,6 +77,7 @@ export async function renderSettings(main, _params, query, ctx) {
         if (key === 'look') renderLook(panes.look);
         if (key === 'backup' && !panes.backup.firstChild) renderBackup(panes.backup);
         if (key === 'thanks' && !panes.thanks.firstChild) renderThanks(panes.thanks);
+        if (key === 'mcp') renderMcp(panes.mcp);
     };
     TABS.forEach(([key, ic, label]) => tabBar.appendChild(h('button', {
         class: 'tab', role: 'tab', dataset: { tab: key }, on: { click: () => showTab(key) },
@@ -824,6 +826,75 @@ function renderThanks(pane) {
                 h('ul', { class: 'changelog' }, g.items.map((e) => h('li', {},
                     h('a', { class: 'changelog-pr', href: `${REPO}/pull/${e.pr}`, target: '_blank', rel: 'noopener', text: `#${e.pr}` }),
                     h('span', {}, e.version ? h('span', { class: 'changelog-ver', text: `v${e.version}` }) : null, e.title))))))));
+}
+
+/** 복사 버튼이 붙은 한 줄 (명령·주소) */
+function copyLine(text) {
+    const code = h('code', { text });
+    return h('div', { class: 'cmd-box' }, code, h('button', { class: 'btn btn-sm', on: { click: async () => {
+        try { await navigator.clipboard.writeText(text); toast('복사했습니다.'); }
+        catch (e) { getSelection().selectAllChildren(code); toast('복사하지 못했습니다. 선택된 글자를 직접 복사해 주세요.', 'error'); }
+    } } }, icon('copy'), ' 복사'));
+}
+
+/** MCP: Claude 같은 AI 앱이 YMPlayer를 도구로 쓰게 하는 토큰 (사용자마다, 그 사용자가 볼 수 있는 것만) */
+async function renderMcp(pane) {
+    clear(pane);
+    let data, users;
+    try {
+        [data, users] = await Promise.all([api('/api/admin/mcp'), api('/api/users').then((r) => r.users)]);
+    } catch (e) {
+        pane.appendChild(h('p', { class: 'muted error', text: e.message }));
+        return;
+    }
+    const fmt = (t) => (t ? new Date(t * 1000).toLocaleString() : '쓴 적 없음');
+    const nameIn = h('input', { class: 'input', placeholder: '이름 (예: 내 Claude)', maxlength: 60 });
+    const userSel = h('select', { class: 'select' },
+        users.map((u) => h('option', { value: u.username, text: `${u.username} (${u.role === 'admin' ? '관리자' : '사용자'})`,
+            selected: u.username === registry.user.username })));
+    const create = async () => {
+        try {
+            const r = await api('/api/admin/mcp', { method: 'POST', json: { name: nameIn.value, user: userSel.value } });
+            showMcpToken(r);
+            renderMcp(pane);
+        } catch (e) { toast(e.message, 'error'); }
+    };
+    const rows = data.tokens.length
+        ? h('div', { class: 'mcp-tokens' }, data.tokens.map((t) => h('div', { class: 'mcp-token' },
+            h('div', { class: 'mcp-token-info' },
+                h('b', { text: t.name }),
+                h('span', { class: 'muted', text: ` · ${t.user} · …${t.hint} · 만든 때 ${fmt(t.created)} · 마지막 사용 ${fmt(t.last_used)}` })),
+            h('button', { class: 'btn btn-sm', on: { click: async () => {
+                if (!confirm(`"${t.name}" 토큰을 지울까요? 이 토큰을 쓰는 앱은 더 이상 연결되지 않습니다.`)) return;
+                try { await api(`/api/admin/mcp/${encodeURIComponent(t.id)}`, { method: 'DELETE' }); renderMcp(pane); }
+                catch (e) { toast(e.message, 'error'); }
+            } } }, icon('trash'), ' 지우기'))))
+        : h('p', { class: 'muted', text: '아직 만든 토큰이 없습니다.' });
+    pane.append(
+        h('div', { class: 'src-card' },
+            h('h3', { class: 'pane-title' }, icon('robot'), ' MCP 서버'),
+            h('p', { text: 'Claude 같은 AI 앱에 YMPlayer를 연결하면 "호프 찾아서 링크 줘", "이어볼 거 뭐 있어?", "재즈 라디오 지금 무슨 곡이야?"처럼 물어볼 수 있습니다. '
+                + '찾기 · 이어보기 · 최근 추가 · 라이브러리 목록 · 라디오 지금 나오는 곡 · 상태를 읽기만 합니다 (기록이나 설정은 바꾸지 않음).' }),
+            h('p', { class: 'field-hint', text: '토큰은 사용자마다 만들고, 그 사용자가 볼 수 있는 소스·라이브러리만 보입니다. 서버 주소:' }),
+            copyLine(data.url)),
+        h('div', { class: 'src-card' },
+            h('h3', { class: 'pane-title' }, icon('key'), ' 토큰'),
+            rows,
+            h('div', { class: 'toolbar mcp-new' }, nameIn, userSel, h('button', { class: 'btn btn-accent', on: { click: create } }, icon('plus'), ' 토큰 만들기'))));
+}
+
+function showMcpToken(r) {
+    const name = 'ymplayer';
+    const body = h('div', { class: 'whats-new mcp-made' },
+        h('p', { class: 'muted error', text: '토큰은 지금 한 번만 보입니다. 잃어버리면 지우고 새로 만드세요.' }),
+        h('h4', { text: '토큰' }), copyLine(r.token),
+        h('h4', { text: 'Claude Code' }), copyLine(`claude mcp add --transport http ${name} ${r.url} --header "Authorization: Bearer ${r.token}"`),
+        h('h4', { text: 'Claude 앱 (설정 > 커넥터 > 사용자 지정 커넥터 추가) · 헤더를 못 넣는 앱' }), copyLine(r.url_with_token),
+        h('p', { class: 'field-hint', text: 'Claude 앱(claude.ai)의 커넥터는 Anthropic 서버에서 접속하므로 인터넷에서 열리는 https 주소여야 합니다. '
+            + '집 안에서만 열리는 주소면 Claude Code나 Claude 데스크톱처럼 같은 네트워크에서 도는 앱을 쓰세요. 주소에 토큰이 들어 있으니 남에게 보여 주지 마세요.' }),
+        h('h4', { text: '다른 MCP 앱 (JSON 설정)' }),
+        copyLine(JSON.stringify({ mcpServers: { [name]: { type: 'http', url: r.url, headers: { Authorization: `Bearer ${r.token}` } } } })));
+    const m = modal(`MCP 토큰 - ${r.item.name}`, body, [h('button', { class: 'btn btn-accent', on: { click: () => m.close() } }, '닫기')]);
 }
 
 function renderBackup(pane) {

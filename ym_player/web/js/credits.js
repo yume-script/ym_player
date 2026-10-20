@@ -95,6 +95,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 61,
+        "version": "1.1.24",
+        "date": "2026-10-20",
+        "title": "MCP 서버: Claude 같은 AI 앱에서 찾기·이어보기·최근 추가·라디오 곡 정보 (설정 > MCP에서 토큰)"
+    },
+    {
         "pr": 60,
         "version": "1.1.23",
         "date": "2026-10-20",

@@ -917,3 +917,12 @@ body.viewer-open { overflow: hidden; }
 .reader-end-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: center; }
 @media (max-width: 600px) { .reader-bar .viewer-sub { display: none; } }
 .ep-row.card-book { flex-direction: row; }
+
+/* 설정 > MCP */
+.mcp-tokens { display: flex; flex-direction: column; gap: 0.4rem; margin-bottom: 0.9rem; }
+.mcp-token { display: flex; align-items: center; gap: 0.6rem; justify-content: space-between; padding: 0.55rem 0.7rem;
+    border-radius: var(--radius); background: var(--bg-elev2); }
+.mcp-token-info { min-width: 0; overflow-wrap: anywhere; }
+.mcp-new .input { flex: 1; min-width: 10rem; }
+.mcp-made h4 { margin: 0.8rem 0 0.2rem; font-size: 0.9rem; }
+.mcp-made .cmd-box code { overflow-wrap: anywhere; }
