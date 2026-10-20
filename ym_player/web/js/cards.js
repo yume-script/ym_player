@@ -28,7 +28,7 @@ export function progressBar(ratio) {
 export function posterCard(item, { wide = false } = {}) {
     const provider = registry.byId(item.pid);
     const shape = wide ? 'wide' : item.shape;
-    const fallback = { movie: 'film', show: 'tv', season: 'tv', episode: 'tv', artist: 'music', album: 'compact-disc', track: 'music', photo: 'image' }[item.type] || 'photo-film';
+    const fallback = { movie: 'film', show: 'tv', season: 'tv', episode: 'tv', artist: 'music', album: 'compact-disc', track: 'music', photo: 'image', book: 'book-open' }[item.type] || 'photo-film';
     const art = img(wide ? item.wideThumb : item.thumb, `card-art shape-${shape}`, fallback);
 
     if (item.isNew) art.appendChild(h('span', { class: 'card-new', title: '지난번에 본 뒤 새로 올라옴', text: 'NEW' }));
@@ -68,7 +68,9 @@ export function posterCard(item, { wide = false } = {}) {
         card._item = item;
         return card;
     }
-    return h('a', { class: `card card-${shape}`, href: item.route || '#' },
+    // item.onOpen: 상세 화면 대신 바로 여는 것 (텔레그램 웹툰 한 화 -> 웹툰 보기)
+    return h('a', { class: `card card-${shape}${item.cardClass ? ` ${item.cardClass}` : ''}`, href: item.route || '#',
+        on: item.onOpen ? { click: (e) => { e.preventDefault(); item.onOpen(); } } : {} },
         art,
         h('div', { class: 'card-title', text: item.title, title: item.title }),
         item.subtitle ? h('div', { class: 'card-sub', text: item.subtitle }) : null);

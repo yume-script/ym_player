@@ -143,7 +143,14 @@ class FakeClient:
                 pos += 5000
         return gen()
 
-    async def download_media(self, msg, file=bytes, thumb=None):
+    async def download_media(self, msg, file=bytes, thumb=None, progress_callback=None):
+        data = getattr(getattr(msg, "document", None), "data", None)
+        if data is not None and thumb is None and file is not bytes:   # 웹툰 압축 파일처럼 파일로 받는 것
+            with open(file, "wb") as f:
+                f.write(data)
+            if progress_callback:
+                progress_callback(len(data), len(data))
+            return file
         return b"\xff\xd8JPEG" + str(msg.id).encode()
 
 
@@ -661,7 +668,7 @@ def test_existing_index_titles_are_repaired_once(monkeypatch, tmp_path):
     row = telegram_src.get_video("tg", 1, 2)
     assert row["title"] == "영화" and row["file_name"] == "영화.mkv"
     with telegram_src.db() as c:
-        assert c.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert c.execute("PRAGMA user_version").fetchone()[0] == 10
 
 
 def test_split_parts_are_grouped(monkeypatch, tmp_path):
@@ -1014,3 +1021,93 @@ def test_tmdb_find_details_and_targets(monkeypatch, tmp_path):
     assert telegram_src.meta_target("tg", 1, series_key="킬러들의쇼핑몰")["mkey"] == ep["mkey"]
     telegram_src.meta_put("tg", ep["mkey"], "tv", 7, {"title": "킬러들의 쇼핑몰"})
     assert telegram_src.meta_get("tg", ep["mkey"])["data"]["title"] == "킬러들의 쇼핑몰"
+
+
+def _zip_bytes(names):
+    import io
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for n in names:
+            z.writestr(n, b"\xff\xd8" + n.encode())
+    # "@@"로 적은 이름을 cp949 "가"(2바이트)로 - 옛 압축 프로그램처럼 UTF-8 표시 없이 우리말 이름
+    return buf.getvalue().replace(b"@@", "가".encode("cp949"))
+
+
+def test_webtoon_archives_are_indexed_paged_and_only_in_webtoon_channels(monkeypatch, tmp_path):
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    telegram_src._migrated.discard(str(tmp_path))
+    book = telegram_src.message_to_media(video_msg(5, mime="application/zip", caption="",
+                                                    attrs=[DocumentAttributeFilename("나 혼자만 레벨업 12화.zip")]))
+    assert book["kind"] == "book" and book["title"] == "나 혼자만 레벨업 12화"
+    assert telegram_src.message_to_media(video_msg(6, mime="application/octet-stream", caption="",
+                                                   attrs=[DocumentAttributeFilename("a.cbz")]))["kind"] == "book"
+    assert telegram_src.message_to_media(video_msg(7, mime="application/x-rar", caption="",
+                                                   attrs=[DocumentAttributeFilename("a.rar")])) is None
+    # 쪽 순서: 숫자는 크기순, 폴더 안도, 맥 찌꺼기와 그림이 아닌 파일은 빼고. UTF-8 표시 없는 우리말 이름도
+    path = tmp_path / "b.zip"
+    path.write_bytes(_zip_bytes(["10.jpg", "2.jpg", "1.png", "readme.txt", "__MACOSX/._1.png", "sub/3.webp",
+                                 "@@_01.jpg"]))
+    names = [n for _i, n in telegram_src.book_pages(str(path))]
+    assert names == ["1.png", "2.jpg", "10.jpg", "sub/3.webp", "가_01.jpg"]
+    data, mime = telegram_src.book_page(str(path), 1)
+    assert data == b"\xff\xd82.jpg" and mime == "image/jpeg"
+    with pytest.raises(telegram_src.TgError):
+        telegram_src.book_page(str(path), 9)
+    # 웹툰 채널에서만 압축 파일이 보이고, 회차는 작품으로 묶인다 (같은 이름의 영상과는 따로)
+    _insert([(1, "book", "나 혼자만 레벨업 1화", "나 혼자만 레벨업 1화.zip", 1),
+             (2, "book", "나 혼자만 레벨업 2화", "나 혼자만 레벨업 2화.zip", 2),
+             (3, "book", "나 혼자만 레벨업 3화", "나 혼자만 레벨업 3화.zip", 3)], channel=1)
+    _insert([(1, "book", "자막 묶음", "subs.zip", 1), (2, "video", "영상", "a.mp4", 2)], channel=2)
+    telegram_src.link_series("tg", 1)
+    kinds = {1: "webtoon"}
+    rows, total = telegram_src.query_videos("tg", [1, 2], limit=50, kinds=kinds, group=True)
+    assert {(r["channel"], r["msg"]) for r in rows} == {(1, 3), (2, 2)} and total == 2
+    rep = next(r for r in rows if r["channel"] == 1)
+    assert rep["series"]["key"] == "b:나혼자만레벨업" and rep["series"]["count"] == 3
+    s = telegram_src.series_of("tg", 1, 2)
+    assert s["prev"]["msg"] == 1 and s["next"]["msg"] == 3
+    assert telegram_src.random_video("tg", [1], kinds=kinds) is None
+    # 보던 쪽 (쪽 수는 duration) -> 이어보기에도
+    telegram_src.save_progress("tg", 1, 2, 4.5, 20)
+    assert telegram_src.get_video("tg", 1, 2)["duration"] == 20
+    cont = telegram_src.continue_watching("tg", [1])
+    assert [(c["msg"], c["position"], c["duration"]) for c in cont] == [(2, 4.5, 20)]
+    src = config_store._clean_source({"id": "t", "type": "telegram", "name": "t", "channels": [
+        {"id": 1, "title": "a", "kind": "webtoon"}]}, None)
+    assert src["channels"] == [{"id": 1, "title": "a", "kind": "webtoon"}]
+
+
+def test_book_endpoint_downloads_then_serves_pages(env):
+    zipdata = _zip_bytes(["001.jpg", "002.jpg", "003.jpg"])
+    doc = SimpleNamespace(mime_type="application/zip", size=len(zipdata), thumbs=[], data=zipdata,
+                          attributes=[DocumentAttributeFilename("웹툰 1화.zip")])
+    env.msgs[1001] = SimpleNamespace(id=1001, document=doc, photo=None, message="",
+                                     date=datetime(2026, 1, 3, tzinfo=timezone.utc))
+    cfg = config_store.load()
+    cfg["sources"][0]["channels"] = [{"id": 777, "title": "웹툰", "kind": "webtoon"}]
+    config_store.save(cfg)
+
+    async def flow(c):
+        env.authorized = True
+        items = (await (await c.get("/api/tg/tg/videos?channel=777&limit=5")).json())["items"]
+        assert [(i["msg"], i["kind"]) for i in items] == [(1001, "book")]
+        home = await (await c.get("/api/tg/tg/home")).json()
+        assert [v["msg"] for row in home["channels"] for v in row["items"]] == [1001]
+        for _ in range(50):
+            data = await (await c.get("/api/tg/tg/book/777/1001")).json()
+            if data["ready"]:
+                break
+            await asyncio.sleep(0.02)
+        assert data["pages"] == ["001.jpg", "002.jpg", "003.jpg"] and data["item"]["title"] == "웹툰 1화"
+        r = await c.get("/api/tg/tg/book/777/1001/2")
+        assert r.status == 200 and r.content_type == "image/jpeg" and await r.read() == b"\xff\xd8003.jpg"
+        assert (await c.get("/api/tg/tg/book/777/1001/3")).status == 404
+        assert (await c.get("/api/tg/tg/book/777/999")).status == 404     # 영상은 웹툰으로 안 연다
+        # 첫 쪽이 카드 그림으로
+        items = (await (await c.get("/api/tg/tg/videos?channel=777&limit=5")).json())["items"]
+        assert items[0]["has_thumb"] == 1
+        r = await c.get("/api/tg/tg/thumb/777/1001")
+        assert await r.read() == b"\xff\xd8001.jpg"
+
+    run(flow)

@@ -14,7 +14,8 @@ function episodeRow(p, it) {
         class: 'card-play', title: '재생',
         on: { click: (e) => { e.preventDefault(); e.stopPropagation(); player.playItem(p, it.id); } },
     }, icon('play')));
-    return h('a', { class: `ep-row${it.watched ? ' watched' : ''}`, href: it.route },
+    return h('a', { class: `ep-row${it.watched ? ' watched' : ''}${it.cardClass ? ` ${it.cardClass}` : ''}`, href: it.route || '#',
+        on: it.onOpen ? { click: (e) => { e.preventDefault(); it.onOpen(); } } : {} },
         art,
         h('div', { class: 'ep-info' },
             h('div', { class: 'ep-title' },

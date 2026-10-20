@@ -95,6 +95,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 60,
+        "version": "1.1.23",
+        "date": "2026-10-20",
+        "title": "텔레그램: 웹툰 채널 - zip/cbz 압축 파일을 세로 스크롤 웹툰 보기로 (이어 보기, 다음 화)"
+    },
+    {
         "pr": 59,
         "version": "1.1.22",
         "date": "2026-10-18",

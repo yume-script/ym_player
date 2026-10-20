@@ -54,7 +54,7 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
         kindOpts.map(([v, label]) => h('option', { value: v, text: label, selected: v === (pref.kind || '') }))) : null;
     const countEl = h('span', { class: 'muted' });
     // 고르기 귀찮을 때: 이 라이브러리(채널)에서 아무거나 틀고, 끝나면 또 아무거나 (Plex는 [안 본 것만]을 따름)
-    const randomBtn = p.randomPick ? h('button', {
+    const randomBtn = p.randomPick && (!p.canRandom || p.canRandom(libId)) ? h('button', {
         class: 'btn', title: '이 라이브러리에서 아무거나 골라 계속 재생',
         on: { click: () => player.playRandom((exclude) => p.randomPick(libId, { unwatched: unwatchedChk.checked, exclude }), lib.title) },
     }, icon('shuffle'), ' 랜덤 재생') : null;

@@ -884,3 +884,36 @@ body.viewer-open { overflow: hidden; }
 .meta-result img, .meta-noimg { width: 46px; height: 69px; object-fit: cover; border-radius: 4px; flex-shrink: 0; background: var(--bg-elev); }
 .meta-text { display: flex; flex-direction: column; gap: 0.15rem; font-size: 0.85rem; min-width: 0; }
 .meta-text small { color: var(--muted); }
+
+/* 웹툰 보기 (reader.js) */
+.card-book .card-art img, .ep-row.card-book .ep-thumb img { object-position: top; }
+.ep-row.card-book .ep-thumb { aspect-ratio: 3 / 4; width: 72px; flex-basis: 72px; }
+.reader { position: fixed; inset: 0; z-index: 150; background: #0b0b0c; color: #ececec; }
+.reader-scroll { position: absolute; inset: 0; overflow-y: auto; overflow-anchor: none; overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch; outline: none; }
+.reader-pages { width: 100%; max-width: 760px; margin: 0 auto; }
+.reader.wide .reader-pages { max-width: none; }
+.reader-page { min-height: 80vh; display: flex; align-items: center; justify-content: center; background: #151517; }
+.reader-page.ready { min-height: 0; background: none; }
+.reader-page.failed { min-height: 30vh; }
+.reader-page img { display: block; width: 100%; height: auto; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.reader-page:not(.ready) img { position: absolute; opacity: 0; width: 1px; }
+.reader-bar { position: absolute; top: 0; left: 0; right: 0; z-index: 2; display: flex; align-items: center; gap: 0.4rem;
+    padding: max(0.5rem, env(safe-area-inset-top)) max(0.6rem, env(safe-area-inset-right)) 0.5rem max(0.6rem, env(safe-area-inset-left));
+    background: rgba(12, 12, 14, 0.88); backdrop-filter: blur(8px); transition: transform 0.2s; }
+.reader-bar .icon-btn { color: #c9cdd2; }
+.reader-bar .icon-btn:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
+.reader-bar .icon-btn:disabled { opacity: 0.35; cursor: default; }
+.reader.bars-hidden .reader-bar { transform: translateY(-110%); }
+.reader-progress { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; z-index: 2; background: rgba(255, 255, 255, 0.08); }
+.reader-progress > div { height: 100%; width: 0; background: var(--accent, #e5a00d); }
+.reader-status { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 3; max-width: 86%;
+    padding: 0.8rem 1.1rem; border-radius: 10px; background: rgba(20, 21, 23, 0.92); text-align: center; line-height: 1.5; }
+.reader-status.error { color: #ffb4a8; }
+.reader-end { max-width: 760px; margin: 0 auto; padding: 2.5rem 1rem max(3rem, env(safe-area-inset-bottom));
+    display: flex; flex-direction: column; align-items: center; gap: 0.9rem; text-align: center; }
+.reader-end:empty { display: none; }
+.reader-end-title { font-weight: 600; color: #c9cdd2; }
+.reader-end-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: center; }
+@media (max-width: 600px) { .reader-bar .viewer-sub { display: none; } }
+.ep-row.card-book { flex-direction: row; }
