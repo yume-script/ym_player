@@ -552,3 +552,23 @@ def test_config_save_errors_are_readable(data, monkeypatch):
         assert (await c.put("/api/config", json=[1])).status == 400
 
     run(flow)
+
+
+def test_config_keep_unchanged_sources(data):
+    """화면이 바뀌지 않은 소스는 {id, keep}만 보내도 저장된 그대로 (토큰·방송국 목록 유지)"""
+    from ym_player import config_store as cs
+    cfg = cs.load()
+    cs.replace_sources(cfg, [
+        {"id": "px", "type": "plex", "name": "집", "url": "http://p:32400", "token": "SECRET"},
+        {"id": "rd", "type": "radio", "name": "라디오", "stations": [{"name": f"방송 {i}", "url": f"http://r/{i}"} for i in range(300)]},
+    ])
+    cs.save(cfg)
+    cfg = cs.replace_sources(cs.load(), [
+        {"id": "px", "type": "plex", "keep": True},
+        {"id": "rd", "type": "radio", "name": "라디오 2", "stations": [{"name": "하나", "url": "http://r/1"}]},
+    ])
+    px, rd = cfg["sources"]
+    assert px["token"] == "SECRET" and px["url"] == "http://p:32400"
+    assert rd["name"] == "라디오 2" and len(rd["stations"]) == 1
+    with pytest.raises(ValueError):
+        cs.replace_sources(cs.load(), [{"id": "nope", "type": "plex", "keep": True}])
