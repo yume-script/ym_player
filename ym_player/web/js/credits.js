@@ -95,6 +95,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 63,
+        "version": "1.1.26",
+        "date": "2026-10-21",
+        "title": "위쪽에 포스터 크기 막대 - 카드와 상세 화면 포스터를 60~160%로"
+    },
+    {
         "pr": 62,
         "version": "1.1.25",
         "date": "2026-10-21",

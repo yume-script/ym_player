@@ -196,7 +196,29 @@ function changePassword() {
     cur.focus();
 }
 
+/** 위쪽 [포스터 크기] 막대: 카드와 상세 화면 포스터를 60~160%로 (이 브라우저에 기억, 두 번 누르면 100%) */
+const POSTER_KEY = 'yp_poster_scale';
+function initPosterSize() {
+    const input = document.getElementById('posterSize');
+    const label = document.getElementById('posterSizeVal');
+    if (!input) return;
+    const apply = (pct, save) => {
+        pct = Math.min(160, Math.max(60, Math.round(Number(pct) / 5) * 5 || 100));
+        input.value = pct;
+        label.textContent = `${pct}%`;
+        input.title = `포스터 크기 ${pct}%`;
+        document.documentElement.style.setProperty('--poster-scale', String(pct / 100));
+        if (save) storeSet(POSTER_KEY, pct);
+    };
+    apply(storeGet(POSTER_KEY, 100), false);
+    input.addEventListener('input', () => apply(input.value, true));
+    // 놓으면 포커스를 풀어 ← → 키가 재생기·화면 단축키로 가게
+    input.addEventListener('change', () => input.blur());
+    input.closest('.poster-size').addEventListener('dblclick', () => apply(100, true));
+}
+
 async function boot() {
+    initPosterSize();
     document.getElementById('menuBtn').addEventListener('click', () => document.body.classList.toggle('nav-open'));
     document.getElementById('navScrim').addEventListener('click', () => document.body.classList.remove('nav-open'));
     document.getElementById('searchForm').addEventListener('submit', (e) => {
