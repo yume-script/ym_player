@@ -984,3 +984,22 @@ body.viewer-open { overflow: hidden; }
     .list-row { gap: 0.8rem; padding: 0.5rem 0; }
     .list-summary { -webkit-line-clamp: 3; }
 }
+
+/* 사이드바 순서 바꾸기 (app.js) */
+.nav-group { position: relative; }
+.nav-move { display: none; gap: 0.1rem; margin-left: auto; }
+.nav-move .icon-btn { width: 26px; height: 26px; font-size: 0.75rem; border-radius: var(--radius); }
+.nav-move .icon-btn:hover { background: var(--bg-elev2); color: var(--accent); }
+body.nav-editing .nav-move { display: inline-flex; }
+body.nav-editing .nav-group > .nav-move { position: absolute; right: 0.3rem; top: 0; }
+body.nav-editing .nav-group { padding-top: 0.2rem; border: 1px dashed var(--border); border-radius: var(--radius); margin-top: 0.4rem; }
+body.nav-editing .nav-group .nav-head { padding-right: 4.2rem; }
+body.nav-editing .nav-group.collapsed .nav-items { display: block; }
+body.nav-editing .nav-group .nav-chevron { display: none; }
+body.nav-editing .nav-group .nav-link { cursor: default; padding-right: 0.3rem; }
+.nav-order { padding: 0.6rem 0.9rem 0.2rem; }
+.nav-order-start { border: none; background: none; color: var(--muted); font: inherit; font-size: 0.8rem; cursor: pointer; padding: 0.2rem 0; }
+.nav-order-start:hover { color: var(--accent); }
+.nav-order-edit { display: none; gap: 0.35rem; flex-wrap: wrap; }
+body.nav-editing .nav-order-start { display: none; }
+body.nav-editing .nav-order-edit { display: flex; }

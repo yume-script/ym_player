@@ -1,6 +1,7 @@
 """사용자마다 따로 두는 작은 설정 (data/prefs.json) - IPTV 즐겨찾기 채널, 화면 테마.
 
-{"사용자명(소문자)": {"fav_channels": ["채널id", ...], "theme": "light", "accent": "blue", "seen_version": "1.1.2"}}
+{"사용자명(소문자)": {"fav_channels": ["채널id", ...], "theme": "light", "accent": "blue", "seen_version": "1.1.2",
+                     "nav_order": {"sources": ["소스id", ...], "libs": {"소스id": ["라이브러리id", ...]}}}}
 theme/accent가 ""(또는 없음)이면 관리자가 정한 기본값을 따른다.
 브라우저(localStorage)에만 두면 기기마다 달라서, 로그인한 사람 기준으로 서버에 둔다.
 """
@@ -57,8 +58,20 @@ def _iso_time(value):
     return value
 
 
+def _nav_order(value):
+    """사이드바 순서 {"sources": [소스id...], "libs": {소스id: [라이브러리id...]}} (빈 값이면 설정 순서대로)"""
+    if not value:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("메뉴 순서 형식이 아닙니다.")
+    libs = value.get("libs") if isinstance(value.get("libs"), dict) else {}
+    return {"sources": _str_list(value.get("sources") or [])[:200],
+            "libs": {str(k)[:MAX_LEN]: _str_list(v)[:500] for k, v in list(libs.items())[:200] if isinstance(v, list)}}
+
+
 # 받아 주는 키와 검사 함수
-KEYS = {"fav_channels": _str_list, "theme": _choice(THEMES), "accent": _choice(ACCENTS), "seen_version": _version, "tg_seen": _iso_time}
+KEYS = {"fav_channels": _str_list, "theme": _choice(THEMES), "accent": _choice(ACCENTS), "seen_version": _version, "tg_seen": _iso_time,
+        "nav_order": _nav_order}
 
 
 def _path():
