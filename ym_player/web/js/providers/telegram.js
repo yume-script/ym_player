@@ -250,11 +250,13 @@ export class TelegramProvider {
      * 서버에 이 영상의 형식 확인(ffprobe)을 미리 시켜 둔다. 상세 화면을 열거나 재생 버튼에 마우스를 올리면 불러서,
      * [재생]을 누를 때는 이미 결과가 있게 한다 (텔레그램에서 파일 머리를 받느라 몇 초 걸리는 걸 숨김).
      */
-    warm(id) {
-        if (String(id).startsWith('series:') || this._warmed.has(id)) return;
+    warm(id, head = false) {
+        if (String(id).startsWith('series:') || this._warmed.has(head ? `${id}+` : id)) return;
         this._warmed.add(id);
+        if (head) this._warmed.add(`${id}+`);
         const [channel, msg] = String(id).split(':');
-        fetch(`${this.base}/probe/${channel}/${msg}`, { method: 'POST' }).catch(() => {});
+        // head: 앞부분 몇 MB도 받아 둔다 (곧 이어서 볼 다음 회차/조각)
+        fetch(`${this.base}/probe/${channel}/${msg}${head ? '?head=1' : ''}`, { method: 'POST' }).catch(() => {});
     }
 
     // ----- 작품 정보 (TMDB, 서버가 찾아 저장) -----
@@ -358,6 +360,7 @@ export class TelegramProvider {
         // 채널 설정이 "최신 회차부터"면 목록만 거꾸로 (다음 회차 이어 재생은 그대로 시간순)
         const ch = this.channels.find((c) => c.id === String(channel));
         if (ch && ch.epOrder === 'desc') children.reverse();
+        if (deck) this.warm(deck.id);   // [N화 재생]을 누르기 전에 형식 확인을 미리
         // 작품 정보: 회차 제목·줄거리·장면 사진도
         const mr = await this._meta(channel, null, key, [...new Set(eps.map((v) => v.season))]);
         if (mr && mr.meta) {
@@ -478,7 +481,8 @@ export class TelegramProvider {
 
         this.warm(id);
         const v = await this._video(id);
-        const item = this.toItem(v);
+        // 회차라도 이 화면은 그 회차 하나 (series를 넘기면 시리즈 카드가 되어 [재생]이 다른 회차를 틀었다)
+        const item = this.toItem({ ...v, series: undefined });
         const metaLine = [(v.date || '').slice(0, 10), v.duration ? fmtDuration(v.duration * 1000) : '',
             v.height ? `${v.height}p` : '', fmtSize(v.size), v.subs && v.subs.length ? `자막 ${v.subs.length}개` : ''].filter(Boolean);
         const facts = this.channelTitle(v.channel);
@@ -633,11 +637,13 @@ export class TelegramProvider {
         const nextPart = parts[parts.findIndex((p) => p.msg === v.msg) + 1];
         if (parts.length && nextPart && parts.some((p) => p.msg === v.msg)) {
             common.getNext = async () => ({ pid: this.id, id: `${channel}:${nextPart.msg}`, title: nextPart.title });
+            common.prepareNext = () => this.warm(`${channel}:${nextPart.msg}`, true);
             common.nextIsPart = true; // 랜덤 재생 중에도 다음 조각은 이어서
         } else if (v.series && v.series.next) {
             // 시리즈 회차면 끝난 뒤 다음 회차를
             const n = v.series.next;
             common.getNext = async () => ({ pid: this.id, id: `${channel}:${n.msg}`, title: n.title });
+            common.prepareNext = () => this.warm(`${channel}:${n.msg}`, true);
         }
         const streamed = (at, mode) => withSubs({
             ...common,

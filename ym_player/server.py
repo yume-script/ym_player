@@ -1319,13 +1319,24 @@ async def _tg_probe(app, tg, channel, msg, token, url):
 
 @telegram_api
 async def tg_probe(request, tg):
-    """미리 형식 확인 (상세 화면을 열거나 재생 버튼에 마우스를 올리면). 결과는 기억만 하고 바로 돌려준다."""
+    """미리 형식 확인 (상세 화면을 열거나 재생 버튼에 마우스를 올리면). 결과는 기억만 하고 바로 돌려준다.
+    ?head=1 이면 앞부분 몇 MB도 받아 둔다 (재생 중인 영상이 끝나 갈 때 다음 회차/조각을)."""
     channel, msg = _ids(request, tg)
-    if not telegram_src.get_video(tg.sid, channel, msg):
+    row = telegram_src.get_video(tg.sid, channel, msg)
+    if not row or row.get("kind") != "video":
         return _json_error(404, "색인에 없는 영상입니다.")
-    if transcode.available() and not telegram_src.get_probe(tg.sid, channel, msg):
+    need_probe = transcode.available() and not telegram_src.get_probe(tg.sid, channel, msg)
+    if need_probe or request.query.get("head"):
         await tg.authorized_client()
+    if need_probe:
         asyncio.ensure_future(_tg_decision(request, tg, channel, msg))
+    if request.query.get("head"):
+        async def head():
+            try:
+                await tg.warm_head(channel, msg, int(row["size"]), row.get("duration") or 0)
+            except Exception as e:  # 미리 받기라 실패해도 재생 때 다시 받으면 된다
+                log.info("telegram %s/%s 앞부분 미리 받기 실패: %s", channel, msg, e)
+        asyncio.ensure_future(head())
     return web.json_response({"success": True})
 
 

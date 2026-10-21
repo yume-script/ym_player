@@ -1111,3 +1111,66 @@ def test_book_endpoint_downloads_then_serves_pages(env):
         assert await r.read() == b"\xff\xd8001.jpg"
 
     run(flow)
+
+
+def test_prefetch_scans_once_and_bursts_at_start(env, tmp_path, monkeypatch):
+    """미리 받기: 확인한 조각은 다시 디스크를 뒤지지 않고(조각 수에 비례), 시작/탐색 직후엔 더 많이 동시에"""
+    from ym_player import media_cache
+    B = media_cache.BLOCK
+    store = media_cache.STORE
+    store.configure({"dir": str(tmp_path / "c"), "max_gb": 1, "ahead_min": 1})
+    checks, live, peak = [], [0], [0]
+    orig = store.has_cached_sync
+    monkeypatch.setattr(store, "has_cached_sync", lambda key, bi: (checks.append(bi), orig(key, bi))[1])
+
+    async def fetch(bi):
+        live[0] += 1
+        peak[0] = max(peak[0], live[0])
+        await asyncio.sleep(0.02)
+        live[0] -= 1
+        return bytes([bi % 256]) * B
+
+    async def main():
+        st = media_cache.streamer("t:burst", B * 120, fetch, bytes_per_sec=B * 60 / 60, concurrency=3, burst=6)
+        n = st.ahead_blocks()
+        async for _ in st.iter_range(0, 10):
+            pass
+        for _ in range(100):
+            await asyncio.sleep(0.02)
+            if st._ahead_task.done():
+                break
+        assert peak[0] >= 5                       # 처음 몇 조각은 몰아서
+        first = len(checks)
+        assert first <= n + 2                     # 앞쪽 n조각을 한 번씩만 확인
+        # 재생이 앞으로 가며 조각을 하나씩 읽어도, 이미 확인한 곳은 다시 확인하지 않는다
+        for bi in range(1, 20):
+            async for _ in st.iter_range(B * bi, 10):
+                pass
+            await asyncio.sleep(0.01)
+        for _ in range(100):
+            await asyncio.sleep(0.02)
+            if st._ahead_task.done():
+                break
+        assert len(checks) - first <= 19 + 2      # 새로 앞쪽에 생긴 조각만
+        assert all(store.has_cached_sync("t:burst", bi) for bi in range(0, 20 + n - 1))
+
+    asyncio.run(main())
+
+
+def test_probe_head_warms_first_blocks(env):
+    from ym_player import media_cache
+
+    async def flow(c):
+        env.authorized = True
+        await c.get("/api/tg/tg/videos?channel=777&limit=5")
+        r = await c.post("/api/tg/tg/probe/777/999?head=1")
+        assert r.status == 200
+        key = f"tg:tg:777:999:{4096 * 3 + 999}"
+        for _ in range(50):
+            if media_cache.STORE.has_cached_sync(key, 0):
+                break
+            await asyncio.sleep(0.02)
+        assert media_cache.STORE.has_cached_sync(key, 0)
+        assert (await c.post("/api/tg/tg/probe/777/998?head=1")).status == 404   # 영상이 아닌 메시지
+
+    run(flow)

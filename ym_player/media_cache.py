@@ -254,14 +254,21 @@ STORE = BlockStore()
 class Streamer:
     """파일 하나의 읽기 + 앞쪽 미리 받기."""
 
-    def __init__(self, key, size, fetch, meta=None, bytes_per_sec=0, concurrency=3, limiter=None):
+    BURST_BLOCKS = 8                    # 재생 시작/탐색 직후 이만큼은 더 많이 동시에 받는다 (첫 화면을 빨리)
+    HIGH_BPS = 2.5 * 1024 * 1024        # 약 20Mbps 넘는 영상(4K 등)은 평소에도 하나 더
+
+    def __init__(self, key, size, fetch, meta=None, bytes_per_sec=0, concurrency=3, burst=0, limiter=None):
         self.key, self.size, self.fetch, self.meta = key, int(size), fetch, meta or {}
         self.bps = bytes_per_sec
-        self.concurrency = concurrency
+        self.concurrency = concurrency + (1 if bytes_per_sec > self.HIGH_BPS else 0)
+        self.burst = max(burst, self.concurrency)
         self.limiter = limiter          # 원본 쪽 동시 요청 제한 (텔레그램 전체 공용 등)
         self.last_block = (self.size - 1) // BLOCK
         self._ahead_task = None
         self._anchor = 0
+        # 미리 받기에서 [_scan_from, _scan_pos) 조각은 이미 있거나 받는 중인 것으로 확인함 -> 다시 디스크를 뒤지지 않는다
+        self._scan_from = self._scan_pos = 0
+        self._burst_from = 0            # 이 조각부터 BURST_BLOCKS개는 burst만큼 동시에
 
     def ahead_blocks(self):
         minutes = STORE.settings["ahead_min"]
@@ -299,34 +306,45 @@ class Streamer:
         n = self.ahead_blocks()
         if not n or bi > self.last_block:
             return
+        if not self._scan_from <= bi <= self._scan_pos:
+            # 확인해 둔 구간 밖으로 탐색(또는 처음) -> 거기서부터 다시 확인하고, 처음 몇 조각은 몰아서 받는다
+            self._scan_from = self._scan_pos = bi
+            self._burst_from = bi
+        else:
+            self._scan_from = bi            # 재생이 앞으로 간 만큼 - 그 사이는 이미 확인함
         self._anchor = bi
         if self._ahead_task is None or self._ahead_task.done():
             self._ahead_task = asyncio.ensure_future(self._ahead_loop())
+
+    def _limit(self, bi):
+        return self.burst if bi < self._burst_from + self.BURST_BLOCKS else self.concurrency
 
     async def _ahead_loop(self):
         running = set()
         try:
             while True:
-                start = self._anchor
-                stop = min(self.last_block, start + self.ahead_blocks() - 1)
+                stop = min(self.last_block, self._anchor + self.ahead_blocks() - 1)
                 todo = None
-                for bi in range(start, stop + 1):
+                while self._scan_pos <= stop:
+                    bi = self._scan_pos
+                    self._scan_pos += 1
                     if (self.key, bi) in STORE.inflight:
                         continue
                     if not await asyncio.to_thread(STORE.has_cached_sync, self.key, bi):
                         todo = bi
                         break
                 if todo is None and not running:
-                    return  # 앞쪽이 다 차 있다 - 다음 읽기 때 다시
+                    return  # 앞쪽이 다 차 있다 - 다음 읽기 때 다시 (확인한 곳 다음부터)
                 if todo is not None:
                     running.add(asyncio.ensure_future(self.block(todo)))
-                if todo is None or len(running) >= self.concurrency:
+                if todo is None or len(running) >= self._limit(todo):
                     done, running = await asyncio.wait(running, return_when=asyncio.FIRST_COMPLETED)
                     for t in done:
                         if t.exception() is not None:
                             log.info("미리 받기 중단 (%s): %s", self.key, t.exception())
                             for r in running:
                                 r.cancel()
+                            self._scan_pos = self._anchor   # 실패한 조각을 다음에 다시
                             return
         except asyncio.CancelledError:
             raise

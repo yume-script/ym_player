@@ -39,7 +39,8 @@ OLDER_BATCHES_PER_PAGE = 3
 MSG_CACHE_SIZE = 3000     # 훑으면서 받은 메시지 객체를 기억 -> 썸네일/재생 때 다시 요청하지 않음
 THUMB_CONCURRENCY = 4     # 썸네일 동시 다운로드 수 (텔레그램 요청 제한에 안 걸리게)
 THUMB_PREFETCH = 60       # 새로 색인한 영상 중 미리 받아 둘 썸네일 수 (채널마다, 한 번 훑을 때)
-DOWNLOAD_CONCURRENCY = 6  # 텔레그램에 동시에 거는 파일 조각 요청 (재생 + 미리 받기, 모든 영상 합쳐서)
+DOWNLOAD_CONCURRENCY = 8  # 텔레그램에 동시에 거는 파일 조각 요청 (재생 + 미리 받기, 모든 영상 합쳐서)
+WARM_HEAD_BYTES = 4 * 1024 * 1024   # 다음 회차를 미리 준비할 때 받아 둘 앞부분
 
 
 def fast_crypto():
@@ -1426,6 +1427,17 @@ class TelegramSource:
         """iter_range와 같지만 media_cache를 거친다: 512KB 조각으로 받아 디스크에 남기고(캐시를 켰으면),
         재생 중에는 앞쪽 몇 분을 여러 조각씩 동시에 미리 받는다. 경계에 맞춘 요청이라 Telethon이 앞부분을
         버리려고 더 받는 일도 없다."""
+        st = self._streamer(channel, msg, size, duration)
+        async for piece in st.iter_range(start, length):
+            yield piece
+
+    async def warm_head(self, channel, msg, size, duration=0, nbytes=WARM_HEAD_BYTES):
+        """앞부분 몇 MB만 받아 캐시에 둔다 (곧 이어 볼 다음 회차). 그 뒤쪽 미리 받기는 하지 않는다"""
+        st = self._streamer(channel, msg, size, duration)
+        last = min(st.last_block, max(0, (min(int(size), nbytes) - 1) // media_cache.BLOCK))
+        await asyncio.gather(*(st.block(bi) for bi in range(last + 1)))
+
+    def _streamer(self, channel, msg, size, duration=0):
         async def fetch(bi):
             off = bi * media_cache.BLOCK
             want = min(media_cache.BLOCK, size - off)
@@ -1440,9 +1452,8 @@ class TelegramSource:
         st = media_cache.streamer(f"tg:{self.sid}:{int(channel)}:{int(msg)}:{int(size)}", size, fetch,
                                   meta={"source": self.sid, "title": f"{channel}/{msg}"},
                                   bytes_per_sec=(size / duration) if duration else 0,
-                                  concurrency=3, limiter=self._dl_sem)
-        async for piece in st.iter_range(start, length):
-            yield piece
+                                  concurrency=3, burst=6, limiter=self._dl_sem)
+        return st
 
     def _thumb_path(self, channel, msg):
         return os.path.join(config_store.DATA_DIR, "telegram_thumbs", self.sid, f"{int(channel)}_{int(msg)}.jpg")
