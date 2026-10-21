@@ -6,6 +6,7 @@ import './player.js';
 import { loadFavorites } from './providers/iptv.js';
 import { loadMyTheme, openThemeDialog } from './theme.js';
 import { initVersionNotice } from './notice.js';
+import { initViewMode } from './viewmode.js';
 import { renderHome } from './views/home.js';
 import { renderLibrary } from './views/library.js';
 import { renderDetail } from './views/detail.js';
@@ -219,6 +220,7 @@ function initPosterSize() {
 
 async function boot() {
     initPosterSize();
+    initViewMode();
     document.getElementById('menuBtn').addEventListener('click', () => document.body.classList.toggle('nav-open'));
     document.getElementById('navScrim').addEventListener('click', () => document.body.classList.remove('nav-open'));
     document.getElementById('searchForm').addEventListener('submit', (e) => {
