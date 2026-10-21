@@ -1,5 +1,5 @@
 // 포스터/채널 카드와 가로 줄(허브). 홈, 라이브러리, 검색, 상세 화면이 같이 쓴다.
-import { h, icon } from './util.js';
+import { h, icon, fmtDuration } from './util.js';
 import { player } from './player.js';
 import { registry } from './providers/index.js';
 import { channelHealth } from './providers/iptv.js';
@@ -56,7 +56,7 @@ export function posterCard(item, { wide = false } = {}) {
             on: {
                 click: (e) => {
                     e.preventDefault();
-                    const box = card.closest('.grid, .row-track') || card.parentNode;
+                    const box = card.closest('.grid, .row-track, .item-list, .item-table') || card.parentNode;
                     const cards = [...box.querySelectorAll('.card-photo')];
                     openViewer(cards.map((c) => c._item), cards.indexOf(card));
                 },
@@ -74,6 +74,62 @@ export function posterCard(item, { wide = false } = {}) {
         art,
         h('div', { class: 'card-title', text: item.title, title: item.title }),
         item.subtitle ? h('div', { class: 'card-sub', text: item.subtitle }) : null);
+}
+
+/** 세부/테이블 보기에 쓸 정보 (Plex 메타데이터 / 텔레그램 색인) */
+export function itemFacts(item) {
+    const m = item.raw || {};
+    const p = registry.byId(item.pid);
+    if (p && p.kind === 'plex') {
+        return {
+            year: m.year ? String(m.year) : '',
+            date: m.addedAt ? new Date(m.addedAt * 1000).toISOString().slice(0, 10) : '',
+            length: m.duration ? fmtDuration(m.duration) : (m.leafCount ? `${m.leafCount}화` : (m.childCount ? `시즌 ${m.childCount}` : '')),
+            rating: m.audienceRating || m.rating || '',
+            extra: m.contentRating || '',
+            summary: m.summary || '',
+        };
+    }
+    const caption = String(item.caption != null ? item.caption : (m.caption || ''));
+    const lines = caption.split('\n');
+    const summary = (lines[0] || '').trim() === item.title ? lines.slice(1).join('\n').trim() : caption.trim();
+    return {
+        year: '',
+        date: (m.date || '').slice(0, 10),
+        length: m.series ? `${m.series.count}화`
+            : m.kind === 'book' ? (m.duration ? `${Math.round(m.duration)}쪽` : '')
+                : (m.duration ? fmtDuration(m.duration * 1000) : ''),
+        rating: '',
+        extra: '',
+        summary,
+    };
+}
+
+/** 세부 보기(포스터 + 제목·정보·줄거리) / 테이블 보기(작은 그림 + 한 줄) 한 항목. 누르면 카드를 누른 것과 같다 */
+export function listItem(item, mode) {
+    const card = posterCard(item);
+    const f = itemFacts(item);
+    const status = item.watched ? h('span', { class: 'list-status done', title: '봤음' }, icon('check'))
+        : item.progress > 0 ? h('span', { class: 'list-status', text: `${Math.round(item.progress * 100)}%` })
+            : item.unwatched ? h('span', { class: 'list-status', text: `안 본 ${item.unwatched}` }) : h('span', { class: 'list-status' });
+    const open = (e) => { if (!e.target.closest('a, button')) card.click(); };
+    if (mode === 'table') {
+        return h('div', { class: 'table-row', role: 'row', on: { click: open } },
+            card,
+            h('div', { class: 'table-title' }, h('b', { text: item.title }), item.subtitle ? h('small', { text: item.subtitle }) : null),
+            h('span', { class: 'table-cell', text: f.year || f.date }),
+            h('span', { class: 'table-cell', text: f.length }),
+            status);
+    }
+    const meta = [f.year, f.length, f.extra, f.rating ? `★ ${Number(f.rating).toFixed(1)}` : '', !f.year ? f.date : ''].filter(Boolean);
+    return h('div', { class: 'list-row', on: { click: open } },
+        card,
+        h('div', { class: 'list-info' },
+            h('h3', { class: 'list-title', text: item.title }),
+            item.subtitle ? h('div', { class: 'list-sub muted', text: item.subtitle }) : null,
+            meta.length ? h('div', { class: 'list-meta' }, meta.map((x) => h('span', { text: x }))) : null,
+            f.summary ? h('p', { class: 'list-summary', text: f.summary }) : null,
+            status));
 }
 
 /** 라이브 채널 카드 - 누르면 바로 재생. playlist: 위/아래 채널 전환용 */

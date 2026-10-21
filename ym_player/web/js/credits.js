@@ -95,6 +95,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 64,
+        "version": "1.1.27",
+        "date": "2026-10-21",
+        "title": "라이브러리 보기 방식(그리드/세부/테이블), 재생기 연결 중 포스터와 라디오 표지도 포스터 크기 막대를 따름"
+    },
+    {
         "pr": 63,
         "version": "1.1.26",
         "date": "2026-10-21",

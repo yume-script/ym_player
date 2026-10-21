@@ -2,7 +2,8 @@
 import { h, icon, clear, storeGet, storeSet } from '../util.js';
 import { registry } from '../providers/index.js';
 import { player } from '../player.js';
-import { hubRow, posterCard, channelCard, playlistOf, emptyState, loading } from '../cards.js';
+import { hubRow, posterCard, channelCard, listItem, playlistOf, emptyState, loading } from '../cards.js';
+import { getViewMode } from '../viewmode.js';
 
 const PAGE = 60;
 
@@ -58,8 +59,35 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
         class: 'btn', title: '이 라이브러리에서 아무거나 골라 계속 재생',
         on: { click: () => player.playRandom((exclude) => p.randomPick(libId, { unwatched: unwatchedChk.checked, exclude }), lib.title) },
     }, icon('shuffle'), ' 랜덤 재생') : null;
-    const grid = h('div', { class: `grid${lib.type === 'artist' ? ' grid-square' : ''}${lib.type === 'telegram' ? ' grid-wide' : ''}${lib.type === 'radio' ? ' grid-channels' : ''}` });
+    const gridClass = `grid${lib.type === 'artist' ? ' grid-square' : ''}${lib.type === 'telegram' ? ' grid-wide' : ''}${lib.type === 'radio' ? ' grid-channels' : ''}`;
+    const grid = h('div', { class: gridClass });
     const sentinel = h('div', { class: 'sentinel' });
+    // 보기 방식 (위쪽 [보기] 메뉴): 그리드 / 세부 / 테이블. 라디오 방송국(채널 카드)은 늘 그리드
+    let loaded = [];
+    let mode = 'grid';
+    const tableHead = () => h('div', { class: 'table-row table-head', role: 'row' },
+        h('span'), h('span', { text: '제목' }), h('span', { class: 'table-cell', text: '연도·날짜' }),
+        h('span', { class: 'table-cell', text: '길이' }), h('span', { text: '상태' }));
+    const setMode = () => {
+        mode = lib.type === 'radio' ? 'grid' : getViewMode();
+        grid.className = mode === 'grid' ? gridClass : (mode === 'detail' ? 'item-list' : 'item-table');
+    };
+    const draw = (items) => {
+        const playlist = playlistOf(loaded);
+        for (const it of items) {
+            if (mode === 'table' && !grid.firstChild) grid.appendChild(tableHead());
+            grid.appendChild(it.type === 'channel' ? channelCard(it, playlist) : mode === 'grid' ? posterCard(it) : listItem(it, mode));
+        }
+    };
+    setMode();
+    const onView = () => {
+        setMode();
+        clear(grid);
+        draw(loaded);
+        if (!loaded.length && start >= total) grid.appendChild(emptyState('film', '항목이 없습니다'));
+    };
+    window.addEventListener('yp-view', onView);
+    ctx.onLeave(() => window.removeEventListener('yp-view', onView));
     body.append(
         h('div', { class: 'toolbar' },
             countEl,
@@ -85,8 +113,8 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
             // 텔레그램처럼 오래된 쪽을 아직 다 훑지 않은 소스는 "지금까지 찾은 수+"로
             countEl.textContent = res.approx ? `${(res.shown || 0).toLocaleString()}개+` : `${total.toLocaleString()}개`;
             // 라디오 방송국처럼 채널이면 채널 카드 (누르면 바로 재생, 위/아래로 다른 방송국)
-            const playlist = playlistOf(res.items);
-            res.items.forEach((it) => grid.appendChild(it.type === 'channel' ? channelCard(it, playlist) : posterCard(it)));
+            loaded = loaded.concat(res.items);
+            draw(res.items);
             if (!start) grid.appendChild(emptyState('film', '항목이 없습니다'));
         } catch (e) {
             if (myGen === gen) grid.appendChild(emptyState('triangle-exclamation', '불러오지 못했습니다', e.message));
@@ -99,7 +127,7 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
     };
     const reset = () => {
         storeSet(prefKey, { sort: sortSel.value, unwatched: unwatchedChk.checked, kind: kindSel ? kindSel.value : '' });
-        gen++; start = 0; total = Infinity; busy = false;
+        gen++; start = 0; total = Infinity; busy = false; loaded = [];
         clear(grid);
         loadMore();
     };

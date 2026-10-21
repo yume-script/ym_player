@@ -91,7 +91,10 @@ class Player {
         this.msgText = h('span');
         this.msgSpin = icon('circle-notch', 'fa-spin');
         this.retryBtn = h('button', { class: 'btn btn-accent hidden', text: '다시 시도', on: { click: () => this.retry() } });
-        this.msgEl = h('div', { class: 'player-msg hidden' }, this.msgSpin, this.msgText, this.retryBtn);
+        // 연결하는 동안 보여 줄 포스터 (크기는 위쪽 [포스터 크기] 막대를 따름)
+        this.msgArt = h('img', { class: 'player-msg-art hidden', alt: '' });
+        this.msgArt.addEventListener('error', () => this.msgArt.classList.add('hidden'));
+        this.msgEl = h('div', { class: 'player-msg hidden' }, this.msgArt, this.msgSpin, this.msgText, this.retryBtn);
 
         this.osd = {
             logo: h('img', { alt: '' }),
@@ -224,6 +227,8 @@ class Player {
         v.muted = storeGet('yp_muted', false);
         for (const ev of ['play', 'pause', 'playing', 'waiting']) v.addEventListener(ev, () => this._syncPlayState());
         v.addEventListener('timeupdate', () => this._onTime());
+        // 첫 화면이 나올 때까지는 연결 중 (그동안 포스터를 보여 준다)
+        v.addEventListener('playing', () => this.root.classList.remove('connecting'));
         v.addEventListener('progress', () => this._renderBuffered());
         v.addEventListener('ended', () => this._onEnded());
         v.addEventListener('volumechange', () => this._syncVolume());
@@ -319,6 +324,10 @@ class Player {
         this.miniArt.classList.toggle('hidden', !pb.audioOnly);
         this._setMiniArt(pb.audioOnly ? pb.poster : '');
         this.posterEl.style.backgroundImage = pb.audioOnly && pb.poster ? `url("${pb.poster}")` : '';
+        const art = !pb.audioOnly && !pb.live && pb.poster;
+        this.root.classList.add('connecting');
+        this.msgArt.classList.toggle('hidden', !art);
+        if (art) this.msgArt.src = pb.poster; else this.msgArt.removeAttribute('src');
         this.engineEl.textContent = '';
         this.subMenu.classList.add('hidden');
         this.optMenu.classList.add('hidden');
