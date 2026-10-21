@@ -182,6 +182,18 @@ def replace_sources(cfg, raw_sources):
     """화면에서 보낸 소스 목록으로 통째로 바꾼다. 토큰 칸이 비면 기존 토큰 유지."""
     if not isinstance(raw_sources, list):
         raise ValueError("sources는 목록이어야 합니다.")
-    old_by_id = {s.get("id"): s for s in cfg.get("sources", [])}
-    cfg["sources"] = [_clean_source(r, old_by_id.get(r.get("id"))) for r in raw_sources if isinstance(r, dict)]
+    old_by_id = {s.get("id"): s for s in cfg.get("sources", []) if isinstance(s.get("id"), str)}
+    out = []
+    for r in raw_sources:
+        if not isinstance(r, dict):
+            continue
+        rid = r.get("id") if isinstance(r.get("id"), str) else None
+        if r.get("keep"):
+            # 화면에서 바꾸지 않은 소스 - 저장된 것을 그대로 (요청을 작게)
+            if rid not in old_by_id:
+                raise ValueError("저장된 소스를 찾을 수 없습니다. 화면을 새로고침한 뒤 다시 저장해 주세요.")
+            out.append(old_by_id[rid])
+            continue
+        out.append(_clean_source(r, old_by_id.get(rid)))
+    cfg["sources"] = out
     return cfg

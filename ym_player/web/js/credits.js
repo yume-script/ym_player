@@ -95,6 +95,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 67,
+        "version": "1.1.30",
+        "date": "2026-10-21",
+        "title": "설정 저장 요청을 작게 (바뀐 소스만 보냄) - 앞단 프록시에서 큰 요청이 막혀 저장이 안 되던 문제 피함"
+    },
+    {
         "pr": 66,
         "version": "1.1.29",
         "date": "2026-10-21",

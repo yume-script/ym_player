@@ -15,6 +15,10 @@ function field(label, input, hint) {
 
 export async function renderSettings(main, _params, query, ctx) {
     let drafts = registry.config.sources.map((s) => ({ ...s, token: '' }));
+    // 저장할 때 바뀌지 않은 소스는 {id, keep}만 보낸다 - 라디오 방송국 목록 등으로 요청이 수십 KB가 되면
+    // 앞단 프록시(nginx 등)가 큰 본문을 못 받아 저장이 통째로 실패하는 경우가 있어서
+    const snapshot = (list) => new Map(list.map((s) => [s.id, JSON.stringify(s)]));
+    let pristine = snapshot(drafts);
     let dirty = false;
 
     const list = h('div', { class: 'src-list' });
@@ -530,10 +534,12 @@ export async function renderSettings(main, _params, query, ctx) {
     async function save() {
         saveBtn.disabled = true;
         try {
-            const cfg = await api('/api/config', { method: 'PUT', json: { sources: drafts } });
+            const sources = drafts.map((s) => (pristine.get(s.id) === JSON.stringify(s) ? { id: s.id, type: s.type, keep: true } : s));
+            const cfg = await api('/api/config', { method: 'PUT', json: { sources } });
             registry.config = cfg;
-            await ctx.reloadProviders();
             drafts = cfg.sources.map((s) => ({ ...s, token: '' }));
+            pristine = snapshot(drafts);
+            await ctx.reloadProviders();
             dirty = false;
             saveBtn.classList.remove('pulse');
             toast('저장했습니다.', 'success');
