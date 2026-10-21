@@ -95,6 +95,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 68,
+        "version": "1.1.31",
+        "date": "2026-10-21",
+        "title": "웹툰·시리즈 특별회차(특별편·외전·후기·공지·휴재)를 회차 목록 맨 밑으로, 이어 보기는 본편 다음에"
+    },
+    {
         "pr": 67,
         "version": "1.1.30",
         "date": "2026-10-21",
