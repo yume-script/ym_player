@@ -118,10 +118,14 @@ def _codec_args(url, mode, start):
     args = [ffmpeg_path() or "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin"]
     if start and start > 0:
         args += ["-ss", f"{float(start):.3f}"]
+    # 형식은 ffprobe로 이미 알고 있다 -> 시작할 때 분석을 짧게 (기본은 5MB/5초를 더 읽고서야 첫 조각을 낸다)
+    args += ["-probesize", "2000000", "-analyzeduration", "2000000"]
     args += ["-i", url, "-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn", "-map_metadata", "-1"]
     if mode == "transcode":
+        # 키프레임 2초마다 (HLS 첫 조각을 짧게 끊을 수 있게)
         args += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p",
-                 "-vf", "scale='min(1920,iw)':-2", "-g", "60", "-maxrate", "10M", "-bufsize", "20M"]
+                 "-vf", "scale='min(1920,iw)':-2", "-g", "60", "-force_key_frames", "expr:gte(t,n_forced*2)",
+                 "-maxrate", "10M", "-bufsize", "20M"]
     else:
         args += ["-c:v", "copy"]
     if mode == "remux":
@@ -133,14 +137,16 @@ def _codec_args(url, mode, start):
 
 def build_args(url, mode, start=0.0):
     """ffmpeg 명령. 결과는 stdout으로 나오는 조각난 MP4 (Chrome 등)."""
+    # frag_duration: 키프레임 간격이 긴 원본(그대로 옮기기)도 1초마다 조각을 내보내서 첫 화면이 빨리 뜬다
     return _codec_args(url, mode, start) + [
-        "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
+        "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-frag_duration", "1000000", "-f", "mp4", "pipe:1"]
 
 
 def build_hls_args(url, mode, start, outdir):
     """같은 변환을 HLS(fMP4 조각 + 재생목록 파일)로 outdir에 쓴다.
     Safari(아이폰/아이패드)는 길이를 모르는 스트림(build_args)을 못 열어서 이쪽으로 본다."""
     return _codec_args(url, mode, start) + [
-        "-f", "hls", "-hls_time", "4", "-hls_list_size", "0", "-hls_playlist_type", "event",
+        # 조각은 2초 - Safari는 첫 조각이 다 만들어져야 재생을 시작한다 (hls_init_time은 끝없는 재생목록에선 안 먹음)
+        "-f", "hls", "-hls_time", "2", "-hls_list_size", "0", "-hls_playlist_type", "event",
         "-hls_segment_type", "fmp4", "-hls_fmp4_init_filename", "init.mp4",
         "-hls_segment_filename", os.path.join(outdir, "seg%05d.m4s"), os.path.join(outdir, "index.m3u8")]

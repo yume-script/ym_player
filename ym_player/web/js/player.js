@@ -14,6 +14,7 @@ import { PipArt, requestPip, watchWebkitPip } from './pipart.js';
 
 const START_TIMEOUT_MS = 20000;
 const PROGRESS_EVERY_SEC = 10;
+const PREPARE_NEXT_SEC = 90;   // 끝나기 이만큼 전에 다음 회차/조각을 미리 준비
 const UI_HIDE_MS = 3000;
 const OSD_MS = 4000;
 // 재생 중 끊겼을 때 자동으로 다시 붙는 횟수 (중계로 바꾸는 것은 따로 1번). 이만큼 잘 돌면 횟수를 되돌린다
@@ -649,8 +650,15 @@ class Player {
             const onError = () => fail(new Error(v.error ? `미디어 오류 ${v.error.code}` : '미디어 오류'));
             v.addEventListener('error', onError);
             this._detachDirect = () => v.removeEventListener('error', onError);
-            if (startTime > 0) v.addEventListener('loadedmetadata', () => { v.currentTime = startTime; }, { once: true });
-            v.src = url;
+            // 시작 위치를 주소에도 (#t=초) - 브라우저가 처음부터 받아 두다가 옮기지 않고 그 자리부터 받는다.
+            // 무시하는 브라우저를 위해 정보가 오면 한 번 더 맞춘다
+            const atStart = startTime > 0 && kind === 'direct' && !String(url).includes('#');
+            if (startTime > 0) {
+                v.addEventListener('loadedmetadata', () => {
+                    if (Math.abs(v.currentTime - startTime) > 1) v.currentTime = startTime;
+                }, { once: true });
+            }
+            v.src = atStart ? `${url}#t=${Math.floor(startTime)}` : url;
             v.play().then(() => ok(kind === 'hls' ? 'HLS (네이티브)' : 'DIRECT')).catch((e) => {
                 if (e && e.name === 'NotAllowedError') { ok('DIRECT'); this._needsGesture(); }
                 else if (e && e.name !== 'AbortError') fail(e, false);
@@ -1109,6 +1117,15 @@ class Player {
         if (this.pb.onProgress && !v.paused && Math.abs(pos - this.lastReport) >= PROGRESS_EVERY_SEC) {
             this.lastReport = pos;
             this.pb.onProgress('playing', pos);
+        }
+        // 끝나기 조금 전에 다음 회차/조각을 서버가 미리 준비하게 (형식 확인 + 앞부분 받기) -> 넘어갈 때 바로 시작
+        const pbNow = this.pb;
+        if (pbNow.prepareNext && !pbNow._nextPrepared && !pbNow.live && !v.paused) {
+            const d = this._duration();
+            if (d > 0 && d - pos <= PREPARE_NEXT_SEC) {
+                pbNow._nextPrepared = true;
+                Promise.resolve().then(() => pbNow.prepareNext()).catch(() => {});
+            }
         }
     }
 

@@ -95,6 +95,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 62,
+        "version": "1.1.25",
+        "date": "2026-10-21",
+        "title": "재생 빨리 시작: 다음 회차 미리 준비, 시작·탐색 직후 몰아 받기, 서버 변환 첫 화면 단축, 이어보기 시작 위치, 회차 화면 [재생]이 다른 회차를 틀던 문제"
+    },
+    {
         "pr": 61,
         "version": "1.1.24",
         "date": "2026-10-20",
