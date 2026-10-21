@@ -95,6 +95,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 65,
+        "version": "1.1.28",
+        "date": "2026-10-21",
+        "title": "사이드바 메뉴 순서 바꾸기 (소스·라이브러리, 사람마다 저장, 홈 줄 순서에도 적용)"
+    },
+    {
         "pr": 64,
         "version": "1.1.27",
         "date": "2026-10-21",

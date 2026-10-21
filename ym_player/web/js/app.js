@@ -111,6 +111,74 @@ function navLink(href, iconName, label) {
     return h('a', { href, class: 'nav-link' }, icon(iconName), h('span', { text: label }));
 }
 
+// ----- 사이드바 순서 (사람마다, 서버 prefs.nav_order) -----
+function navOrder() {
+    return (registry.prefs && registry.prefs.nav_order) || {};
+}
+
+/** saved에 있는 것은 그 순서로 앞에, 나머지(새로 생긴 것)는 원래 순서대로 뒤에 */
+function ordered(list, keyOf, saved) {
+    if (!saved || !saved.length) return list;
+    const rank = new Map(saved.map((k, i) => [String(k), i]));
+    return list.map((x, i) => [x, i]).sort(([a, ia], [b, ib]) => {
+        const ra = rank.has(String(keyOf(a))) ? rank.get(String(keyOf(a))) : saved.length + ia;
+        const rb = rank.has(String(keyOf(b))) ? rank.get(String(keyOf(b))) : saved.length + ib;
+        return ra - rb;
+    }).map(([x]) => x);
+}
+
+/** 소스 순서는 홈 화면 줄 순서에도 쓰이게 registry 자체를 정렬 */
+function applySourceOrder() {
+    registry.providers = ordered(registry.providers, (p) => p.id, navOrder().sources);
+}
+
+/** 위/아래 버튼 (순서 바꾸기 중에만 보임) */
+function moveButtons(el) {
+    const move = (dir) => (e) => {
+        e.preventDefault(); e.stopPropagation();
+        const sib = dir < 0 ? el.previousElementSibling : el.nextElementSibling;
+        if (!sib || !sib.classList.contains(el.classList[0])) return;
+        if (dir < 0) el.parentNode.insertBefore(el, sib); else el.parentNode.insertBefore(sib, el);
+    };
+    return h('span', { class: 'nav-move' },
+        h('button', { class: 'icon-btn', type: 'button', title: '위로', on: { click: move(-1) } }, icon('chevron-up')),
+        h('button', { class: 'icon-btn', type: 'button', title: '아래로', on: { click: move(1) } }, icon('chevron-down')));
+}
+
+function startNavEdit() {
+    if (!nav._editGuard) {
+        // 순서 바꾸는 동안 메뉴를 눌러도 이동하지 않게
+        nav._editGuard = true;
+        nav.addEventListener('click', (e) => {
+            if (document.body.classList.contains('nav-editing') && e.target.closest('.nav-group a.nav-link')) e.preventDefault();
+        }, true);
+    }
+    document.body.classList.add('nav-editing');
+    nav.querySelectorAll('.nav-group .nav-link[data-lib]').forEach((a) => { if (!a.querySelector('.nav-move')) a.appendChild(moveButtons(a)); });
+}
+
+async function finishNavEdit(save, reset = false) {
+    document.body.classList.remove('nav-editing');
+    if (!save) { await buildNav(); return; }
+    const order = reset ? {} : {
+        sources: [...nav.querySelectorAll('.nav-group')].map((g) => g.dataset.pid),
+        libs: Object.fromEntries([...nav.querySelectorAll('.nav-group')].map((g) => [g.dataset.pid,
+            [...g.querySelectorAll('.nav-link[data-lib]')].map((a) => a.dataset.lib)])),
+    };
+    try {
+        await api('/api/me/prefs', { method: 'PUT', json: { nav_order: order } });
+        registry.prefs = { ...(registry.prefs || {}), nav_order: order };
+        toast(reset ? '메뉴를 기본 순서로 되돌렸습니다.' : '메뉴 순서를 저장했습니다.', 'success');
+    } catch (e) {
+        toast(`저장하지 못했습니다: ${e.message}`, 'error');
+    }
+    // 설정에 적힌 순서로 돌린 뒤 저장한 순서를 입힌다 (기본 순서로 되돌린 경우도)
+    registry.providers = ordered(registry.providers, (p) => p.id, (registry.config.sources || []).map((s) => s.id));
+    applySourceOrder();
+    await buildNav();
+    if (location.hash.startsWith('#/home') || !location.hash || location.hash === '#/') window.dispatchEvent(new HashChangeEvent('hashchange'));
+}
+
 async function buildNav() {
     clear(nav);
     nav.appendChild(navLink('#/home', 'house', '홈'));
@@ -119,6 +187,8 @@ async function buildNav() {
     if (iptvs.length > 1) nav.appendChild(navLink('#/live', 'tower-broadcast', '라이브 TV'));
 
     const accordion = registry.providers.length > 1;
+    applySourceOrder();
+    const libOrder = navOrder().libs || {};
     for (const p of registry.providers) {
         const items = h('div', { class: 'nav-items' });
         const head = accordion
@@ -128,6 +198,7 @@ async function buildNav() {
             }, h('span', { text: p.name }), icon('chevron-down', 'nav-chevron'))
             : h('div', { class: 'nav-head', text: p.name });
         const group = h('div', { class: 'nav-group', dataset: { pid: p.id } }, head, items);
+        group.insertBefore(moveButtons(group), items);   // 제목 줄 오른쪽 (순서 바꾸기 중에만 보임)
         nav.appendChild(group);
         if (p.kind === 'iptv') {
             items.appendChild(navLink(`#/live/${p.id}`, 'list', '채널 편성표'));
@@ -138,7 +209,12 @@ async function buildNav() {
         p.getLibraries().then((libs) => {
             spinner.remove();
             if (!libs.length) items.appendChild(h('div', { class: 'nav-note', text: '라이브러리 없음' }));
-            libs.forEach((l) => items.appendChild(navLink(`#/library/${p.id}/${l.id}`, l.icon, l.title)));
+            ordered(libs, (l) => l.id, libOrder[p.id]).forEach((l) => {
+                const a = navLink(`#/library/${p.id}/${l.id}`, l.icon, l.title);
+                a.dataset.lib = l.id;
+                if (document.body.classList.contains('nav-editing')) a.appendChild(moveButtons(a));
+                items.appendChild(a);
+            });
             highlightNav();
         }).catch((e) => {
             spinner.remove();
@@ -151,6 +227,13 @@ async function buildNav() {
         const ids = registry.providers.map((p) => p.id);
         openGroup(saved === null || ids.includes(saved) ? saved : ids[0]);
     }
+    // 순서 바꾸기: 소스(제목 줄)와 라이브러리 옆에 위/아래 버튼 -> [완료]하면 내 계정에 저장 (다른 기기에서도 같은 순서)
+    nav.appendChild(h('div', { class: 'nav-order' },
+        h('button', { class: 'nav-order-start', type: 'button', on: { click: startNavEdit } }, icon('arrow-down-up-across-line'), ' 메뉴 순서 바꾸기'),
+        h('div', { class: 'nav-order-edit' },
+            h('button', { class: 'btn btn-sm btn-accent', type: 'button', on: { click: () => finishNavEdit(true) } }, '완료'),
+            h('button', { class: 'btn btn-sm', type: 'button', on: { click: () => finishNavEdit(false) } }, '취소'),
+            h('button', { class: 'btn btn-sm', type: 'button', title: '설정에 적힌 순서로', on: { click: () => finishNavEdit(true, true) } }, '기본 순서'))));
     nav.appendChild(navFooter());
     highlightNav();
 }
@@ -239,6 +322,7 @@ async function boot() {
         registry.user = (await api('/api/auth/me')).user;
         const [, prefs] = await Promise.all([registry.load(), loadFavorites()]);
         registry.prefs = prefs || {};
+        applySourceOrder();
         if (prefs) loadMyTheme(prefs);
         initVersionNotice(prefs, registry.isAdmin());
     } catch (e) {
