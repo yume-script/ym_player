@@ -214,9 +214,23 @@ async def get_config(request):
 async def put_config(request):
     try:
         body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError("설정 형식이 아닙니다.")
         cfg = config_store.replace_sources(config_store.load(), body.get("sources"))
     except ValueError as e:
         return _json_error(400, str(e))
+    try:
+        return await _save_config(request, cfg)
+    except OSError as e:
+        log.exception("설정 저장 실패")
+        return _json_error(500, f"설정 파일을 쓰지 못했습니다 ({e.strerror or e}: {getattr(e, 'filename', '') or config_store.CONFIG_FILE}). "
+                                "data 폴더의 권한(주인)을 확인해 주세요.")
+    except Exception as e:  # 화면에 원인이 보이게 (빈 "HTTP 500" 대신)
+        log.exception("설정 저장 실패")
+        return _json_error(500, f"설정을 저장하지 못했습니다: {type(e).__name__}: {e}")
+
+
+async def _save_config(request, cfg):
     old_ids = {s["id"] for s in config_store.load().get("sources", []) if s.get("type") == "telegram"}
     old_plex = {s["id"] for s in config_store.load().get("sources", []) if s.get("type") == "plex"}
     config_store.save(cfg)

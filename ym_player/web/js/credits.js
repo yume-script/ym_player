@@ -95,6 +95,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 66,
+        "version": "1.1.29",
+        "date": "2026-10-21",
+        "title": "중간 프록시 오류(HTTP 500/413/502)를 알아보기 쉬운 안내로, 설정 저장 실패 원인을 화면에"
+    },
+    {
         "pr": 65,
         "version": "1.1.28",
         "date": "2026-10-21",

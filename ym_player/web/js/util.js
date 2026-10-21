@@ -80,6 +80,7 @@ export function toast(message, type = 'info', ms = 3500) {
     }
     const t = h('div', { class: `toast toast-${type}`, text: message });
     toastBox.appendChild(t);
+    ms = Math.max(ms, Math.min(15000, String(message).length * 70));   // 긴 안내는 읽을 시간만큼 더
     setTimeout(() => { t.classList.add('out'); setTimeout(() => t.remove(), 300); }, ms);
 }
 
@@ -102,17 +103,44 @@ export async function api(path, opts = {}) {
         delete init.json;
     }
     const res = await fetch(path, init);
-    let data = null;
-    try { data = await res.json(); } catch (e) { /* 본문 없음 */ }
+    let data = null, text = '';
+    try { text = await res.text(); data = text ? JSON.parse(text) : null; } catch (e) { data = null; /* JSON이 아닌 응답 (중간 프록시의 오류 화면 등) */ }
     if (res.status === 401 && data && data.login) {
         // 로그인이 풀렸으면(만료, 비밀번호 변경, 계정 삭제) 로그인 화면으로
         location.href = '/login';
         throw new Error('로그인이 필요합니다.');
     }
     if (!res.ok || (data && data.success === false)) {
-        throw new Error((data && (data.error || data.message)) || `HTTP ${res.status}`);
+        throw new Error((data && (data.error || data.message)) || describeHttpError(res.status, text, init.body ? init.body.length : 0));
     }
     return data;
+}
+
+/**
+ * YMPlayer가 보낸 것이 아닌 오류 응답(JSON이 아님)을 알아보기 쉬운 말로.
+ * YMPlayer는 오류를 늘 JSON으로 보낸다 -> JSON이 아니면 대개 중간 프록시(nginx 등)가 대신 답한 것
+ * (서버 로그에 그 요청이 아예 없다). sentBytes: 보낸 본문 크기
+ */
+export function describeHttpError(status, body = '', sentBytes = 0) {
+    const text = String(body || '');
+    const kb = sentBytes > 1024 ? ` (보낸 크기 ${Math.round(sentBytes / 1024)}KB)` : '';
+    if (/Server got itself in trouble/i.test(text)) {
+        return `YMPlayer 서버 오류 (HTTP ${status}). 서버 로그(journalctl -u ym_player)에 원인이 남습니다.`;
+    }
+    if (status === 413) {
+        return `보낸 내용이 너무 큽니다 (HTTP 413)${kb}. 중간 프록시의 요청 크기 제한(nginx: client_max_body_size)을 늘려 주세요.`;
+    }
+    if (status === 502 || status === 503 || status === 504) {
+        return `YMPlayer 서버에 닿지 못했습니다 (HTTP ${status}). 서버가 꺼져 있거나 다시 켜지는 중일 수 있습니다. 잠시 뒤 다시 시도해 주세요.`;
+    }
+    const proxy = (text.match(/nginx|openresty|cloudflare|caddy|apache|traefik|litespeed/i) || [''])[0].toLowerCase();
+    const who = proxy ? `중간 프록시(${proxy})` : '중간 프록시';
+    if (status >= 500) {
+        return `${who}에서 HTTP ${status} 오류가 났습니다. YMPlayer까지 요청이 오지 않았습니다${kb}. `
+            + '프록시 오류 로그를 확인해 주세요 (nginx: /var/log/nginx/error.log - 큰 요청을 임시 파일에 못 쓰는 경우가 많아 '
+            + 'client_body_buffer_size 1m; 설정이나 /var/lib/nginx 폴더 권한으로 고칩니다).';
+    }
+    return `HTTP ${status}${text && !text.trimStart().startsWith('{') ? ` - ${who} 응답` : ''}`;
 }
 
 export function modal(title, body, actions = []) {
