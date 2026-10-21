@@ -71,6 +71,24 @@ function fmtSize(bytes) {
     return gb >= 1 ? `${gb.toFixed(1)}GB` : `${Math.round(bytes / 1024 ** 2)}MB`;
 }
 
+/** 회차 이름: "3화" / "시즌 2 3화" / 특별회차는 "특별" (번호가 있으면 "특별 3") */
+function epLabel(v, multiSeason) {
+    if (v.special) return v.ep ? `특별 ${v.ep}` : '특별';
+    return `${multiSeason ? `시즌 ${v.season} ` : ''}${v.ep}화`;
+}
+
+function epIndex(v, multiSeason) {
+    if (v.special) return '특별';
+    return multiSeason ? `S${v.season}·${v.ep}` : v.ep;
+}
+
+/** "최신 회차부터" 순서: 본편만 거꾸로, 특별회차는 그대로 맨 밑에 */
+function reverseRegular(children) {
+    const regular = children.filter((c) => !c.raw.special).reverse();
+    const special = children.filter((c) => c.raw.special);
+    children.splice(0, children.length, ...regular, ...special);
+}
+
 export class TelegramProvider {
     constructor(src) {
         this.id = src.id;
@@ -340,13 +358,13 @@ export class TelegramProvider {
         const data = await api(`${this.base}/series/${channel}?${new URLSearchParams({ key })}`);
         const eps = data.episodes || [];
         if (eps.length && eps[0].kind === 'book') return this._bookSeriesDetail(id, channel, data);
+        const multiSeason = new Set(eps.filter((x) => !x.special).map((x) => x.season)).size > 1;
         const children = eps.map((v) => {
             const it = this.toItem({ ...v, series: undefined });
-            const multiSeason = eps.some((x) => x.season !== eps[0].season);
             return {
                 ...it,
-                epLabel: `${multiSeason ? `시즌 ${v.season} ` : ''}${v.ep}화`,
-                raw: { ...v, index: multiSeason ? `S${v.season}·${v.ep}` : v.ep, title: v.title, originallyAvailableAt: (v.date || '').slice(0, 10), duration: (v.duration || 0) * 1000, summary: '' },
+                epLabel: epLabel(v, multiSeason),
+                raw: { ...v, index: epIndex(v, multiSeason), title: v.title, originallyAvailableAt: (v.date || '').slice(0, 10), duration: (v.duration || 0) * 1000, summary: '' },
             };
         });
         // 다음에 볼 회차: 보던 회차 -> 안 본 첫 회차 -> 첫 회차
@@ -359,13 +377,13 @@ export class TelegramProvider {
         const unwatched = eps.filter((v) => !v.watched).length;
         // 채널 설정이 "최신 회차부터"면 목록만 거꾸로 (다음 회차 이어 재생은 그대로 시간순)
         const ch = this.channels.find((c) => c.id === String(channel));
-        if (ch && ch.epOrder === 'desc') children.reverse();
+        if (ch && ch.epOrder === 'desc') reverseRegular(children);
         if (deck) this.warm(deck.id);   // [N화 재생]을 누르기 전에 형식 확인을 미리
         // 작품 정보: 회차 제목·줄거리·장면 사진도
         const mr = await this._meta(channel, null, key, [...new Set(eps.map((v) => v.season))]);
         if (mr && mr.meta) {
             for (const c of children) {
-                const info = ((mr.episodes || {})[String(c.raw.season)] || {})[String(c.raw.ep)];
+                const info = c.raw.special ? null : ((mr.episodes || {})[String(c.raw.season)] || {})[String(c.raw.ep)];
                 if (!info) continue;
                 c.raw = { ...c.raw, title: info.name || c.raw.title, summary: info.overview || '' };
                 if (info.still) c.wideThumb = info.still;
@@ -388,13 +406,13 @@ export class TelegramProvider {
     /** 웹툰 작품(회차 묶음) 상세: 회차 목록 + [이어 보기 / 1화 보기] */
     _bookSeriesDetail(id, channel, data) {
         const eps = data.episodes;
-        const multiSeason = eps.some((x) => x.season !== eps[0].season);
+        const multiSeason = new Set(eps.filter((x) => !x.special).map((x) => x.season)).size > 1;
         const children = eps.map((v) => {
             const it = this.toItem({ ...v, series: undefined });
             return {
                 ...it,
-                epLabel: `${multiSeason ? `시즌 ${v.season} ` : ''}${v.ep}화`,
-                raw: { ...v, index: multiSeason ? `S${v.season}·${v.ep}` : v.ep, title: v.title,
+                epLabel: epLabel(v, multiSeason),
+                raw: { ...v, index: epIndex(v, multiSeason), title: v.title,
                     originallyAvailableAt: [(v.date || '').slice(0, 10), v.duration ? `${v.duration}쪽` : ''].filter(Boolean).join(' · '),
                     duration: 0, summary: '' },
             };
@@ -405,7 +423,7 @@ export class TelegramProvider {
         const unread = eps.filter((v) => !v.watched).length;
         const cover = [...children].reverse().map((c) => c.thumb).find(Boolean) || '';
         const ch = this.channels.find((c) => c.id === String(channel));
-        if (ch && ch.epOrder === 'desc') children.reverse();
+        if (ch && ch.epOrder === 'desc') reverseRegular(children);
         return {
             pid: this.id, id, type: 'show', title: data.title, subtitle: '',
             poster: cover, posterShape: 'poster', art: '',
@@ -462,7 +480,7 @@ export class TelegramProvider {
         return {
             id,
             title: v.title,
-            sub: [s ? `${s.title} · ${s.ep}화` : this.channelTitle(channel), `${data.pages.length}쪽`].join(' · '),
+            sub: [s ? `${s.title} · ${s.special ? (s.ep ? `특별 ${s.ep}` : '특별') : `${s.ep}화`}` : this.channelTitle(channel), `${data.pages.length}쪽`].join(' · '),
             pages: data.pages.map((_n, i) => `${this.base}/book/${channel}/${msg}/${i}`),
             position: v.watched ? 0 : (v.position || 0),
             series: !!s,

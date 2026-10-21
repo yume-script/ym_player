@@ -302,7 +302,7 @@ CREATE INDEX IF NOT EXISTS posters_by_image ON posters(source, channel, image);
 CREATE TABLE IF NOT EXISTS subs(source TEXT, channel INTEGER, video INTEGER, sub INTEGER,
     PRIMARY KEY(source, channel, sub));
 CREATE TABLE IF NOT EXISTS series(source TEXT, channel INTEGER, video INTEGER, skey TEXT, title TEXT,
-    season INTEGER, ep INTEGER, rep INTEGER DEFAULT 0, PRIMARY KEY(source, channel, video));
+    season INTEGER, ep INTEGER, rep INTEGER DEFAULT 0, special INTEGER DEFAULT 0, PRIMARY KEY(source, channel, video));
 CREATE INDEX IF NOT EXISTS series_by_key ON series(source, channel, skey);
 CREATE TABLE IF NOT EXISTS meta(source TEXT, mkey TEXT, kind TEXT, tmdb_id INTEGER, data TEXT, fetched REAL,
     manual INTEGER DEFAULT 0, PRIMARY KEY(source, mkey));
@@ -363,6 +363,13 @@ def db():
             with conn:
                 conn.execute("DELETE FROM sync_state")
             conn.execute("PRAGMA user_version = 10")
+        if conn.execute("PRAGMA user_version").fetchone()[0] < 11:
+            # 특별회차(특별편·외전·번외·후기·공지…)를 작품에 붙이고 회차 목록 맨 뒤로 -> 시리즈를 한 번 다시 묶는다
+            if "special" not in {r[1] for r in conn.execute("PRAGMA table_info(series)")}:
+                conn.execute("ALTER TABLE series ADD COLUMN special INTEGER DEFAULT 0")
+            for sid, ch in conn.execute("SELECT DISTINCT source, channel FROM videos").fetchall():
+                _link_series(conn, sid, ch)
+            conn.execute("PRAGMA user_version = 11")
     return conn
 
 
@@ -591,6 +598,30 @@ def _episode_info(title, file_name):
     return name, season, ep
 
 
+# 특별회차: 작품 이름 뒤에 이런 말이 붙은 것 ("나 혼자만 레벨업 특별편", "… 외전 3화", "… 후기", "… 휴재 공지").
+# 본편 회차 목록 맨 뒤로 보내고, 이어 보기도 본편을 다 본 다음에. 이름 맨 앞에 오면(작품 이름의 일부) 특별회차로 보지 않는다
+_SPECIAL_RE = re.compile(r"특별\s*(?:편|회|화|판|호)?|외전|번외|후기|공지|휴재|휴간|스페셜|(?<![A-Za-z])(?:SP|special|extra|side\s*story)(?![A-Za-z])"
+                         r"|작가\s*의?\s*말|Q\s*&\s*A", re.I)
+
+
+def _special_info(title, file_name):
+    """특별회차면 (작품 이름 키, 시즌, 번호 또는 0), 아니면 None"""
+    for text in (title or "", os.path.splitext(file_name or "")[0]):
+        m = _SPECIAL_RE.search(text)
+        if not m or m.start() == 0:
+            continue
+        name, _ep, _year = _media_key(text[:m.start()])
+        if not name:
+            continue
+        _n, ep, _y = _media_key(text[m.start():])
+        season = 1
+        sm = _SEASON_RE.search(text)
+        if sm:
+            season = int(sm.group(1) or sm.group(2)) % 100
+        return name, season, ep or 0
+    return None
+
+
 def _display_title(text):
     """'로또_1등도_출근합니다_S01E04_1080p' / '로또 1등도 출근합니다 S01E09 [2026]' -> '로또 1등도 출근합니다'"""
     text = os.path.splitext(text or "")[0] if re.search(r"\.(mkv|mp4|avi|ts|mov|webm|m4v)$", text or "", re.I) else (text or "")
@@ -605,11 +636,16 @@ def _link_series(conn, sid, channel):
                         "ORDER BY msg", (sid, channel)).fetchall()
     posters = {p["video"]: p["image"] for p in conn.execute(
         "SELECT video, image FROM posters WHERE source=? AND channel=?", (sid, channel)).fetchall()}
-    groups = {}
+    groups, specials = {}, []
     for r in rows:
+        prefix = "b:" if r["kind"] == "book" else ""   # 웹툰(압축 파일)은 같은 이름의 영상과 섞이지 않게 키 앞에 "b:"
+        sp = _special_info(r["title"], r["file_name"])
+        if sp:
+            specials.append((prefix + sp[0], r, sp[1], sp[2]))
+            continue
         info = _episode_info(r["title"], r["file_name"])
-        if info:   # 웹툰(압축 파일)은 같은 이름의 영상과 섞이지 않게 키 앞에 "b:"
-            groups.setdefault(("b:" if r["kind"] == "book" else "") + info[0], []).append((r, info[1], info[2]))
+        if info:
+            groups.setdefault(prefix + info[0], []).append((r, info[1], info[2]))
     links = []
     for key, eps in groups.items():
         if len({(s, e) for _, s, e in eps}) < 2:   # 회차 하나뿐이면 묶지 않는다
@@ -629,10 +665,14 @@ def _link_series(conn, sid, channel):
             cands = [c for c in cands if c]
             title = max(cands, key=lambda c: (c.count(" "), -len(c))) if cands else key
         for r, season, ep in eps:
-            links.append((sid, channel, r["msg"], key, title, season, ep, int(r["msg"] == rep)))
+            links.append((sid, channel, r["msg"], key, title, season, ep, int(r["msg"] == rep), 0))
+        # 같은 작품의 특별회차는 본편 뒤에
+        for skey, r, season, ep in specials:
+            if skey == key:
+                links.append((sid, channel, r["msg"], key, title, season, ep, 0, 1))
     with conn:
         conn.execute("DELETE FROM series WHERE source=? AND channel=?", (sid, channel))
-        conn.executemany("INSERT INTO series(source,channel,video,skey,title,season,ep,rep) VALUES(?,?,?,?,?,?,?,?)", links)
+        conn.executemany("INSERT INTO series(source,channel,video,skey,title,season,ep,rep,special) VALUES(?,?,?,?,?,?,?,?,?)", links)
     return len({x[3] for x in links})
 
 
@@ -672,10 +712,10 @@ def _series_map(conn, sid, rows, user=""):
 
 
 def series_episodes(sid, channel, key, user=""):
-    """시리즈의 회차들 (시즌, 회차 순). 없으면 None"""
+    """시리즈의 회차들 (시즌, 회차 순, 특별회차는 맨 뒤). 없으면 None"""
     with db() as conn:
-        srows = conn.execute("SELECT video, title, season, ep FROM series WHERE source=? AND channel=? AND skey=? "
-                             "ORDER BY season, ep, video", (sid, channel, key)).fetchall()
+        srows = conn.execute("SELECT video, title, season, ep, special FROM series WHERE source=? AND channel=? AND skey=? "
+                             "ORDER BY special, season, ep, video", (sid, channel, key)).fetchall()
         if not srows:
             return None
         rows = {r["msg"]: r for r in conn.execute(
@@ -683,27 +723,28 @@ def series_episodes(sid, channel, key, user=""):
             [sid, channel, *[s["video"] for s in srows]]).fetchall()}
         vids = list(rows.values())
         prog, posters = _progress_map(conn, sid, vids, user), _poster_map(conn, sid, vids)
-    eps = [{**_row(rows[s["video"]], prog, posters), "season": s["season"], "ep": s["ep"]} for s in srows if s["video"] in rows]
+    eps = [{**_row(rows[s["video"]], prog, posters), "season": s["season"], "ep": s["ep"], "special": bool(s["special"])}
+           for s in srows if s["video"] in rows]
     return {"key": key, "title": srows[0]["title"], "channel": channel, "episodes": eps}
 
 
 def series_of(sid, channel, msg):
     """이 영상이 시리즈의 회차면 {key, title, season, ep, next: {msg, title} 또는 None}"""
     with db() as conn:
-        me = conn.execute("SELECT skey, title, season, ep FROM series WHERE source=? AND channel=? AND video=?",
+        me = conn.execute("SELECT skey, title, season, ep, special FROM series WHERE source=? AND channel=? AND video=?",
                           (sid, channel, msg)).fetchone()
         if not me:
             return None
-        nxt = conn.execute(
-            "SELECT s.video, v.title FROM series s JOIN videos v ON v.source=s.source AND v.channel=s.channel AND v.msg=s.video "
-            "WHERE s.source=? AND s.channel=? AND s.skey=? AND (s.season > ? OR (s.season = ? AND s.ep > ?)) "
-            "ORDER BY s.season, s.ep, s.video LIMIT 1", (sid, channel, me["skey"], me["season"], me["season"], me["ep"])).fetchone()
-        prv = conn.execute(
-            "SELECT s.video, v.title FROM series s JOIN videos v ON v.source=s.source AND v.channel=s.channel AND v.msg=s.video "
-            "WHERE s.source=? AND s.channel=? AND s.skey=? AND (s.season < ? OR (s.season = ? AND s.ep < ?)) "
-            "ORDER BY s.season DESC, s.ep DESC, s.video DESC LIMIT 1",
-            (sid, channel, me["skey"], me["season"], me["season"], me["ep"])).fetchone()
-    return {"key": me["skey"], "title": me["title"], "season": me["season"], "ep": me["ep"],
+        # 순서: 본편(시즌, 회차) 다음 특별회차. 본편은 같은 회차를 두 번 올린 것을 건너뛰고, 특별회차는 번호가 없을 수 있어 메시지 순으로
+        order = "(s.special, s.season, s.ep, CASE WHEN s.special THEN s.video ELSE 0 END)"
+        mine = (me["special"], me["season"], me["ep"], int(msg) if me["special"] else 0)
+        base = ("SELECT s.video, v.title FROM series s JOIN videos v ON v.source=s.source AND v.channel=s.channel AND v.msg=s.video "
+                "WHERE s.source=? AND s.channel=? AND s.skey=? AND ")
+        nxt = conn.execute(base + f"{order} > (?, ?, ?, ?) ORDER BY s.special, s.season, s.ep, s.video LIMIT 1",
+                           (sid, channel, me["skey"], *mine)).fetchone()
+        prv = conn.execute(base + f"{order} < (?, ?, ?, ?) ORDER BY s.special DESC, s.season DESC, s.ep DESC, s.video DESC LIMIT 1",
+                           (sid, channel, me["skey"], *mine)).fetchone()
+    return {"key": me["skey"], "title": me["title"], "season": me["season"], "ep": me["ep"], "special": bool(me["special"]),
             "next": {"msg": nxt["video"], "title": nxt["title"]} if nxt else None,
             "prev": {"msg": prv["video"], "title": prv["title"]} if prv else None}
 

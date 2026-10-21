@@ -668,7 +668,7 @@ def test_existing_index_titles_are_repaired_once(monkeypatch, tmp_path):
     row = telegram_src.get_video("tg", 1, 2)
     assert row["title"] == "영화" and row["file_name"] == "영화.mkv"
     with telegram_src.db() as c:
-        assert c.execute("PRAGMA user_version").fetchone()[0] == 10
+        assert c.execute("PRAGMA user_version").fetchone()[0] == 11
 
 
 def test_split_parts_are_grouped(monkeypatch, tmp_path):
@@ -1174,3 +1174,29 @@ def test_probe_head_warms_first_blocks(env):
         assert (await c.post("/api/tg/tg/probe/777/998?head=1")).status == 404   # 영상이 아닌 메시지
 
     run(flow)
+
+
+def test_special_episodes_go_last(monkeypatch, tmp_path):
+    """특별편·외전·후기·공지는 작품에 붙되 회차 목록 맨 뒤로, 이어 보기도 본편 다음에"""
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    telegram_src._migrated.discard(str(tmp_path))
+    assert telegram_src._special_info("나 혼자만 레벨업 특별편", "") == ("나혼자만레벨업", 1, 0)
+    assert telegram_src._special_info("나 혼자만 레벨업 외전 3화", "")[2] == 3
+    assert telegram_src._special_info("특별수사대 3화", "") is None          # 작품 이름 맨 앞의 "특별"은 특별회차가 아님
+    assert telegram_src._special_info("나 혼자만 레벨업 12화", "") is None
+    _insert([(1, "book", "나 혼자만 레벨업 1화", "a1.zip", 1),
+             (2, "book", "나 혼자만 레벨업 특별편", "sp.zip", 2),        # 본편 사이에 올라온 특별편
+             (3, "book", "나 혼자만 레벨업 2화", "a2.zip", 3),
+             (4, "book", "나 혼자만 레벨업 휴재 공지", "n.zip", 4),
+             (5, "book", "나 혼자만 레벨업 3화", "a3.zip", 5),
+             (6, "book", "다른 웹툰 후기", "x.zip", 6)], channel=1)          # 작품이 없는 특별회차는 따로
+    telegram_src.link_series("tg", 1)
+    eps = telegram_src.series_episodes("tg", 1, "b:나혼자만레벨업")["episodes"]
+    assert [(e["msg"], e["special"]) for e in eps] == [(1, False), (3, False), (5, False), (2, True), (4, True)]
+    assert telegram_src.series_of("tg", 1, 3)["next"]["msg"] == 5
+    assert telegram_src.series_of("tg", 1, 5)["next"]["msg"] == 2          # 본편 끝 -> 특별회차
+    assert telegram_src.series_of("tg", 1, 2)["next"]["msg"] == 4 and telegram_src.series_of("tg", 1, 4)["next"] is None
+    assert telegram_src.series_of("tg", 1, 2)["prev"]["msg"] == 5 and telegram_src.series_of("tg", 1, 4)["prev"]["msg"] == 2
+    rows, _ = telegram_src.query_videos("tg", [1], limit=50, kinds={1: "webtoon"}, group=True)
+    by = {r["msg"]: r for r in rows}
+    assert set(by) == {5, 6} and by[5]["series"]["count"] == 5            # 대표는 본편 최신 회차
