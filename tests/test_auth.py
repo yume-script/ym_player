@@ -536,3 +536,19 @@ def test_radio_stations_for_users(data):
         assert sorted(now) == ["재즈", "클래식"]
 
     run(flow)
+
+
+def test_config_save_errors_are_readable(data, monkeypatch):
+    """설정 파일을 못 쓰면 빈 500 대신 원인을 JSON으로"""
+    def deny(cfg):
+        raise PermissionError(13, "Permission denied", "/data/config.json")
+
+    async def flow(c, app):
+        await c.post("/api/auth/setup", json={"username": "admin", "password": "adminpw"})
+        monkeypatch.setattr(config_store, "save", deny)
+        r = await c.put("/api/config", json={"sources": [{"type": "iptv", "name": "TV", "m3u": "http://x/a.m3u"}]})
+        body = await r.json()
+        assert r.status == 500 and "Permission denied" in body["error"] and "권한" in body["error"]
+        assert (await c.put("/api/config", json=[1])).status == 400
+
+    run(flow)
