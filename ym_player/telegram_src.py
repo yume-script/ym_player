@@ -14,6 +14,7 @@
 """
 import asyncio
 import base64
+import hashlib
 import io
 import binascii
 import json
@@ -386,6 +387,11 @@ def db():
             with conn:
                 conn.execute("DELETE FROM sync_state")
             conn.execute("PRAGMA user_version = 12")
+        if conn.execute("PRAGMA user_version").fetchone()[0] < 13:
+            # 작품 이름 다듬기가 바뀜 (해시태그 # / 끝의 작품 ID / "001.zip" 같은 번호 파일 이름) -> 시리즈를 한 번 다시 묶는다
+            for sid, ch in conn.execute("SELECT DISTINCT source, channel FROM videos").fetchall():
+                _link_series(conn, sid, ch)
+            conn.execute("PRAGMA user_version = 13")
     return conn
 
 
@@ -726,6 +732,11 @@ def _series_map(conn, sid, rows, user=""):
             d["rep"] = s["video"]
         if s["has_thumb"] and s["video"] > d.get("cover", 0):
             d["cover"] = s["video"]   # 대표 회차에 그림이 없을 때 카드에 쓸 회차 (웹툰은 한 번 열어 본 회차만 그림이 있음)
+    metas = {c: _meta_names(conn, sid, c) for c in {c for c, _k in info}}
+    for (c, k), d in info.items():
+        m = _match_meta(metas[c], k) if metas[c] else None
+        if m:
+            d["meta"] = m   # 작품 정보 파일(웹툰명.yaml)이 있음 -> 카드 그림은 그 표지로 (/series-cover)
     return {(c, d["rep"]): {k: v for k, v in d.items() if k != "rep"} for (c, _), d in info.items()}
 
 
@@ -774,23 +785,32 @@ def series_meta_file(sid, channel, key):
     """작품(시리즈 키)과 이름이 같은 작품 정보 파일(웹툰명.yaml)의 메시지 번호 - 여러 개면 가장 최근 것. 없으면 None.
     파일 이름은 작품 ID를 뺀 이름("천하제일 곤륜객잔.yaml"), 캡션 첫 줄은 회차와 같은 해시태그("#천하제일_곤륜객잔_63646168")
     라서 둘 다 보고, 끝의 작품 ID는 있든 없든 같은 작품으로 본다"""
-    name = key[2:] if key.startswith("b:") else key
-    want = {name, _ID_TAIL_RE.sub("", name)}
     with db() as conn:
-        rows = conn.execute("SELECT msg, title, caption, file_name FROM videos WHERE source=? AND channel=? AND kind='meta' ORDER BY msg DESC",
-                            (sid, channel)).fetchall()
-    exact = loose = None
+        return _match_meta(_meta_names(conn, sid, channel), key)
+
+
+def _meta_names(conn, sid, channel):
+    """채널의 작품 정보 파일들 [(메시지, {이름 키...})] (최근 것 먼저)"""
+    rows = conn.execute("SELECT msg, title, caption, file_name FROM videos WHERE source=? AND channel=? AND kind='meta' ORDER BY msg DESC",
+                        (sid, channel)).fetchall()
+    out = []
     for r in rows:
         texts = [os.path.splitext(r["file_name"] or "")[0], r["title"] or ""]
         texts += re.findall(r"#(\S+)", r["caption"] or "")[:3]          # 캡션의 해시태그
-        for text in texts:
-            n, _ep, _year = _media_key(text)
-            if not n:
-                continue
+        out.append((r["msg"], {n for n in (_media_key(t)[0] for t in texts) if n}))
+    return out
+
+
+def _match_meta(metas, key):
+    name = key[2:] if key.startswith("b:") else key
+    want = {name, _ID_TAIL_RE.sub("", name)}
+    exact = loose = None
+    for msg, names in metas:
+        for n in names:
             if n == name:
-                exact = exact or r["msg"]
+                exact = exact or msg
             elif n in want or _ID_TAIL_RE.sub("", n) in want:
-                loose = loose or r["msg"]
+                loose = loose or msg
     return exact or loose
 
 
@@ -939,7 +959,7 @@ def parse_meta(data):
     if out.get("url") and not re.match(r"^https?://", out["url"]):
         out["extra"].append(["주소", out.pop("url")])
     out = {k: v for k, v in out.items() if v not in ("", None) or k == "extra"}
-    out["summary"] = str(out.get("summary") or "")[:5000]
+    out["summary"] = re.sub(r"\n[ \t]*(?:\n[ \t]*){2,}", "\n\n", str(out.get("summary") or "").strip())[:5000]   # 빈 줄 여러 개 -> 하나
     if not out.get("day"):
         # 줄거리 첫머리의 "[매주 일요일 연재]" 같은 안내에서 연재 요일
         m = re.search(r"매주\s*((?:[월화수목금토일](?:요일)?[,·\s]*)+)", out["summary"][:200])
@@ -1934,6 +1954,46 @@ class TelegramSource:
             f.write(data)
         os.replace(thumb + ".tmp", thumb)
         set_has_thumb(self.sid, channel, msg)
+
+    # ----- 작품 표지 (작품 정보 파일의 표지 주소/그림) -----
+    _cover_fail = {}
+
+    def _series_cover_path(self, channel, key):
+        h = hashlib.sha1(f"{int(channel)}:{key}".encode()).hexdigest()[:20]
+        return os.path.join(config_store.DATA_DIR, "telegram_thumbs", self.sid, f"series_{h}.img")
+
+    async def series_cover(self, http, channel, key):
+        """작품 정보 파일(웹툰명.yaml)의 표지를 받아 두고 그 파일 경로. 없거나 못 받으면 None (실패는 한 시간 기억)"""
+        path = self._series_cover_path(channel, key)
+        if os.path.exists(path):
+            return path
+        fk = (self.sid, int(channel), key)
+        if time.time() - self._cover_fail.get(fk, 0) < 3600:
+            return None
+        try:
+            mmsg = series_meta_file(self.sid, channel, key)
+            cover = parse_meta(await self.subtitle_bytes(channel, mmsg)).get("cover") if mmsg else None
+            data = None
+            if cover and cover.startswith("data:image/"):
+                data = base64.b64decode(cover.split(",", 1)[1])
+            elif cover:
+                from aiohttp import ClientTimeout
+                async with http.get(cover, timeout=ClientTimeout(total=20), headers={"User-Agent": "Mozilla/5.0"}) as r:
+                    if r.status == 200 and r.content_type.startswith("image/"):
+                        data = await r.content.read(8 * 1024 * 1024 + 1)
+                        if len(data) > 8 * 1024 * 1024:
+                            data = None
+            if not data:
+                raise TgError("표지가 없습니다.")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path + ".tmp", "wb") as f:
+                f.write(data)
+            os.replace(path + ".tmp", path)
+            return path
+        except Exception as e:
+            log.info("telegram 작품 표지 %s/%s 받기 실패: %s", channel, key, e)
+            self._cover_fail[fk] = time.time()
+            return None
 
     async def prefetch_thumbs(self, channel, msgs):
         for mid in msgs:
