@@ -1459,3 +1459,25 @@ def test_series_card_uses_yaml_cover(env):
         run(flow)
     finally:
         mp.undo()
+
+
+def test_shrink_image_makes_small_jpeg_and_crops_tall_pages():
+    import shutil as _sh
+    if not (_sh.which("ffmpeg") or __import__("importlib").util.find_spec("PIL")):
+        pytest.skip("ffmpeg/Pillow 없음")
+    import io
+    import struct
+    import zlib
+    # 1000x6000 PNG (긴 웹툰 쪽 흉내) - 줄무늬라 압축이 덜 되게
+    w, h = 1000, 6000
+    rows = b"".join(b"\x00" + bytes((x * 7 + y) % 256 for x in range(w)) * 3 for y in range(h))
+    def chunk(t, d):
+        return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+    png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows, 1)) + chunk(b"IEND", b"")
+    out = asyncio.run(telegram_src.shrink_image(png, width=360, max_ratio=1.5))
+    assert out.startswith(b"\xff\xd8") and len(out) < len(png) and len(out) < 200 * 1024
+    # 크기 확인 (JPEG SOF0: 높이, 폭)
+    i = out.index(b"\xff\xc0")
+    hh, ww = struct.unpack(">HH", out[i + 5:i + 9])
+    assert ww == 360 and hh == 540                                  # 위쪽 1000x1500만 잘라 360x540
+    assert asyncio.run(telegram_src.shrink_image(b"not an image")) == b"not an image"   # 못 줄이면 그대로

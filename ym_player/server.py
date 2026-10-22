@@ -1189,7 +1189,7 @@ async def tg_series(request, tg):
     mmsg = telegram_src.series_meta_file(tg.sid, channel, data["key"])
     if mmsg:
         try:
-            meta = telegram_src.parse_meta(await tg.subtitle_bytes(channel, mmsg))
+            meta = await tg.file_meta(channel, mmsg)
         except Exception as e:
             log.info("telegram 작품 정보 파일 %s/%s 읽기 실패: %s", channel, mmsg, e)
             meta = {"error": str(e)}

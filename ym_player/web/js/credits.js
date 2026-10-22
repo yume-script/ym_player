@@ -95,6 +95,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 73,
+        "version": "1.1.36",
+        "date": "2026-10-22",
+        "title": "웹툰 카드 그림을 작게 줄여 빨리 뜨게 (표지·첫 쪽), 큰 작품 정보 파일도 읽기"
+    },
+    {
         "pr": 72,
         "version": "1.1.35",
         "date": "2026-10-22",
