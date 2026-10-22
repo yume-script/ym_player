@@ -177,6 +177,9 @@ IMAGE_MAX_BYTES = 40 * 1024 * 1024   # 뷰어로 열 이미지 파일 크기 한
 BOOK_EXTS = {".zip", ".cbz"}
 BOOK_MIMES = {"application/zip", "application/x-zip-compressed", "application/x-cbz", "application/vnd.comicbook+zip"}
 BOOK_MAX_BYTES = 1024 * 1024 * 1024
+# 작품 정보 파일: 채널에 "웹툰명.yaml"(.yml)로 올린 것 -> 같은 이름의 작품(시리즈) 상세 화면에 보여 준다 (목록에는 안 나옴)
+META_EXTS = {".yaml", ".yml"}
+META_MAX_BYTES = 1024 * 1024
 
 
 def _caption_title(msg, file_name, fallback):
@@ -241,6 +244,12 @@ def message_to_media(msg):
                 "mime": mime or "image/jpeg", "duration": 0, "size": int(getattr(doc, "size", 0) or 0),
                 "width": width, "height": height, "date": date.isoformat() if date else "",
                 "has_thumb": 1 if (getattr(doc, "thumbs", None) or []) else 0}
+    if not is_video and ext in META_EXTS and int(getattr(doc, "size", 0) or 0) <= META_MAX_BYTES:
+        date = getattr(msg, "date", None)
+        return {"msg": int(msg.id), "kind": "meta", "title": os.path.splitext(file_name)[0][:300],
+                "caption": fix_text(getattr(msg, "message", "") or "")[:4000], "file_name": file_name,
+                "mime": mime or "application/yaml", "duration": 0, "size": int(getattr(doc, "size", 0) or 0),
+                "width": 0, "height": 0, "date": date.isoformat() if date else "", "has_thumb": 0}
     if not is_video and (ext in BOOK_EXTS or (not ext and mime in BOOK_MIMES)):
         caption, title = _caption_title(msg, file_name, "웹툰")
         date = getattr(msg, "date", None)
@@ -372,6 +381,11 @@ def db():
             for sid, ch in conn.execute("SELECT DISTINCT source, channel FROM videos").fetchall():
                 _link_series(conn, sid, ch)
             conn.execute("PRAGMA user_version = 11")
+        if conn.execute("PRAGMA user_version").fetchone()[0] < 12:
+            # 작품 정보 파일(웹툰명.yaml)도 색인한다 -> 예전에 훑은 채널은 그 파일을 건너뛰었으니 처음부터 다시 훑게
+            with conn:
+                conn.execute("DELETE FROM sync_state")
+            conn.execute("PRAGMA user_version = 12")
     return conn
 
 
@@ -626,10 +640,12 @@ def _special_info(title, file_name):
 
 def _display_title(text):
     """'로또_1등도_출근합니다_S01E04_1080p' / '로또 1등도 출근합니다 S01E09 [2026]' -> '로또 1등도 출근합니다'"""
-    text = os.path.splitext(text or "")[0] if re.search(r"\.(mkv|mp4|avi|ts|mov|webm|m4v)$", text or "", re.I) else (text or "")
+    text = os.path.splitext(text or "")[0] if re.search(r"\.(mkv|mp4|avi|ts|mov|webm|m4v|zip|cbz)$", text or "", re.I) else (text or "")
+    text = text.lstrip("#").strip()   # 해시태그로 붙인 이름 ("#천하제일_곤륜객잔_63646168 12화")
     cut = _CUT_RE.search(text)
     head = text[:cut.start()] if cut and cut.start() > 0 else text
     head = re.sub(r"[._]+", " ", head)
+    head = re.sub(r"[\s\-]*\(?\d{6,}\)?\s*$", "", head)   # 끝의 작품 ID (63646168)
     return re.sub(r"[\s\-\[(]+$", "", head).strip()
 
 
@@ -664,7 +680,7 @@ def _link_series(conn, sid, channel):
                     break
         if not title:
             cands = [_display_title(r["title"]) for r, _, _ in eps] + [_display_title(r["file_name"]) for r, _, _ in eps]
-            cands = [c for c in cands if c]
+            cands = [c for c in cands if c and re.search(r"[^\W\d_]", c)]   # "001" 같은 번호뿐인 파일 이름은 빼고
             title = max(cands, key=lambda c: (c.count(" "), -len(c))) if cands else key
         for r, season, ep in eps:
             links.append((sid, channel, r["msg"], key, title, season, ep, int(r["msg"] == rep), 0))
@@ -749,6 +765,128 @@ def series_of(sid, channel, msg):
     return {"key": me["skey"], "title": me["title"], "season": me["season"], "ep": me["ep"], "special": bool(me["special"]),
             "next": {"msg": nxt["video"], "title": nxt["title"]} if nxt else None,
             "prev": {"msg": prv["video"], "title": prv["title"]} if prv else None}
+
+
+_ID_TAIL_RE = re.compile(r"\d{6,}$")   # 이름 키 끝의 작품 ID ("천하제일곤륜객잔63646168")
+
+
+def series_meta_file(sid, channel, key):
+    """작품(시리즈 키)과 이름이 같은 작품 정보 파일(웹툰명.yaml)의 메시지 번호 - 여러 개면 가장 최근 것. 없으면 None.
+    파일 이름은 작품 ID를 뺀 이름("천하제일 곤륜객잔.yaml"), 캡션 첫 줄은 회차와 같은 해시태그("#천하제일_곤륜객잔_63646168")
+    라서 둘 다 보고, 끝의 작품 ID는 있든 없든 같은 작품으로 본다"""
+    name = key[2:] if key.startswith("b:") else key
+    want = {name, _ID_TAIL_RE.sub("", name)}
+    with db() as conn:
+        rows = conn.execute("SELECT msg, title, caption, file_name FROM videos WHERE source=? AND channel=? AND kind='meta' ORDER BY msg DESC",
+                            (sid, channel)).fetchall()
+    exact = loose = None
+    for r in rows:
+        texts = [os.path.splitext(r["file_name"] or "")[0], r["title"] or ""]
+        texts += re.findall(r"#(\S+)", r["caption"] or "")[:3]          # 캡션의 해시태그
+        for text in texts:
+            n, _ep, _year = _media_key(text)
+            if not n:
+                continue
+            if n == name:
+                exact = exact or r["msg"]
+            elif n in want or _ID_TAIL_RE.sub("", n) in want:
+                loose = loose or r["msg"]
+    return exact or loose
+
+
+_META_KEYS = {   # 파일마다 이름이 달라서 흔한 이름들을 모아 본다 (소문자, 띄어쓰기·_·- 무시)
+    "title": ("title", "name", "localizedname", "seriesname", "series", "제목", "작품명", "작품", "웹툰명"),
+    "authors": ("author", "authors", "writer", "writers", "artist", "artists", "penciller", "pencillers", "작가", "글", "그림",
+                "글그림", "저자"),
+    "summary": ("summary", "description", "desc", "synopsis", "overview", "story", "줄거리", "소개", "작품소개", "설명"),
+    "genres": ("genre", "genres", "category", "장르"),
+    "tags": ("tag", "tags", "keyword", "keywords", "태그", "키워드"),
+    "status": ("status", "state", "publicationstatus", "상태", "연재상태", "완결"),
+    "platform": ("platform", "publisher", "publishers", "site", "service", "연재처", "플랫폼", "출판사"),
+    "day": ("day", "days", "weekday", "요일", "연재요일"),
+    "age": ("age", "rating", "agerating", "연령", "등급", "연령등급", "이용가"),
+    "cover": ("cover", "coverimage", "coverurl", "thumbnail", "thumb", "image", "poster", "표지", "썸네일"),
+    "url": ("url", "link", "links", "weblink", "weblinks", "homepage", "링크", "주소"),
+    "year": ("year", "releaseyear", "started", "start", "연재시작", "연도"),
+}
+
+
+def _norm_key(k):
+    return re.sub(r"[\s_\-]+", "", str(k)).casefold()
+
+
+def _mini_yaml(text):
+    """PyYAML이 없을 때: "키: 값" / 다음 줄들의 "- 항목" 목록 / 여러 줄 값(| >)만 읽는 작은 파서"""
+    out, key, block = {}, None, None
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if block is not None and (raw.startswith((" ", "\t")) or not line.strip()):
+            out[key] = (out[key] + "\n" if out[key] else "") + line.strip()
+            continue
+        block = None
+        m = re.match(r"^\s*-\s*(.*)$", line)
+        if m and key is not None:
+            if not isinstance(out.get(key), list):
+                out[key] = [] if out.get(key) in ("", None) else [out[key]]
+            out[key].append(m.group(1).strip().strip("'\""))
+            continue
+        m = re.match(r"^([^:#][^:]*):\s*(.*)$", line)
+        if m:
+            key, val = m.group(1).strip().strip("'\""), m.group(2).strip()
+            if val in ("|", ">", "|-", ">-"):
+                out[key], block = "", key
+            elif val.startswith("[") and val.endswith("]"):
+                out[key] = [v.strip().strip("'\"") for v in val[1:-1].split(",") if v.strip()]
+            else:
+                out[key] = val.strip("'\"")
+    return out
+
+
+def parse_meta(data):
+    """작품 정보 파일 내용 -> {title, authors[], summary, genres[], tags[], status, platform, day, age, cover, url, year, extra[[키, 값]]}"""
+    text = data.decode("utf-8-sig", "replace") if isinstance(data, bytes) else str(data)
+    try:
+        import yaml
+        raw = yaml.safe_load(text)
+    except ImportError:
+        raw = _mini_yaml(text)
+    except Exception as e:
+        raise TgError(f"작품 정보 파일(YAML)을 읽지 못했습니다: {e}") from e
+    if isinstance(raw, list) and raw and isinstance(raw[0], dict):
+        raw = raw[0]
+    if not isinstance(raw, dict) or not raw:
+        raise TgError("작품 정보 파일(YAML)이 '키: 값' 모양이 아닙니다.")
+    lookup = {}
+    for field, names in _META_KEYS.items():
+        for n in names:
+            lookup.setdefault(_norm_key(n), field)
+
+    def as_list(v):
+        if isinstance(v, (list, tuple)):
+            return [str(x).strip() for x in v if str(x).strip()]
+        if isinstance(v, dict):
+            return [f"{k}: {x}" for k, x in v.items()]
+        return [x.strip() for x in re.split(r"[,/·]", str(v)) if x.strip()] if v not in (None, "") else []
+
+    out = {"extra": []}
+    for k, v in raw.items():
+        field = lookup.get(_norm_key(k))
+        if v in (None, "", [], {}):
+            continue
+        if field in ("authors", "genres", "tags"):
+            out[field] = (out.get(field) or []) + as_list(v)
+        elif field and field not in out:
+            out[field] = ", ".join(as_list(v)) if isinstance(v, (list, tuple, dict)) else str(v).strip()
+        elif len(out["extra"]) < 20:
+            out["extra"].append([str(k)[:40], (", ".join(as_list(v)) if isinstance(v, (list, tuple, dict)) else str(v))[:500]])
+    if out.get("cover") and not re.match(r"^https?://", out["cover"]):
+        out.pop("cover")   # 주소가 아니면 (파일 이름 등) 쓰지 않는다
+    if out.get("url") and not re.match(r"^https?://", out["url"]):
+        out["extra"].append(["주소", out.pop("url")])
+    out["summary"] = str(out.get("summary") or "")[:5000]
+    return out
 
 
 # ---------------------------------------------------------------------------

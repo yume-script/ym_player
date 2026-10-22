@@ -1,3 +1,4 @@
 aiohttp>=3.9
 telethon>=1.36
 cryptg>=0.4
+PyYAML>=6.0          # 웹툰 작품 정보 파일(웹툰명.yaml) - 없으면 간단한 내장 파서로 읽음

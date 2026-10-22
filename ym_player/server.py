@@ -1184,7 +1184,16 @@ async def tg_series(request, tg):
     data = telegram_src.series_episodes(tg.sid, channel, request.query.get("key", ""), user=username(request))
     if not data:
         return _json_error(404, "시리즈를 찾을 수 없습니다.")
-    return web.json_response({"success": True, **data})
+    # 작품 정보 파일(웹툰명.yaml)이 채널에 있으면 같이 (작아서 한 번 받아 두고 다시 쓴다)
+    meta = None
+    mmsg = telegram_src.series_meta_file(tg.sid, channel, data["key"])
+    if mmsg:
+        try:
+            meta = telegram_src.parse_meta(await tg.subtitle_bytes(channel, mmsg))
+        except Exception as e:
+            log.info("telegram 작품 정보 파일 %s/%s 읽기 실패: %s", channel, mmsg, e)
+            meta = {"error": str(e)}
+    return web.json_response({"success": True, **data, "file_meta": meta})
 
 
 @telegram_api

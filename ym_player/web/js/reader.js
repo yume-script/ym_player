@@ -109,8 +109,12 @@ class Reader {
         this.subEl.textContent = book.sub || '';
         this.prevBtn.disabled = !book.prev;
         this.nextBtn.disabled = !book.next;
+        // 그림이 오기 전에는 자리마다 "N쪽 받는 중" (첫 쪽이 올 때까지는 가운데에도 안내)
+        this._firstShown = false;
+        this.status('텔레그램에서 그림을 받는 중…');
         this.pageEls = book.pages.map((src, i) => {
-            const el = h('div', { class: 'reader-page', dataset: { n: String(i) } });
+            const el = h('div', { class: 'reader-page', dataset: { n: String(i) } },
+                h('div', { class: 'reader-wait' }, h('span', { text: `${i + 1}쪽` })));
             el._src = src;
             this.pagesEl.appendChild(el);
             return el;
@@ -146,7 +150,11 @@ class Reader {
         el._loading = true;
         this._io.unobserve(el);
         const img = h('img', { alt: `${Number(el.dataset.n) + 1}쪽`, decoding: 'async', draggable: false });
+        const wait = el.querySelector('.reader-wait');
+        if (wait) wait.replaceChildren(icon('circle-notch', 'fa-spin'), h('span', { text: ` ${Number(el.dataset.n) + 1}쪽 받는 중…` }));
         img.addEventListener('load', () => {
+            if (wait) wait.remove();
+            if (!this._firstShown) { this._firstShown = true; this.status(''); }
             // 지금 보는 곳보다 위에 있는 쪽이 늦게 오면 그만큼 아래로 밀리지 않게 스크롤 위치를 맞춘다
             const before = el.offsetHeight;
             const above = el.offsetTop + before <= this.scroller.scrollTop + 1;
@@ -160,6 +168,7 @@ class Reader {
             }
         });
         img.addEventListener('error', () => {
+            if (!this._firstShown) { this._firstShown = true; this.status(''); }
             el.classList.add('ready', 'failed');
             el.replaceChildren(h('button', { class: 'btn', on: { click: (e) => {
                 e.stopPropagation();

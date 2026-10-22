@@ -668,7 +668,7 @@ def test_existing_index_titles_are_repaired_once(monkeypatch, tmp_path):
     row = telegram_src.get_video("tg", 1, 2)
     assert row["title"] == "영화" and row["file_name"] == "영화.mkv"
     with telegram_src.db() as c:
-        assert c.execute("PRAGMA user_version").fetchone()[0] == 11
+        assert c.execute("PRAGMA user_version").fetchone()[0] == 12
 
 
 def test_split_parts_are_grouped(monkeypatch, tmp_path):
@@ -1259,3 +1259,99 @@ def test_book_opens_from_index_without_full_download(env, monkeypatch):
         return c.server.app[server.TELEGRAM]["tg"]
 
     run(flow)
+
+
+YAML_SAMPLE = """title: 나 혼자만 레벨업
+author:
+  - 추공
+  - 장성락
+genre: [액션, 판타지]
+status: 완결
+platform: 카카오페이지
+description: |
+  10년 전, 다른 차원과 이쪽 세계를 이어 주는 통로 '게이트'가 열리고
+  평범한 이들 중 각성한 사람들이 생겨났다.
+cover: https://example.com/cover.jpg
+연재요일: 목요일
+번역: 없음
+"""
+
+
+def test_meta_yaml_parse_and_mini_parser(monkeypatch):
+    m = telegram_src.parse_meta(YAML_SAMPLE.encode())
+    assert m["title"] == "나 혼자만 레벨업" and m["authors"] == ["추공", "장성락"] and m["genres"] == ["액션", "판타지"]
+    assert m["status"] == "완결" and m["platform"] == "카카오페이지" and m["day"] == "목요일"
+    assert m["summary"].startswith("10년 전") and m["cover"] == "https://example.com/cover.jpg"
+    assert ["번역", "없음"] in m["extra"]
+    # PyYAML이 없어도 같은 결과 (간단한 내장 파서)
+    import builtins
+    real_import = builtins.__import__
+    monkeypatch.setattr(builtins, "__import__", lambda name, *a, **k: (_ for _ in ()).throw(ImportError()) if name == "yaml" else real_import(name, *a, **k))
+    m2 = telegram_src.parse_meta(YAML_SAMPLE.encode())
+    assert m2["authors"] == m["authors"] and m2["genres"] == m["genres"] and m2["summary"].startswith("10년 전") and m2["day"] == "목요일"
+    with pytest.raises(telegram_src.TgError):
+        telegram_src.parse_meta(b"- 1\n- 2\n")
+
+
+def test_series_shows_yaml_file_meta(env):
+    def doc_msg(mid, name, data, mime):
+        doc = SimpleNamespace(mime_type=mime, size=len(data), thumbs=[], data=data, attributes=[DocumentAttributeFilename(name)])
+        return SimpleNamespace(id=mid, document=doc, photo=None, message="", date=datetime(2026, 1, 3, tzinfo=timezone.utc) + timedelta(minutes=mid))
+    for i, mid in enumerate((1001, 1002, 1003), start=1):
+        env.msgs[mid] = doc_msg(mid, f"나 혼자만 레벨업 {i}화.zip", _zip_bytes(["001.jpg"]), "application/zip")
+    env.msgs[1004] = doc_msg(1004, "나 혼자만 레벨업.yaml", YAML_SAMPLE.encode(), "application/x-yaml")
+
+    async def subtitle_bytes(self, channel, msg):   # 작은 파일 받기 (가짜 텔레그램은 download_media가 그림을 줌)
+        return env.msgs[msg].document.data
+    import pytest as _p
+    mp = _p.MonkeyPatch()
+    mp.setattr(telegram_src.TelegramSource, "subtitle_bytes", subtitle_bytes)
+    cfg = config_store.load()
+    cfg["sources"][0]["channels"] = [{"id": 777, "title": "웹툰", "kind": "webtoon"}]
+    config_store.save(cfg)
+
+    async def flow(c):
+        env.authorized = True
+        items = (await (await c.get("/api/tg/tg/videos?channel=777&limit=10&group=1")).json())["items"]
+        assert [i.get("kind") for i in items] == ["book"]                     # yaml 파일은 목록에 안 나옴
+        key = items[0]["series"]["key"]
+        data = await (await c.get(f"/api/tg/tg/series/777?key={key}")).json()
+        fm = data["file_meta"]
+        assert fm["title"] == "나 혼자만 레벨업" and fm["authors"] == ["추공", "장성락"] and fm["status"] == "완결"
+
+    try:
+        run(flow)
+    finally:
+        mp.undo()
+
+
+def test_yaml_matches_hashtag_series_without_id(monkeypatch, tmp_path):
+    """회차 캡션이 "#천하제일_곤륜객잔_63646168 12화"(키에 작품 ID가 붙음)여도 "천하제일 곤륜객잔.yaml"을 찾는다 (Kavita 꼴)"""
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    telegram_src._migrated.discard(str(tmp_path))
+    _insert([(1, "book", "#천하제일_곤륜객잔_63646168 1화", "001.zip", 1),
+             (2, "book", "#천하제일_곤륜객잔_63646168 2화", "002.zip", 2),
+             (3, "meta", "천하제일 곤륜객잔", "천하제일 곤륜객잔.yaml", 3),
+             (4, "meta", "다른 작품", "다른 작품.yaml", 4)], channel=1)
+    with telegram_src.db() as conn:
+        conn.execute("UPDATE videos SET caption=? WHERE msg=3", ("#천하제일_곤륜객잔_63646168\n작품 정보",))
+    telegram_src.link_series("tg", 1)
+    eps = telegram_src.series_episodes("tg", 1, "b:천하제일곤륜객잔63646168")
+    assert eps and eps["title"] == "천하제일 곤륜객잔"                       # 보이는 이름에서 #과 작품 ID는 뺀다
+    assert telegram_src.series_meta_file("tg", 1, "b:천하제일곤륜객잔63646168") == 3
+    assert telegram_src.series_meta_file("tg", 1, "b:없는작품") is None
+    kavita = """name: 천하제일 곤륜객잔
+localizedName: 천하제일 곤륜객잔
+summary: 곤륜산 아래 객잔 이야기
+genres:
+  - 무협
+writers: [작가A]
+publicationStatus: Ongoing
+ageRating: 15
+releaseYear: 2023
+webLinks:
+  - https://webtoon.kakao.com/content/63646168
+"""
+    m = telegram_src.parse_meta(kavita.encode())
+    assert m["title"] == "천하제일 곤륜객잔" and m["authors"] == ["작가A"] and m["status"] == "Ongoing"
+    assert m["age"] == "15" and m["year"] == "2023" and m["url"].startswith("https://webtoon.kakao.com")

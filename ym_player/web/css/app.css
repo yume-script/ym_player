@@ -1003,3 +1003,6 @@ body.nav-editing .nav-group .nav-link { cursor: default; padding-right: 0.3rem; 
 .nav-order-edit { display: none; gap: 0.35rem; flex-wrap: wrap; }
 body.nav-editing .nav-order-start { display: none; }
 body.nav-editing .nav-order-edit { display: flex; }
+.reader-wait { display: flex; align-items: center; gap: 0.5rem; color: #8b9096; font-size: 0.9rem; }
+.reader-wait i { color: var(--accent, #e5a00d); }
+.reader-page.ready .reader-wait { display: none; }
