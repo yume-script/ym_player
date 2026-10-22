@@ -31,7 +31,7 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import unquote
 
-from . import config_store, media_cache
+from . import config_store, media_cache, transcode
 
 log = logging.getLogger("ym_player.telegram")
 
@@ -180,7 +180,7 @@ BOOK_MIMES = {"application/zip", "application/x-zip-compressed", "application/x-
 BOOK_MAX_BYTES = 1024 * 1024 * 1024
 # 작품 정보 파일: 채널에 "웹툰명.yaml"(.yml)로 올린 것 -> 같은 이름의 작품(시리즈) 상세 화면에 보여 준다 (목록에는 안 나옴)
 META_EXTS = {".yaml", ".yml"}
-META_MAX_BYTES = 1024 * 1024
+META_MAX_BYTES = 8 * 1024 * 1024   # 첫 회차 표지(base64)가 들어 있어 클 수 있다
 
 
 def _caption_title(msg, file_name, fallback):
@@ -952,7 +952,7 @@ def parse_meta(data):
         # 첫 회차 표지가 base64로 들어 있으면 (다른 회차는 "FIRST" 같은 표시)
         for _name, info in sorted(files.items()):
             b64 = info.get("cover") if isinstance(info, dict) else None
-            if isinstance(b64, str) and len(b64) > 200 and len(b64) < 700_000 and re.fullmatch(r"[A-Za-z0-9+/=\s]+", b64):
+            if isinstance(b64, str) and 200 < len(b64) < 8_000_000 and re.fullmatch(r"[A-Za-z0-9+/=\s]+", b64):
                 kind = "png" if b64.startswith("iVBOR") else "webp" if b64.startswith("UklGR") else "jpeg"
                 out["cover"] = f"data:image/{kind};base64," + re.sub(r"\s+", "", b64)
                 break
@@ -1425,6 +1425,54 @@ class RemoteFile(io.RawIOBase):
         return bytes(buf)
 
 
+# 카드/목록 그림은 작게: 원본 표지(수 MB)나 웹툰 첫 쪽(아주 긴 그림)을 그대로 내보내면 카드가 늦게, 반쯤 그려진다
+THUMB_MAX_BYTES = 300 * 1024      # 이보다 크면 줄인다
+_SHRINK_SEM = asyncio.Semaphore(2)
+
+
+async def shrink_image(data, width=480, max_ratio=None):
+    """그림을 폭 width 이하 JPEG로 (max_ratio: 높이가 폭의 이 배를 넘으면 위쪽만 잘라 씀 - 긴 웹툰 쪽).
+    ffmpeg(서버 변환에 쓰는 것) 또는 Pillow로. 둘 다 없거나 실패하면 원본 그대로"""
+    if not data:
+        return data
+    ff = transcode.ffmpeg_path()
+    if ff:
+        crop = f"crop=iw:'min(ih,iw*{max_ratio})':0:0," if max_ratio else ""
+        vf = f"{crop}scale='min(iw,{width})':-2"
+        async with _SHRINK_SEM:
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    ff, "-hide_banner", "-loglevel", "error", "-i", "pipe:0", "-vf", vf, "-frames:v", "1",
+                    "-q:v", "4", "-c:v", "mjpeg", "-f", "image2", "pipe:1",
+                    stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                out, err = await asyncio.wait_for(proc.communicate(data), 30)
+                if proc.returncode == 0 and out.startswith(b"\xff\xd8"):
+                    return out
+                log.info("그림 줄이기 실패 (ffmpeg): %s", err.decode("utf-8", "replace").strip()[-200:])
+            except Exception as e:
+                log.info("그림 줄이기 실패 (ffmpeg): %s", e)
+    try:
+        from PIL import Image
+    except ImportError:
+        return data
+
+    def pil():
+        im = Image.open(io.BytesIO(data))
+        im = im.convert("RGB")
+        if max_ratio and im.height > im.width * max_ratio:
+            im = im.crop((0, 0, im.width, int(im.width * max_ratio)))
+        if im.width > width:
+            im = im.resize((width, max(1, round(im.height * width / im.width))))
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=82)
+        return buf.getvalue()
+    try:
+        return await asyncio.to_thread(pil)
+    except Exception as e:
+        log.info("그림 줄이기 실패 (Pillow): %s", e)
+        return data
+
+
 def set_has_thumb(sid, channel, msg):
     with db() as conn:
         conn.execute("UPDATE videos SET has_thumb=1 WHERE source=? AND channel=? AND msg=?", (sid, channel, msg))
@@ -1451,6 +1499,7 @@ class TelegramSource:
         self._dl_sem = asyncio.Semaphore(DOWNLOAD_CONCURRENCY)  # 이 계정으로 동시에 받는 파일 조각 수
         self._zips = OrderedDict()  # (channel, msg) -> (열어 둔 ZipFile, 쪽 목록) - 웹툰 압축 파일
         self._zip_opening = {}      # (channel, msg) -> 여는 중 (목차 읽기, 같은 파일은 한 번만)
+        self._meta_cache = OrderedDict()   # (channel, msg) -> 읽은 작품 정보 파일
         if not fast_crypto():
             log.warning("cryptg가 없어 텔레그램 암호화를 순수 파이썬으로 처리합니다 (느림): pip install cryptg")
 
@@ -1798,6 +1847,8 @@ class TelegramSource:
         """썸네일 파일 경로. 같은 썸네일을 여러 요청이 동시에 달라고 해도 한 번만 받는다."""
         path = self._thumb_path(channel, msg)
         if os.path.exists(path):
+            if os.path.getsize(path) > THUMB_MAX_BYTES:
+                await self._shrink_file(path, width=360, max_ratio=1.5)   # 예전에 원본 그대로 넣어 둔 웹툰 첫 쪽
             return path
         key = (channel, int(msg))
         fut = self._thumb_inflight.get(key)
@@ -1940,14 +1991,37 @@ class TelegramSource:
         except Exception as e:  # 미리 받기라 실패해도 볼 때 다시
             log.info("telegram 웹툰 %s/%s 미리 받기 실패: %s", channel, msg, e)
 
+    async def _shrink_file(self, path, width, max_ratio=None):
+        """디스크의 그림을 줄여서 바꿔 놓는다 (같은 파일을 동시에 여러 번 줄이지 않게)"""
+        key = ("shrink", path)
+        fut = self._thumb_inflight.get(key)
+        if fut is None:
+            async def run():
+                with open(path, "rb") as f:
+                    data = f.read()
+                small = await shrink_image(data, width, max_ratio)
+                if small is not data and len(small) < len(data):
+                    with open(path + ".tmp", "wb") as f:
+                        f.write(small)
+                    os.replace(path + ".tmp", path)
+            fut = self._thumb_inflight[key] = asyncio.ensure_future(run())
+            fut.add_done_callback(lambda _f: self._thumb_inflight.pop(key, None))
+        try:
+            await asyncio.shield(fut)
+        except Exception as e:
+            log.info("그림 줄이기 실패 %s: %s", path, e)
+
     async def _book_cover(self, channel, msg, row):
-        """썸네일이 없는 압축 파일은 첫 쪽을 카드 그림으로"""
+        """썸네일이 없는 압축 파일은 첫 쪽(위쪽, 2:3)을 작게 줄여 카드 그림으로"""
         thumb = self._thumb_path(channel, msg)
         try:
             data, _mime = await self.book_page(channel, msg, row, 0)
         except Exception:
             return
-        if len(data) > 4 * 1024 * 1024 or os.path.exists(thumb):
+        if os.path.exists(thumb):
+            return
+        data = await shrink_image(data, width=360, max_ratio=1.5)
+        if len(data) > 4 * 1024 * 1024:
             return
         os.makedirs(os.path.dirname(thumb), exist_ok=True)
         with open(thumb + ".tmp", "wb") as f:
@@ -1955,12 +2029,27 @@ class TelegramSource:
         os.replace(thumb + ".tmp", thumb)
         set_has_thumb(self.sid, channel, msg)
 
+    async def file_meta(self, channel, msg, with_cover=False):
+        """작품 정보 파일을 읽은 결과 (메시지마다 한 번만 읽어 기억 - 표지 base64가 든 큰 YAML은 읽는 데 시간이 걸린다).
+        with_cover=False면 base64 표지(data:)는 빼고 (화면에는 /series-cover로 작게 줄인 것을 쓴다)"""
+        key = (int(channel), int(msg))
+        meta = self._meta_cache.get(key)
+        if meta is None:
+            data = await self.subtitle_bytes(channel, msg)
+            meta = await asyncio.to_thread(parse_meta, data)
+            self._meta_cache[key] = meta
+            while len(self._meta_cache) > 64:
+                self._meta_cache.popitem(last=False)
+        if not with_cover and str(meta.get("cover", "")).startswith("data:"):
+            meta = {**meta, "cover": "embedded"}
+        return meta
+
     # ----- 작품 표지 (작품 정보 파일의 표지 주소/그림) -----
     _cover_fail = {}
 
     def _series_cover_path(self, channel, key):
         h = hashlib.sha1(f"{int(channel)}:{key}".encode()).hexdigest()[:20]
-        return os.path.join(config_store.DATA_DIR, "telegram_thumbs", self.sid, f"series_{h}.img")
+        return os.path.join(config_store.DATA_DIR, "telegram_thumbs", self.sid, f"series_{h}.jpg")
 
     async def series_cover(self, http, channel, key):
         """작품 정보 파일(웹툰명.yaml)의 표지를 받아 두고 그 파일 경로. 없거나 못 받으면 None (실패는 한 시간 기억)"""
@@ -1972,7 +2061,7 @@ class TelegramSource:
             return None
         try:
             mmsg = series_meta_file(self.sid, channel, key)
-            cover = parse_meta(await self.subtitle_bytes(channel, mmsg)).get("cover") if mmsg else None
+            cover = (await self.file_meta(channel, mmsg, with_cover=True)).get("cover") if mmsg else None
             data = None
             if cover and cover.startswith("data:image/"):
                 data = base64.b64decode(cover.split(",", 1)[1])
@@ -1985,6 +2074,7 @@ class TelegramSource:
                             data = None
             if not data:
                 raise TgError("표지가 없습니다.")
+            data = await shrink_image(data, width=480)   # 원본 표지는 수 MB일 수 있다 -> 카드·포스터 크기로
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path + ".tmp", "wb") as f:
                 f.write(data)
