@@ -95,6 +95,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 74,
+        "version": "1.1.37",
+        "date": "2026-10-22",
+        "title": "웹툰 작품 표지가 잘려(위쪽만 보이고 회색) 저장되던 문제 고침"
+    },
+    {
         "pr": 73,
         "version": "1.1.36",
         "date": "2026-10-22",

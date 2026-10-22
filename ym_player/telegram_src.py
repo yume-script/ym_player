@@ -2049,7 +2049,7 @@ class TelegramSource:
 
     def _series_cover_path(self, channel, key):
         h = hashlib.sha1(f"{int(channel)}:{key}".encode()).hexdigest()[:20]
-        return os.path.join(config_store.DATA_DIR, "telegram_thumbs", self.sid, f"series_{h}.jpg")
+        return os.path.join(config_store.DATA_DIR, "telegram_thumbs", self.sid, f"cover2_{h}.jpg")   # (예전 series_* 는 잘린 그림일 수 있어 안 씀)
 
     async def series_cover(self, http, channel, key):
         """작품 정보 파일(웹툰명.yaml)의 표지를 받아 두고 그 파일 경로. 없거나 못 받으면 None (실패는 한 시간 기억)"""
@@ -2067,11 +2067,17 @@ class TelegramSource:
                 data = base64.b64decode(cover.split(",", 1)[1])
             elif cover:
                 from aiohttp import ClientTimeout
-                async with http.get(cover, timeout=ClientTimeout(total=20), headers={"User-Agent": "Mozilla/5.0"}) as r:
+                async with http.get(cover, timeout=ClientTimeout(total=30), headers={"User-Agent": "Mozilla/5.0"}) as r:
                     if r.status == 200 and r.content_type.startswith("image/"):
-                        data = await r.content.read(8 * 1024 * 1024 + 1)
-                        if len(data) > 8 * 1024 * 1024:
-                            data = None
+                        # 끝까지 다 받는다 (content.read(n)은 지금 와 있는 만큼만 돌려줘서 그림이 잘려 저장됐었다)
+                        buf = bytearray()
+                        async for chunk in r.content.iter_chunked(64 * 1024):
+                            buf += chunk
+                            if len(buf) > 8 * 1024 * 1024:
+                                raise TgError("표지 그림이 너무 큽니다.")
+                        if r.content_length and len(buf) != r.content_length:
+                            raise TgError("표지를 끝까지 받지 못했습니다.")
+                        data = bytes(buf)
             if not data:
                 raise TgError("표지가 없습니다.")
             data = await shrink_image(data, width=480)   # 원본 표지는 수 MB일 수 있다 -> 카드·포스터 크기로
