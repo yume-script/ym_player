@@ -428,7 +428,7 @@ export class TelegramProvider {
         const fm = data.file_meta && !data.file_meta.error ? data.file_meta : null;
         const facts = fm ? [
             ['작가', (fm.authors || []).join(', ')], ['연재처', fm.platform], ['상태', fm.status], ['연재 요일', fm.day],
-            ['연령', fm.age], ['연재 시작', fm.year], ['태그', (fm.tags || []).join(', ')], ['링크', fm.url],
+            ['연령', fm.age], ['연재 시작', fm.year], ['언어', fm.language], ['태그', (fm.tags || []).join(', ')], ['링크', fm.url],
             ...(fm.extra || []),
         ].filter(([, v]) => v) : [];
         if (data.file_meta && data.file_meta.error) facts.push(['작품 정보 파일', data.file_meta.error]);

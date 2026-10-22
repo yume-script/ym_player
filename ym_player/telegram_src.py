@@ -796,19 +796,30 @@ def series_meta_file(sid, channel, key):
 
 _META_KEYS = {   # 파일마다 이름이 달라서 흔한 이름들을 모아 본다 (소문자, 띄어쓰기·_·- 무시)
     "title": ("title", "name", "localizedname", "seriesname", "series", "제목", "작품명", "작품", "웹툰명"),
-    "authors": ("author", "authors", "writer", "writers", "artist", "artists", "penciller", "pencillers", "작가", "글", "그림",
-                "글그림", "저자"),
+    "authors": ("author", "authors", "writer", "writers", "personwriters", "artist", "artists", "illustrator",
+                "penciller", "pencillers", "personpenciller", "작가", "글", "그림", "글그림", "저자"),
     "summary": ("summary", "description", "desc", "synopsis", "overview", "story", "줄거리", "소개", "작품소개", "설명"),
     "genres": ("genre", "genres", "category", "장르"),
     "tags": ("tag", "tags", "keyword", "keywords", "태그", "키워드"),
     "status": ("status", "state", "publicationstatus", "상태", "연재상태", "완결"),
-    "platform": ("platform", "publisher", "publishers", "site", "service", "연재처", "플랫폼", "출판사"),
+    "platform": ("platform", "publisher", "publishers", "personpublisher", "site", "service", "연재처", "플랫폼", "출판사"),
     "day": ("day", "days", "weekday", "요일", "연재요일"),
     "age": ("age", "rating", "agerating", "연령", "등급", "연령등급", "이용가"),
-    "cover": ("cover", "coverimage", "coverurl", "thumbnail", "thumb", "image", "poster", "표지", "썸네일"),
+    "cover": ("cover", "coverimage", "coverurl", "posterurl", "poster", "thumbnail", "thumb", "image", "표지", "썸네일"),
     "url": ("url", "link", "links", "weblink", "weblinks", "homepage", "링크", "주소"),
-    "year": ("year", "releaseyear", "started", "start", "연재시작", "연도"),
+    "year": ("releasedate", "year", "releaseyear", "started", "start", "연재시작", "연도"),
+    "language": ("language", "lang", "언어"),
 }
+# 보여 주지 않는 키 (다운로더 내부 정보 등)
+_META_SKIP = {"action", "files", "score", "code", "month", "collections", "personcharacter", "personlocation", "personteam"}
+# Kavita 숫자 코드
+_KAVITA_STATUS = {"0": "연재중", "1": "휴재", "2": "완결", "3": "연재 중단", "4": "완결"}
+_KAVITA_AGE = {"2": "유아", "3": "전체 이용가", "4": "전체 이용가", "5": "10세 이상", "6": "12세 이상", "7": "전체 이용가",
+               "8": "15세 이상", "9": "15세 이상", "10": "17세 이상", "11": "17세 이상", "12": "18세 이상", "13": "18세 이상",
+               "14": "18세 이상"}
+_STATUS_WORDS = {"ongoing": "연재중", "hiatus": "휴재", "completed": "완결", "complete": "완결", "ended": "완결",
+                 "cancelled": "연재 중단", "canceled": "연재 중단"}
+_LANGS = {"ko": "한국어", "kr": "한국어", "en": "영어", "ja": "일본어", "jp": "일본어", "zh": "중국어"}
 
 
 def _norm_key(k):
@@ -845,7 +856,10 @@ def _mini_yaml(text):
 
 
 def parse_meta(data):
-    """작품 정보 파일 내용 -> {title, authors[], summary, genres[], tags[], status, platform, day, age, cover, url, year, extra[[키, 값]]}"""
+    """작품 정보 파일 내용 -> {title, authors[], summary, genres[], tags[], status, platform, day, age, cover, url, year,
+    language, extra[[키, 값]]}.
+    평평한 "키: 값" 모양 말고도, 웹툰 다운로더가 만드는 모양 {meta: {Kavita 정보}, search: [{검색 결과}], files: {...}}도 읽는다
+    (meta를 먼저, 빈 칸은 search로 채움. files의 첫 회차 표지(base64)는 표지 주소가 없을 때 표지로)"""
     text = data.decode("utf-8-sig", "replace") if isinstance(data, bytes) else str(data)
     try:
         import yaml
@@ -858,6 +872,18 @@ def parse_meta(data):
         raw = raw[0]
     if not isinstance(raw, dict) or not raw:
         raise TgError("작품 정보 파일(YAML)이 '키: 값' 모양이 아닙니다.")
+    sources, files = [], None
+    if isinstance(raw.get("meta"), dict) or isinstance(raw.get("search"), (list, dict)):
+        if isinstance(raw.get("meta"), dict):
+            sources.append(raw["meta"])
+        srch = raw.get("search")
+        if isinstance(srch, list):
+            sources += [x for x in srch[:1] if isinstance(x, dict)]
+        elif isinstance(srch, dict):
+            sources.append(srch)
+        files = raw.get("files") if isinstance(raw.get("files"), dict) else None
+    else:
+        sources.append(raw)
     lookup = {}
     for field, names in _META_KEYS.items():
         for n in names:
@@ -870,22 +896,55 @@ def parse_meta(data):
             return [f"{k}: {x}" for k, x in v.items()]
         return [x.strip() for x in re.split(r"[,/·]", str(v)) if x.strip()] if v not in (None, "") else []
 
-    out = {"extra": []}
-    for k, v in raw.items():
-        field = lookup.get(_norm_key(k))
-        if v in (None, "", [], {}):
-            continue
-        if field in ("authors", "genres", "tags"):
-            out[field] = (out.get(field) or []) + as_list(v)
-        elif field and field not in out:
-            out[field] = ", ".join(as_list(v)) if isinstance(v, (list, tuple, dict)) else str(v).strip()
-        elif len(out["extra"]) < 20:
-            out["extra"].append([str(k)[:40], (", ".join(as_list(v)) if isinstance(v, (list, tuple, dict)) else str(v))[:500]])
+    def as_text(v):
+        return ", ".join(as_list(v)) if isinstance(v, (list, tuple, dict)) else str(v).strip()
+
+    out, extra_keys = {"extra": []}, set()
+    for src in sources:
+        for k, v in src.items():
+            nk = _norm_key(k)
+            if v in (None, "", [], {}) or str(v).strip() == "" or nk in _META_SKIP:
+                continue
+            field = lookup.get(nk)
+            if field == "day" and re.fullmatch(r"\d{1,2}", str(v).strip()):
+                continue   # Kavita의 "Day: 02"는 연재 요일이 아니라 날짜
+            if field in ("authors", "genres", "tags"):
+                cur = out.setdefault(field, [])
+                cur += [x for x in as_list(v) if x not in cur]
+            elif field and field not in out:
+                out[field] = as_text(v)
+            elif not field and nk not in extra_keys and len(out["extra"]) < 20 and not isinstance(v, (list, dict)):
+                extra_keys.add(nk)
+                out["extra"].append([str(k)[:40], as_text(v)[:500]])
+    # 숫자 코드·형식 다듬기
+    st = out.get("status", "")
+    out["status"] = _KAVITA_STATUS.get(st, _STATUS_WORDS.get(st.casefold(), st)) if st else ""
+    if out.get("age"):
+        out["age"] = _KAVITA_AGE.get(out["age"], "" if out["age"] in ("0", "1", "-1") else out["age"])
+    yr = out.get("year", "")
+    if re.fullmatch(r"\d{8}", yr):
+        out["year"] = f"{yr[:4]}-{yr[4:6]}-{yr[6:]}"
+    if out.get("language"):
+        out["language"] = _LANGS.get(out["language"].casefold(), out["language"])
     if out.get("cover") and not re.match(r"^https?://", out["cover"]):
         out.pop("cover")   # 주소가 아니면 (파일 이름 등) 쓰지 않는다
+    if not out.get("cover") and files:
+        # 첫 회차 표지가 base64로 들어 있으면 (다른 회차는 "FIRST" 같은 표시)
+        for _name, info in sorted(files.items()):
+            b64 = info.get("cover") if isinstance(info, dict) else None
+            if isinstance(b64, str) and len(b64) > 200 and len(b64) < 700_000 and re.fullmatch(r"[A-Za-z0-9+/=\s]+", b64):
+                kind = "png" if b64.startswith("iVBOR") else "webp" if b64.startswith("UklGR") else "jpeg"
+                out["cover"] = f"data:image/{kind};base64," + re.sub(r"\s+", "", b64)
+                break
     if out.get("url") and not re.match(r"^https?://", out["url"]):
         out["extra"].append(["주소", out.pop("url")])
+    out = {k: v for k, v in out.items() if v not in ("", None) or k == "extra"}
     out["summary"] = str(out.get("summary") or "")[:5000]
+    if not out.get("day"):
+        # 줄거리 첫머리의 "[매주 일요일 연재]" 같은 안내에서 연재 요일
+        m = re.search(r"매주\s*((?:[월화수목금토일](?:요일)?[,·\s]*)+)", out["summary"][:200])
+        if m:
+            out["day"] = m.group(1).strip(" ,·")
     return out
 
 

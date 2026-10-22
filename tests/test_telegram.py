@@ -1353,5 +1353,72 @@ webLinks:
   - https://webtoon.kakao.com/content/63646168
 """
     m = telegram_src.parse_meta(kavita.encode())
-    assert m["title"] == "천하제일 곤륜객잔" and m["authors"] == ["작가A"] and m["status"] == "Ongoing"
+    assert m["title"] == "천하제일 곤륜객잔" and m["authors"] == ["작가A"] and m["status"] == "연재중"
     assert m["age"] == "15" and m["year"] == "2023" and m["url"].startswith("https://webtoon.kakao.com")
+
+
+DOWNLOADER_YAML = """action:
+    all_file_is_special: false
+    code: "KKP63646168"
+    first_cover: false
+files:
+    "천하제일 곤륜객잔 0001화#105.zip":
+        cover: "/9j/4AAQSkZJRgABAgAAAQABAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        page: 105
+        wordcount: 0
+    "천하제일 곤륜객잔 0002화#118.zip":
+        cover: "FIRST"
+        page: 118
+        wordcount: 0
+meta:
+    Age Rating: "3"
+    Collections: ""
+    Day: "02"
+    Genres: "무협"
+    Language: "ko"
+    Month: "03"
+    Name: "천하제일 곤륜객잔"
+    Person Character: ""
+    Person Publisher: "카카오페이지"
+    Person Writers: "김자까, 김준태, 백보"
+    Publication Status: "0"
+    Release Date: "20240302"
+    Summary: "[매주 일요일 연재]\\n\\n“누구시라고요?”\\n“운룡일세.”"
+    Tags: "카카오페이지,무협"
+    Web Links: "https://page.kakao.com/content/63646168"
+    Writer: ""
+    Year: "2024"
+search:
+-   Day: "02"
+    Month: "03"
+    Publication Status: "0"
+    Release Date: "20240302"
+    Year: "2024"
+    author: "김자까, 김준태, 백보"
+    code: "KKP63646168"
+    description: "다른 설명"
+    genre: "무협"
+    illustrator: ""
+    link: "https://page.kakao.com/content/63646168"
+    poster_url: "https://page-images.kakaoentcdn.com/download/resource?kid=abc"
+    publisher: "카카오페이지"
+    score: 100
+    tag: "카카오페이지,무협"
+    title: "천하제일 곤륜객잔"
+"""
+
+
+def test_downloader_yaml_meta_and_search():
+    m = telegram_src.parse_meta(DOWNLOADER_YAML.encode())
+    assert m["title"] == "천하제일 곤륜객잔" and m["authors"] == ["김자까", "김준태", "백보"]
+    assert m["genres"] == ["무협"] and m["tags"] == ["카카오페이지", "무협"] and m["platform"] == "카카오페이지"
+    assert m["status"] == "연재중" and m["age"] == "전체 이용가" and m["year"] == "2024-03-02" and m["language"] == "한국어"
+    assert m["summary"].startswith("[매주 일요일 연재]")                  # meta가 먼저 (search의 설명은 빈 칸일 때만)
+    assert m["cover"].startswith("https://page-images.kakaoentcdn.com")   # search의 poster_url
+    assert m["url"] == "https://page.kakao.com/content/63646168"
+    assert m["day"] == "일요일"                                            # "Day: 02"(날짜)가 아니라 줄거리의 "[매주 일요일 연재]"에서
+    keys = {k for k, _v in m["extra"]}
+    assert not keys & {"action", "files", "score", "code", "Month", "Day", "Collections"}
+    # 표지 주소가 없으면 files의 첫 회차 표지(base64)를
+    m2 = telegram_src.parse_meta(DOWNLOADER_YAML.replace("    poster_url:", "    poster_x:").encode())
+    assert m2["cover"].startswith("data:image/jpeg;base64,/9j/")
