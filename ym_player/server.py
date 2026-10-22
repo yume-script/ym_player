@@ -1604,35 +1604,33 @@ async def tg_image(request, tg):
 
 @telegram_api
 async def tg_book(request, tg):
-    """웹툰 압축 파일 GET /api/tg/{sid}/book/{c}/{m} -> 받아 두었으면 {ready, pages: [이름...], item, series},
-    아직이면 서버가 텔레그램에서 받기 시작하고 {ready: false, progress: 0~1} (화면이 1초마다 다시 물어봄)"""
+    """웹툰 압축 파일 GET /api/tg/{sid}/book/{c}/{m} -> {ready, pages: [이름...], item, series}.
+    파일을 통째로 받지 않고 목차(파일 맨 끝)만 읽어 바로 답한다. ?warm=1 이면 목차와 앞쪽 몇 장을 뒤에서 미리 받기만 (다음 화)"""
     channel, msg = _ids(request, tg)
     row = telegram_src.get_video(tg.sid, channel, msg, user=username(request))
     if not row or row.get("kind") != "book":
         return _json_error(404, "색인에 없는 웹툰 파일입니다.")
-    await tg.authorized_client()
-    path, progress, error = tg.book_state(channel, msg, row)
-    if error:
-        return _json_error(502, error)
-    if not path:
-        return web.json_response({"success": True, "ready": False, "progress": round(progress, 3), "size": row.get("size", 0)})
+    if request.query.get("warm"):
+        await tg.authorized_client()
+        asyncio.ensure_future(tg.book_warm(channel, msg, row))
+        return web.json_response({"success": True})
     try:
-        pages = await asyncio.to_thread(telegram_src.book_pages, path)
+        _zf, pages = await tg.book_open(channel, msg, row)
     except telegram_src.TgError as e:
         return _json_error(502, str(e))
-    return web.json_response({"success": True, "ready": True, "pages": [name for _i, name in pages], "item": row,
+    return web.json_response({"success": True, "ready": True, "pages": [name for _info, name in pages], "item": row,
                               "series": telegram_src.series_of(tg.sid, channel, msg)})
 
 
 @telegram_api
 async def tg_book_page(request, tg):
-    """웹툰 한 쪽 GET /api/tg/{sid}/book/{c}/{m}/{n} (n은 0부터, 받아 둔 압축 파일에서 꺼냄)"""
+    """웹툰 한 쪽 GET /api/tg/{sid}/book/{c}/{m}/{n} (n은 0부터) - 그 그림 부분만 텔레그램에서 받아 푼다"""
     channel, msg = _ids(request, tg)
-    path = tg.book_path(channel, msg)
-    if not os.path.exists(path):
-        return _json_error(404, "아직 받지 않은 웹툰 파일입니다.")
+    row = telegram_src.get_video(tg.sid, channel, msg)
+    if not row or row.get("kind") != "book":
+        return _json_error(404, "색인에 없는 웹툰 파일입니다.")
     try:
-        data, ctype = await asyncio.to_thread(telegram_src.book_page, path, int(request.match_info["n"]))
+        data, ctype = await tg.book_page(channel, msg, row, int(request.match_info["n"]))
     except telegram_src.TgError as e:
         return _json_error(404, str(e))
     return web.Response(body=data, headers={"Content-Type": ctype, "Cache-Control": "private, max-age=604800, immutable",

@@ -450,6 +450,10 @@ export class TelegramProvider {
     read(id) {
         openReader({
             load: (bid, onProgress, cancelled) => this._loadBook(bid, onProgress, cancelled),
+            prepare: (bid) => {
+                const [c, m] = String(bid).split(':');
+                return fetch(`${this.base}/book/${c}/${m}?warm=1`);
+            },
             save: (bid, position, total, done) => {
                 const [channel, msg] = String(bid).split(':');
                 const v = this._seen.get(String(bid));

@@ -95,6 +95,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 69,
+        "version": "1.1.32",
+        "date": "2026-10-22",
+        "title": "웹툰 빨리 열기: 통째로 받지 않고 목차와 보는 쪽만, 여러 조각 동시에 받기, 다음 화 미리 받기"
+    },
+    {
         "pr": 68,
         "version": "1.1.31",
         "date": "2026-10-21",
