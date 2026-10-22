@@ -95,6 +95,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 71,
+        "version": "1.1.34",
+        "date": "2026-10-22",
+        "title": "웹툰 작품 정보: 다운로더 yaml(meta/search/files, Kavita 코드)을 제대로 읽기"
+    },
+    {
         "pr": 70,
         "version": "1.1.33",
         "date": "2026-10-22",
