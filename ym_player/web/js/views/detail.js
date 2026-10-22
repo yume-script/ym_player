@@ -1,5 +1,7 @@
 // 상세 화면: 흐린 배경 그림 + 포스터 + 제목/정보 + [재생/이어보기] + 시즌/에피소드/출연진
-import { h, icon, clear, fmtClock, fmtDuration, toast } from '../util.js';
+import { h, icon, clear, fmtClock, fmtDuration, toast, storeGet, storeSet } from '../util.js';
+
+const SUMMARY_KEY = 'yp_summary_open';
 import { registry } from '../providers/index.js';
 import { player } from '../player.js';
 import { hubRow, progressBar, emptyState, loading } from '../cards.js';
@@ -32,6 +34,26 @@ function trackRow(p, it, i) {
         h('span', { class: 'track-no', text: String(m.index || i + 1) }),
         h('span', { class: 'track-title', text: m.title }),
         h('span', { class: 'muted', text: fmtClock((m.duration || 0) / 1000) }));
+}
+
+/** 줄거리: 길면 몇 줄만 보이고 [더 보기]/[접기] (펼친 상태는 이 브라우저에 기억) */
+function summaryBlock(text) {
+    const p = h('p', { class: 'detail-summary', text });
+    const box = h('div', { class: 'detail-summary-box' }, p);
+    requestAnimationFrame(() => {
+        p.classList.add('clamped');
+        if (p.scrollHeight <= p.clientHeight + 4) { p.classList.remove('clamped'); return; }   // 짧으면 버튼 없이
+        let open = storeGet(SUMMARY_KEY, false);
+        const btn = h('button', { class: 'btn btn-sm summary-toggle', type: 'button' });
+        const sync = () => {
+            p.classList.toggle('clamped', !open);
+            btn.replaceChildren(icon(open ? 'chevron-up' : 'chevron-down'), open ? ' 접기' : ' 더 보기');
+        };
+        btn.addEventListener('click', () => { open = !open; storeSet(SUMMARY_KEY, open); sync(); });
+        sync();
+        box.appendChild(btn);
+    });
+    return box;
 }
 
 export async function renderDetail(main, [pid, id], _query, ctx) {
@@ -104,7 +126,7 @@ export async function renderDetail(main, [pid, id], _query, ctx) {
                 d.rating ? h('span', { class: 'rating' }, icon('star'), ` ${Number(d.rating).toFixed(1)}`) : null),
             actions,
             d.tagline ? h('p', { class: 'detail-tagline', text: d.tagline }) : null,
-            d.summary ? h('p', { class: 'detail-summary', text: d.summary }) : null,
+            d.summary ? summaryBlock(d.summary) : null,
             facts.length ? h('dl', { class: 'detail-facts' }, facts.map(([k, v]) => [h('dt', { text: k }), h('dd', { text: v })])) : null));
 
     const page = h('div', { class: 'page detail' },

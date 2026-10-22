@@ -95,6 +95,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 72,
+        "version": "1.1.35",
+        "date": "2026-10-22",
+        "title": "웹툰 카드에 yaml 표지, 긴 줄거리 [더 보기]/[접기], 해시태그 작품 이름 정리"
+    },
+    {
         "pr": 71,
         "version": "1.1.34",
         "date": "2026-10-22",

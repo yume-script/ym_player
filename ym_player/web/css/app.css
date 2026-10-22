@@ -1006,3 +1006,8 @@ body.nav-editing .nav-order-edit { display: flex; }
 .reader-wait { display: flex; align-items: center; gap: 0.5rem; color: #8b9096; font-size: 0.9rem; }
 .reader-wait i { color: var(--accent, #e5a00d); }
 .reader-page.ready .reader-wait { display: none; }
+/* 상세 화면 줄거리 접기 (detail.js) */
+.detail-summary-box { max-width: 760px; margin: 0 0 1.2rem; }
+.detail-summary-box .detail-summary { margin: 0; }
+.detail-summary.clamped { display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden; }
+.summary-toggle { margin-top: 0.4rem; }

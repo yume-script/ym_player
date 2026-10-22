@@ -71,6 +71,13 @@ function fmtSize(bytes) {
     return gb >= 1 ? `${gb.toFixed(1)}GB` : `${Math.round(bytes / 1024 ** 2)}MB`;
 }
 
+/** 해시태그로 올린 웹툰 이름 다듬기: "#신입_공무원은_빌런_잡는다_856116" -> "신입 공무원은 빌런 잡는다" */
+function cleanBookTitle(t) {
+    const s = String(t || '');
+    if (!s.startsWith('#')) return s;
+    return s.replace(/^#+/, '').replace(/_/g, ' ').replace(/[\s-]*\(?\d{6,}\)?(?=\s|$)/g, '').replace(/\s{2,}/g, ' ').trim() || s;
+}
+
 /** 회차 이름: "3화" / "시즌 2 3화" / 특별회차는 "특별" (번호가 있으면 "특별 3") */
 function epLabel(v, multiSeason) {
     if (v.special) return v.ep ? `특별 ${v.ep}` : '특별';
@@ -133,7 +140,9 @@ export class TelegramProvider {
             // 시리즈(회차 묶음) 카드: 가장 최근 회차가 대표. 누르면 회차 목록
             const sid = `series:${v.channel}:${v.series.key}`;
             this._seen.set(sid, v);
-            const cover = thumb || (v.series.cover ? `${this.base}/thumb/${v.channel}/${v.series.cover}` : '');
+            // 작품 정보 파일(웹툰명.yaml)이 있으면 그 표지 (서버가 받아 둠), 없으면 회차 그림
+            const cover = v.series.meta ? this.seriesCoverUrl(v.channel, v.series.key)
+                : thumb || (v.series.cover ? `${this.base}/thumb/${v.channel}/${v.series.cover}` : '');
             return {
                 pid: this.id, id: sid, type: 'show', playable: true, title: v.series.title,
                 subtitle: [this.channelTitle(v.channel), `${v.series.count}화`, (v.date || '').slice(0, 10)].filter(Boolean).join(' · '),
@@ -148,7 +157,7 @@ export class TelegramProvider {
         if (book) {
             // 웹툰 한 화 (zip/cbz): 누르면 웹툰 보기로 (reader.js). duration = 쪽 수 (한 번 열어 본 뒤에 앎)
             return {
-                pid: this.id, id, type: 'book', playable: true, title: v.title,
+                pid: this.id, id, type: 'book', playable: true, title: cleanBookTitle(v.title),
                 subtitle: [this.channelTitle(v.channel), (v.date || '').slice(0, 10), fmtSize(v.size)].filter(Boolean).join(' · '),
                 thumb, wideThumb: thumb, shape: 'poster', cardClass: 'card-book',
                 progress: v.duration && v.position ? Math.min(1, v.position / v.duration) : 0,
@@ -224,6 +233,10 @@ export class TelegramProvider {
         // 아직 훑지 않은 오래된 메시지가 남았으면 total보다 더 있을 수 있다 -> 한 칸 더 있다고 알려 계속 불러오게
         const total = data.more ? Math.max(data.total, start + data.items.length + 1) : data.total;
         return { items: data.items.map((v) => this.toItem(v)), total, shown: data.total, approx: !!data.more };
+    }
+
+    seriesCoverUrl(channel, key) {
+        return `${this.base}/series-cover/${channel}?${new URLSearchParams({ key })}`;
     }
 
     /** 사진/웹툰 채널에는 랜덤 재생할 영상이 없다 */
@@ -426,6 +439,7 @@ export class TelegramProvider {
         if (ch && ch.epOrder === 'desc') reverseRegular(children);
         // 채널에 올린 작품 정보 파일(웹툰명.yaml): 작가·장르·연재처·상태·줄거리·표지 등
         const fm = data.file_meta && !data.file_meta.error ? data.file_meta : null;
+        const metaCover = fm && fm.cover ? this.seriesCoverUrl(channel, data.key) : '';
         const facts = fm ? [
             ['작가', (fm.authors || []).join(', ')], ['연재처', fm.platform], ['상태', fm.status], ['연재 요일', fm.day],
             ['연령', fm.age], ['연재 시작', fm.year], ['언어', fm.language], ['태그', (fm.tags || []).join(', ')], ['링크', fm.url],
@@ -434,7 +448,7 @@ export class TelegramProvider {
         if (data.file_meta && data.file_meta.error) facts.push(['작품 정보 파일', data.file_meta.error]);
         return {
             pid: this.id, id, type: 'show', title: (fm && fm.title) || data.title, subtitle: '',
-            poster: (fm && fm.cover) || cover, posterShape: 'poster', art: '',
+            poster: metaCover || cover, posterShape: 'poster', art: '',
             metaLine: ['웹툰', fm && fm.status, fm && fm.platform, `${eps.length}화`, unread ? `안 본 회차 ${unread}` : '다 봄'].filter(Boolean),
             rating: null, summary: (fm && fm.summary) || '', tagline: '', genres: (fm && fm.genres) || [], directors: [], cast: [],
             extraFacts: facts,

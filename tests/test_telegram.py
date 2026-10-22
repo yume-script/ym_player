@@ -668,7 +668,7 @@ def test_existing_index_titles_are_repaired_once(monkeypatch, tmp_path):
     row = telegram_src.get_video("tg", 1, 2)
     assert row["title"] == "영화" and row["file_name"] == "영화.mkv"
     with telegram_src.db() as c:
-        assert c.execute("PRAGMA user_version").fetchone()[0] == 12
+        assert c.execute("PRAGMA user_version").fetchone()[0] == 13
 
 
 def test_split_parts_are_grouped(monkeypatch, tmp_path):
@@ -1422,3 +1422,40 @@ def test_downloader_yaml_meta_and_search():
     # 표지 주소가 없으면 files의 첫 회차 표지(base64)를
     m2 = telegram_src.parse_meta(DOWNLOADER_YAML.replace("    poster_url:", "    poster_x:").encode())
     assert m2["cover"].startswith("data:image/jpeg;base64,/9j/")
+
+
+def test_series_card_uses_yaml_cover(env):
+    import base64 as b64
+    jpg = b"\xff\xd8\xff\xe0" + b"COVER" * 60
+    yaml_text = ('meta:\n    Name: "나 혼자만 레벨업"\nfiles:\n    "나 혼자만 레벨업 0001화#3.zip":\n        cover: "'
+                 + b64.b64encode(jpg).decode() + '"\n').encode()
+
+    def doc_msg(mid, name, data, mime):
+        doc = SimpleNamespace(mime_type=mime, size=len(data), thumbs=[], data=data, attributes=[DocumentAttributeFilename(name)])
+        return SimpleNamespace(id=mid, document=doc, photo=None, message="", date=datetime(2026, 1, 3, tzinfo=timezone.utc) + timedelta(minutes=mid))
+    for i, mid in enumerate((1001, 1002), start=1):
+        env.msgs[mid] = doc_msg(mid, f"나 혼자만 레벨업 {i}화.zip", _zip_bytes(["001.jpg"]), "application/zip")
+    env.msgs[1003] = doc_msg(1003, "나 혼자만 레벨업.yaml", yaml_text, "application/x-yaml")
+
+    async def subtitle_bytes(self, channel, msg):
+        return env.msgs[msg].document.data
+    import pytest as _p
+    mp = _p.MonkeyPatch()
+    mp.setattr(telegram_src.TelegramSource, "subtitle_bytes", subtitle_bytes)
+    cfg = config_store.load()
+    cfg["sources"][0]["channels"] = [{"id": 777, "title": "웹툰", "kind": "webtoon"}]
+    config_store.save(cfg)
+
+    async def flow(c):
+        env.authorized = True
+        items = (await (await c.get("/api/tg/tg/videos?channel=777&limit=10&group=1")).json())["items"]
+        s = items[0]["series"]
+        assert s["meta"] == 1003
+        r = await c.get(f"/api/tg/tg/series-cover/777?key={s['key']}")
+        assert r.status == 200 and r.content_type == "image/jpeg" and await r.read() == jpg
+        assert (await c.get("/api/tg/tg/series-cover/777?key=b:없는작품")).status == 404
+
+    try:
+        run(flow)
+    finally:
+        mp.undo()

@@ -1197,6 +1197,34 @@ async def tg_series(request, tg):
 
 
 @telegram_api
+async def tg_series_cover(request, tg):
+    """작품 카드/상세 그림 GET /api/tg/{sid}/series-cover/{channel}?key=작품키 - 작품 정보 파일의 표지 (서버가 한 번 받아 둠).
+    없으면 그 작품 회차의 썸네일로"""
+    channel = int(request.match_info["channel"])
+    if channel not in _user_channels(request, tg):
+        return _json_error(404, "설정에서 고르지 않은 채널입니다.")
+    key = request.query.get("key", "")
+    path = await tg.series_cover(request.app[HTTP], channel, key)
+    if not path:
+        eps = (telegram_src.series_episodes(tg.sid, channel, key) or {}).get("episodes") or []
+        for ep in reversed(eps):
+            if ep.get("has_thumb"):
+                try:
+                    path = await tg.thumbnail(channel, ep["msg"])
+                    break
+                except telegram_src.TgError:
+                    continue
+    if not path:
+        return _json_error(404, "표지가 없습니다.")
+    with open(path, "rb") as f:
+        head = f.read(16)
+    ctype = "image/png" if head.startswith(b"\x89PNG") else "image/webp" if head[8:12] == b"WEBP" else \
+        "image/gif" if head.startswith(b"GIF") else "image/jpeg"
+    return web.FileResponse(path, headers={"Cache-Control": "private, max-age=86400", "Content-Type": ctype,
+                                           "X-Content-Type-Options": "nosniff"})
+
+
+@telegram_api
 async def tg_subtitle(request, tg):
     """영상 옆에 올린 자막 파일 -> WebVTT (<track>용). ?shift=초 - 서버 변환 스트림처럼 그 위치가 0초인 경우"""
     channel, msg = _ids(request, tg)
@@ -2598,6 +2626,7 @@ def create_app(require_auth=True):
     app.router.add_get(r"/api/tg/{sid}/image/{channel:-?\d+}/{msg:\d+}", tg_image)
     app.router.add_get(r"/api/tg/{sid}/sub/{channel:-?\d+}/{msg:\d+}", tg_subtitle)
     app.router.add_get(r"/api/tg/{sid}/series/{channel:-?\d+}", tg_series)
+    app.router.add_get(r"/api/tg/{sid}/series-cover/{channel:-?\d+}", tg_series_cover)
     app.router.add_get(r"/api/tg/{sid}/book/{channel:-?\d+}/{msg:\d+}", tg_book)
     app.router.add_get(r"/api/tg/{sid}/book/{channel:-?\d+}/{msg:\d+}/{n:\d+}", tg_book_page)
     app.router.add_get(r"/api/tg/{sid}/meta/{channel:-?\d+}/{msg:\d+}", tg_meta)
