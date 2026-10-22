@@ -14,6 +14,7 @@
 """
 import asyncio
 import base64
+import io
 import binascii
 import json
 import logging
@@ -26,6 +27,7 @@ import time
 import unicodedata
 import zipfile
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import unquote
 
 from . import config_store, media_cache
@@ -1089,7 +1091,6 @@ def forget_source(sid):
 BOOK_PAGE_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp",
                    ".gif": "image/gif", ".bmp": "image/bmp", ".avif": "image/avif"}
 BOOK_PAGE_MAX = 50 * 1024 * 1024     # 쪽 하나 (압축을 풀었을 때) 한도
-_book_pages_cache = OrderedDict()    # (경로, 바뀐 시각) -> 쪽 목록 [(ZipInfo 순번, 이름)]
 
 
 def _zip_name(info):
@@ -1107,48 +1108,104 @@ def _natural_key(name):
     return [(0, int(t), "") if t.isdigit() else (1, 0, t) for t in re.split(r"(\d+)", name.casefold()) if t]
 
 
-def book_pages(path):
-    """압축 파일 안의 그림 [(순번, 이름)] - 맥 찌꺼기(__MACOSX, ._파일)와 그림이 아닌 파일은 빼고 이름순"""
-    key = (path, os.path.getmtime(path))
-    got = _book_pages_cache.get(key)
-    if got is not None:
-        _book_pages_cache.move_to_end(key)
-        return got
-    try:
-        with zipfile.ZipFile(path) as z:
-            infos = z.infolist()
-    except (zipfile.BadZipFile, OSError) as e:
-        raise TgError(f"압축 파일을 열지 못했습니다 ({e}). zip/cbz만 볼 수 있습니다.") from e
+def zip_pages(zf):
+    """압축 파일 안의 그림 [(ZipInfo, 이름)] - 맥 찌꺼기(__MACOSX, ._파일)와 그림이 아닌 파일은 빼고 이름순"""
     pages = []
-    for i, info in enumerate(infos):
+    for info in zf.infolist():
         name = _zip_name(info)
         base = name.rsplit("/", 1)[-1]
         if info.is_dir() or name.startswith("__MACOSX/") or base.startswith("."):
             continue
         if os.path.splitext(base.lower())[1] in BOOK_PAGE_TYPES:
-            pages.append((i, name))
+            pages.append((info, name))
     pages.sort(key=lambda p: _natural_key(p[1]))
-    _book_pages_cache[key] = pages
-    while len(_book_pages_cache) > 64:
-        _book_pages_cache.popitem(last=False)
     return pages
 
 
-def book_page(path, n):
+def zip_read(zf, pages, n):
     """n번째 쪽 (bytes, mime)"""
-    pages = book_pages(path)
     if not 0 <= n < len(pages):
         raise TgError("없는 쪽입니다.")
-    idx, name = pages[n]
-    with zipfile.ZipFile(path) as z:
-        info = z.infolist()[idx]
-        if info.file_size > BOOK_PAGE_MAX:
-            raise TgError("그림이 너무 큽니다.")
-        try:
-            data = z.read(info)
-        except (RuntimeError, NotImplementedError) as e:   # 암호가 걸렸거나 모르는 압축 방식
-            raise TgError(f"이 압축 파일의 그림을 풀지 못했습니다 ({e}).") from e
+    info, name = pages[n]
+    if info.file_size > BOOK_PAGE_MAX:
+        raise TgError("그림이 너무 큽니다.")
+    try:
+        data = zf.read(info)
+    except (RuntimeError, NotImplementedError, zipfile.BadZipFile) as e:   # 암호가 걸렸거나 모르는 압축 방식
+        raise TgError(f"이 압축 파일의 그림을 풀지 못했습니다 ({e}).") from e
     return data, BOOK_PAGE_TYPES[os.path.splitext(name.lower())[1]]
+
+
+def _open_zip(fileobj):
+    try:
+        return zipfile.ZipFile(fileobj)
+    except (zipfile.BadZipFile, OSError) as e:
+        raise TgError(f"압축 파일을 열지 못했습니다 ({e}). zip/cbz만 볼 수 있습니다.") from e
+
+
+def book_pages(path):
+    """(디스크의 압축 파일) 쪽 이름 목록 [(순번, 이름)]"""
+    with _open_zip(path) as zf:
+        return [(i, name) for i, (_info, name) in enumerate(zip_pages(zf))]
+
+
+def book_page(path, n):
+    with _open_zip(path) as zf:
+        return zip_read(zf, zip_pages(zf), n)
+
+
+# zipfile 작업은 전용 스레드에서: RemoteFile.read가 스레드를 잡은 채 이벤트 루프의 조각 받기를 기다리는데,
+# 조각 캐시의 디스크 읽기도 기본 스레드 풀(asyncio.to_thread)을 쓰므로 같은 풀이면 서로 기다리다 멈출 수 있다
+_ZIP_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ymp-zip")
+
+
+async def _zip_job(fn, *args):
+    return await asyncio.get_running_loop().run_in_executor(_ZIP_POOL, fn, *args)
+
+
+class RemoteFile(io.RawIOBase):
+    """텔레그램 파일을 디스크 파일처럼 (seek/read) - zipfile이 목차(파일 맨 끝)와 필요한 그림 부분만 읽게.
+    읽기는 media_cache 조각(512KB)으로 받고(받은 조각은 캐시에 남음), 앞쪽은 여러 조각씩 동시에 미리 받는다.
+    zipfile은 동기 코드라 스레드에서 돌리고, 조각 받기는 이벤트 루프에 맡긴다."""
+
+    def __init__(self, streamer, loop):
+        super().__init__()
+        self.st, self.loop, self.pos = streamer, loop, 0
+
+    def readable(self):
+        return True
+
+    def seekable(self):
+        return True
+
+    def tell(self):
+        return self.pos
+
+    def seek(self, offset, whence=0):
+        self.pos = offset if whence == 0 else self.pos + offset if whence == 1 else self.st.size + offset
+        self.pos = max(0, self.pos)
+        return self.pos
+
+    def read(self, n=-1):
+        if n is None or n < 0:
+            n = self.st.size - self.pos
+        n = max(0, min(n, self.st.size - self.pos))
+        if not n:
+            return b""
+        data = asyncio.run_coroutine_threadsafe(self._get(self.pos, n), self.loop).result(300)
+        self.pos += len(data)
+        return data
+
+    def readinto(self, b):
+        data = self.read(len(b))
+        b[:len(data)] = data
+        return len(data)
+
+    async def _get(self, pos, n):
+        buf = bytearray()
+        async for piece in self.st.iter_range(pos, n):
+            buf += piece
+        return bytes(buf)
 
 
 def set_has_thumb(sid, channel, msg):
@@ -1175,7 +1232,8 @@ class TelegramSource:
         self._thumb_sem = asyncio.Semaphore(THUMB_CONCURRENCY)
         self._thumb_inflight = {}
         self._dl_sem = asyncio.Semaphore(DOWNLOAD_CONCURRENCY)  # 이 계정으로 동시에 받는 파일 조각 수
-        self._books = {}            # (channel, msg) -> 웹툰 압축 파일 받는 중 {task, done, total, error}
+        self._zips = OrderedDict()  # (channel, msg) -> (열어 둔 ZipFile, 쪽 목록) - 웹툰 압축 파일
+        self._zip_opening = {}      # (channel, msg) -> 여는 중 (목차 읽기, 같은 파일은 한 번만)
         if not fast_crypto():
             log.warning("cryptg가 없어 텔레그램 암호화를 순수 파이썬으로 처리합니다 (느림): pip install cryptg")
 
@@ -1605,97 +1663,80 @@ class TelegramSource:
                 pass
 
     # ----- 웹툰 압축 파일 -----
-    BOOK_CACHE_MAX = 4 * 1024 * 1024 * 1024  # 받아 둔 압축 파일은 합쳐서 4GB까지 (넘으면 오래 안 본 것부터 지움)
-
-    def _book_dir(self):
-        return os.path.join(config_store.DATA_DIR, "telegram_books", self.sid)
+    # 통째로 받지 않는다: 파일 맨 끝의 목차만 먼저 받아 쪽 목록을 만들고, 보는 쪽의 그림 부분만 받는다 (첫 쪽이 1~2초).
+    # 받는 것은 media_cache 조각이라 디스크 캐시에 남고, 앞쪽은 여러 조각씩 동시에 미리 받는다 (영상 재생과 같은 길).
+    ZIPS_OPEN_MAX = 12
 
     def book_path(self, channel, msg):
-        return os.path.join(self._book_dir(), f"{int(channel)}_{int(msg)}.zip")
+        """예전 방식으로 통째로 받아 둔 파일 (있으면 그것을 씀)"""
+        return os.path.join(config_store.DATA_DIR, "telegram_books", self.sid, f"{int(channel)}_{int(msg)}.zip")
 
-    def book_state(self, channel, msg, row):
-        """(받아 둔 파일 경로 또는 None, 받은 비율 0~1, 오류). 아직 없으면 뒤에서 받기 시작한다 (같은 파일은 한 번만)"""
+    async def book_open(self, channel, msg, row):
+        """(ZipFile, 쪽 목록 [(ZipInfo, 이름)])"""
+        key = (int(channel), int(msg))
+        hit = self._zips.get(key)
+        if hit:
+            self._zips.move_to_end(key)
+            return hit
+        fut = self._zip_opening.get(key)
+        if fut is None:
+            fut = self._zip_opening[key] = asyncio.ensure_future(self._book_open(channel, msg, row))
+            fut.add_done_callback(lambda _f: self._zip_opening.pop(key, None))
+        return await asyncio.shield(fut)
+
+    async def _book_open(self, channel, msg, row):
+        key = (int(channel), int(msg))
         path = self.book_path(channel, msg)
         if os.path.exists(path):
-            os.utime(path)  # 최근에 본 것 (캐시 정리 순서)
-            return path, 1.0, ""
-        size = int(row.get("size") or 0)
-        if size > BOOK_MAX_BYTES:
-            return None, 0.0, f"압축 파일이 너무 큽니다 ({size // (1024 * 1024)}MB). 텔레그램 앱에서 받아 주세요."
-        key = (int(channel), int(msg))
-        job = self._books.get(key)
-        if job and job.get("error"):
-            self._books.pop(key, None)   # 오류는 한 번 알려 주고, 다음에 다시 열면 다시 받는다
-            return None, 0.0, job["error"]
-        if job is None:
-            job = self._books[key] = {"done": 0, "total": size, "error": ""}
-            job["task"] = asyncio.ensure_future(self._fetch_book(channel, msg, path, job))
-        return None, (job["done"] / job["total"]) if job["total"] else 0.0, ""
+            zf = await _zip_job(_open_zip, path)
+        else:
+            size = int(row.get("size") or 0)
+            if size > BOOK_MAX_BYTES:
+                raise TgError(f"압축 파일이 너무 큽니다 ({size // (1024 * 1024)}MB). 텔레그램 앱에서 받아 주세요.")
+            if size <= 0:
+                raise TgError("압축 파일 크기를 알 수 없습니다.")
+            await self.authorized_client()
+            remote = RemoteFile(self._streamer(channel, msg, size), asyncio.get_running_loop())
+            zf = await _zip_job(_open_zip, remote)
+        pages = zip_pages(zf)
+        if not pages:
+            zf.close()
+            raise TgError("압축 파일 안에 그림(jpg/png/webp/gif)이 없습니다.")
+        self._zips[key] = (zf, pages)
+        while len(self._zips) > self.ZIPS_OPEN_MAX:
+            _k, (old, _p) = self._zips.popitem(last=False)
+            old.close()
+        if not os.path.exists(self._thumb_path(channel, msg)):
+            asyncio.ensure_future(self._book_cover(channel, msg, row))
+        return zf, pages
 
-    async def _fetch_book(self, channel, msg, path, job):
-        from telethon.errors import FileReferenceExpiredError
-        key = (int(channel), int(msg))
-        tmp = path + ".part"
+    async def book_page(self, channel, msg, row, n):
+        zf, pages = await self.book_open(channel, msg, row)
+        return await _zip_job(zip_read, zf, pages, n)
 
-        def progress(done, total):
-            job["done"], job["total"] = done, total or job["total"]
+    async def book_warm(self, channel, msg, row, first=3):
+        """곧 볼 다음 화: 목차와 앞쪽 몇 장을 미리 받아 둔다"""
         try:
-            client = await self.authorized_client()
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            try:
-                got = await client.download_media(await self._message(channel, msg), file=tmp, progress_callback=progress)
-            except FileReferenceExpiredError:
-                got = await client.download_media(await self._message(channel, msg, fresh=True), file=tmp, progress_callback=progress)
-            if not got or not os.path.exists(tmp):
-                raise TgError("텔레그램에서 압축 파일을 받지 못했습니다.")
-            pages = await asyncio.to_thread(book_pages, tmp)   # 열리는지 먼저 (깨진 파일은 남기지 않음)
-            if not pages:
-                raise TgError("압축 파일 안에 그림(jpg/png/webp/gif)이 없습니다.")
-            os.replace(tmp, path)
-            self._books.pop(key, None)
-            await asyncio.to_thread(self._trim_books)
-            await self._book_cover(channel, msg, path)
-        except Exception as e:
-            log.warning("telegram 웹툰 %s/%s 받기 실패: %s", channel, msg, e)
-            job["error"] = str(e) if isinstance(e, TgError) else f"압축 파일을 받지 못했습니다: {e}"
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
+            zf, pages = await self.book_open(channel, msg, row)
+            for n in range(min(first, len(pages))):
+                await _zip_job(zip_read, zf, pages, n)
+        except Exception as e:  # 미리 받기라 실패해도 볼 때 다시
+            log.info("telegram 웹툰 %s/%s 미리 받기 실패: %s", channel, msg, e)
 
-    async def _book_cover(self, channel, msg, path):
+    async def _book_cover(self, channel, msg, row):
         """썸네일이 없는 압축 파일은 첫 쪽을 카드 그림으로"""
         thumb = self._thumb_path(channel, msg)
-        if os.path.exists(thumb):
-            return
         try:
-            data, _mime = await asyncio.to_thread(book_page, path, 0)
-        except TgError:
+            data, _mime = await self.book_page(channel, msg, row, 0)
+        except Exception:
             return
-        if len(data) > 4 * 1024 * 1024:
+        if len(data) > 4 * 1024 * 1024 or os.path.exists(thumb):
             return
         os.makedirs(os.path.dirname(thumb), exist_ok=True)
         with open(thumb + ".tmp", "wb") as f:
             f.write(data)
         os.replace(thumb + ".tmp", thumb)
         set_has_thumb(self.sid, channel, msg)
-
-    def _trim_books(self):
-        folder = self._book_dir()
-        try:
-            files = [(e.stat().st_mtime, e.stat().st_size, e.path) for e in os.scandir(folder)
-                     if e.is_file() and e.name.endswith(".zip")]
-        except OSError:
-            return
-        total = sum(f[1] for f in files)
-        for _mtime, size, path in sorted(files)[:-1]:   # 방금 받은 것(가장 최근)은 남긴다
-            if total <= self.BOOK_CACHE_MAX:
-                break
-            try:
-                os.remove(path)
-                total -= size
-            except OSError:
-                pass
 
     async def prefetch_thumbs(self, channel, msgs):
         for mid in msgs:

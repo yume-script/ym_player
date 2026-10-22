@@ -2,12 +2,13 @@
 //   스크롤 / 휠 / ↑↓ / Space / PageUp·PageDown: 넘겨 보기     ← →: 이전·다음 화     Esc / 뒤로 가기: 닫기
 //   화면 가운데를 누르면 위아래 막대를 숨기거나 보인다. 끝까지 내리면 본 것으로 표시하고 [다음 화]
 // 보던 위치(쪽 + 그 쪽에서 내려온 비율)는 서버에 저장해서 다음에 이어서 본다.
-// 압축 파일은 처음 열 때 서버가 텔레그램에서 통째로 받으므로 그동안 받은 비율을 보여 준다.
+// 압축 파일은 통째로 받지 않는다: 서버가 목차만 먼저 읽고 보는 쪽의 그림 부분만 받는다 (끝나기 몇 쪽 전엔 다음 화도 미리).
 // source: { load(id, onProgress) -> {id, title, sub, pages: [주소], position, prev, next}, save(id, position, total, done) }
 import { h, icon, toast, storeGet, storeSet } from './util.js';
 
 const WIDE_KEY = 'yp_reader_wide';
 const SAVE_EVERY_MS = 4000;
+const WARM_NEXT_PAGES = 6;   // 끝에서 이만큼 남으면 다음 화 미리 받기
 
 let current = null;
 
@@ -198,6 +199,11 @@ class Reader {
         this.counter.textContent = `${Math.min(n, Math.floor(pos) + 1)} / ${n}`;
         const max = this.scroller.scrollHeight - this.scroller.clientHeight;
         this.progressEl.firstChild.style.width = `${max > 0 ? Math.min(100, (top / max) * 100) : 0}%`;
+        // 끝나기 몇 쪽 전이면 다음 화를 서버가 미리 받게 (목차 + 앞쪽 몇 장) -> [다음 화]를 누르면 바로
+        if (this.book.next && !this.book._nextWarmed && this.source.prepare && pos >= Math.max(0, n - WARM_NEXT_PAGES)) {
+            this.book._nextWarmed = true;
+            Promise.resolve(this.source.prepare(this.book.next.id)).catch(() => {});
+        }
         // 끝(다음 화 안내)이 보이면 본 것으로
         if (!this.done && !this._resume && this.endEl.getBoundingClientRect().top < this.scroller.clientHeight) {
             this.done = true;

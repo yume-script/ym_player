@@ -1104,8 +1104,12 @@ def test_book_endpoint_downloads_then_serves_pages(env):
         assert r.status == 200 and r.content_type == "image/jpeg" and await r.read() == b"\xff\xd8003.jpg"
         assert (await c.get("/api/tg/tg/book/777/1001/3")).status == 404
         assert (await c.get("/api/tg/tg/book/777/999")).status == 404     # 영상은 웹툰으로 안 연다
-        # 첫 쪽이 카드 그림으로
-        items = (await (await c.get("/api/tg/tg/videos?channel=777&limit=5")).json())["items"]
+        # 첫 쪽이 카드 그림으로 (뒤에서)
+        for _ in range(50):
+            items = (await (await c.get("/api/tg/tg/videos?channel=777&limit=5")).json())["items"]
+            if items[0]["has_thumb"]:
+                break
+            await asyncio.sleep(0.02)
         assert items[0]["has_thumb"] == 1
         r = await c.get("/api/tg/tg/thumb/777/1001")
         assert await r.read() == b"\xff\xd8001.jpg"
@@ -1200,3 +1204,58 @@ def test_special_episodes_go_last(monkeypatch, tmp_path):
     rows, _ = telegram_src.query_videos("tg", [1], limit=50, kinds={1: "webtoon"}, group=True)
     by = {r["msg"]: r for r in rows}
     assert set(by) == {5, 6} and by[5]["series"]["count"] == 5            # 대표는 본편 최신 회차
+
+
+def test_book_opens_from_index_without_full_download(env, monkeypatch):
+    """큰 압축 파일도 목차(맨 끝)만 받아 쪽 목록을 주고, 보는 쪽만 받는다. ?warm=1은 미리 받기만"""
+    import io
+    import os as _os
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
+        for i in range(1, 31):
+            z.writestr(f"{i:03d}.jpg", b"\xff\xd8" + _os.urandom(400 * 1024))   # 30쪽 x 400KB = 약 12MB
+    data = buf.getvalue()
+    doc = SimpleNamespace(mime_type="application/zip", size=len(data), thumbs=[1], data=data,
+                          attributes=[DocumentAttributeFilename("큰 웹툰 1화.zip")])
+    env.msgs[1001] = SimpleNamespace(id=1001, document=doc, photo=None, message="", date=datetime(2026, 1, 3, tzinfo=timezone.utc))
+    doc2 = SimpleNamespace(**{**doc.__dict__, "attributes": [DocumentAttributeFilename("큰 웹툰 2화.zip")]})
+    env.msgs[1002] = SimpleNamespace(id=1002, document=doc2, photo=None, message="", date=datetime(2026, 1, 4, tzinfo=timezone.utc))
+    cfg = config_store.load()
+    cfg["sources"][0]["channels"] = [{"id": 777, "title": "웹툰", "kind": "webtoon"}]
+    config_store.save(cfg)
+    fetched = []
+    orig = env.iter_download
+
+    def counting(doc, offset=0, **kw):
+        fetched.append((getattr(doc, "attributes")[0].file_name, offset))
+        return orig(doc, offset=offset, **kw)
+    monkeypatch.setattr(env, "iter_download", counting)
+
+    async def flow(c):
+        env.authorized = True
+        await c.get("/api/tg/tg/videos?channel=777&limit=5")
+        data1 = await (await c.get("/api/tg/tg/book/777/1001")).json()
+        assert data1["ready"] and len(data1["pages"]) == 30
+        blocks = len([f for f in fetched if f[0] == "큰 웹툰 1화.zip"])
+        assert blocks <= 3                                 # 12MB 중 끝부분 조각만 (512KB 단위)
+        r = await c.get("/api/tg/tg/book/777/1001/14")
+        body = await r.read()
+        assert r.status == 200 and len(body) == 400 * 1024 + 2
+        # 그 쪽이 있는 부분부터 받는다 (그 뒤는 앞쪽 미리 받기)
+        offsets = [o for name, o in fetched[blocks:] if name == "큰 웹툰 1화.zip"]
+        assert offsets and min(o for o in offsets if o > 0) <= 14 * 400 * 1024 + 512 * 1024
+        # 다음 화 미리 받기: 바로 답하고 뒤에서 목차와 앞쪽을
+        r = await c.get("/api/tg/tg/book/777/1002?warm=1")
+        assert r.status == 200 and (await r.json())["success"]
+        for _ in range(100):
+            if (777, 1002) in env_tg(c)._zips:
+                break
+            await asyncio.sleep(0.02)
+        assert (777, 1002) in env_tg(c)._zips
+
+    def env_tg(c):
+        from ym_player import server
+        return c.server.app[server.TELEGRAM]["tg"]
+
+    run(flow)
