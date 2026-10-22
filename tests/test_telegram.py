@@ -1481,3 +1481,66 @@ def test_shrink_image_makes_small_jpeg_and_crops_tall_pages():
     hh, ww = struct.unpack(">HH", out[i + 5:i + 9])
     assert ww == 360 and hh == 540                                  # 위쪽 1000x1500만 잘라 360x540
     assert asyncio.run(telegram_src.shrink_image(b"not an image")) == b"not an image"   # 못 줄이면 그대로
+
+
+def test_series_cover_downloads_whole_image(env):
+    """표지 주소의 그림을 끝까지 받는다 (조각으로 오는 큰 그림이 앞부분만 저장되던 문제)"""
+    import struct
+    import zlib
+    from aiohttp import web as _web
+    from aiohttp.test_utils import TestServer
+    import os as _os
+    w, h = 600, 900
+    rows = b"".join(b"\x00" + _os.urandom(w * 3) for _y in range(h))        # 압축이 안 되게 (약 1.6MB)
+    def chunk(t, d):
+        return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+    png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(rows, 1)) + chunk(b"IEND", b"")
+
+    async def cover(request):
+        resp = _web.StreamResponse(headers={"Content-Type": "image/png", "Content-Length": str(len(png))})
+        await resp.prepare(request)
+        for i in range(0, len(png), 50_000):          # 조각으로 천천히
+            await resp.write(png[i:i + 50_000])
+            await asyncio.sleep(0.01)
+        return resp
+
+    def doc_msg(mid, name, data, mime):
+        doc = SimpleNamespace(mime_type=mime, size=len(data), thumbs=[], data=data, attributes=[DocumentAttributeFilename(name)])
+        return SimpleNamespace(id=mid, document=doc, photo=None, message="", date=datetime(2026, 1, 3, tzinfo=timezone.utc) + timedelta(minutes=mid))
+    for i, mid in enumerate((1001, 1002), start=1):
+        env.msgs[mid] = doc_msg(mid, f"나 혼자만 레벨업 {i}화.zip", _zip_bytes(["001.jpg"]), "application/zip")
+
+    async def subtitle_bytes(self, channel, msg):
+        return env.msgs[msg].document.data
+    import pytest as _p
+    mp = _p.MonkeyPatch()
+    mp.setattr(telegram_src.TelegramSource, "subtitle_bytes", subtitle_bytes)
+    cfg = config_store.load()
+    cfg["sources"][0]["channels"] = [{"id": 777, "title": "웹툰", "kind": "webtoon"}]
+    config_store.save(cfg)
+
+    async def flow(c):
+        app = _web.Application()
+        app.router.add_get("/cover.png", cover)
+        origin = TestServer(app)
+        await origin.start_server()
+        try:
+            url = str(origin.make_url("/cover.png"))
+            env.msgs[1003] = doc_msg(1003, "나 혼자만 레벨업.yaml", f'search:\n-   title: 나 혼자만 레벨업\n    poster_url: "{url}"\n'.encode(), "application/x-yaml")
+            env.authorized = True
+            items = (await (await c.get("/api/tg/tg/videos?channel=777&limit=10&group=1")).json())["items"]
+            key = items[0]["series"]["key"]
+            r = await c.get(f"/api/tg/tg/series-cover/777?key={key}")
+            body = await r.read()
+            assert r.status == 200 and len(body) > 5000
+            if body.startswith(b"\xff\xd8"):                   # 줄인 JPEG면 끝 표시(EOI)까지 있어야
+                assert body.rstrip(b"\x00").endswith(b"\xff\xd9")
+            else:                                             # 못 줄였으면 원본 그대로 (잘리지 않고)
+                assert body == png
+        finally:
+            await origin.close()
+
+    try:
+        run(flow)
+    finally:
+        mp.undo()
