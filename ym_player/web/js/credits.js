@@ -95,6 +95,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 70,
+        "version": "1.1.33",
+        "date": "2026-10-22",
+        "title": "웹툰: 작품 정보 파일(웹툰명.yaml)을 작품 화면에, 그림 받는 중 안내, 해시태그 작품 이름에서 #·작품 ID 빼기"
+    },
+    {
         "pr": 69,
         "version": "1.1.32",
         "date": "2026-10-22",

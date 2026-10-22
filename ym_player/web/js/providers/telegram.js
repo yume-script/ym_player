@@ -424,11 +424,20 @@ export class TelegramProvider {
         const cover = [...children].reverse().map((c) => c.thumb).find(Boolean) || '';
         const ch = this.channels.find((c) => c.id === String(channel));
         if (ch && ch.epOrder === 'desc') reverseRegular(children);
+        // 채널에 올린 작품 정보 파일(웹툰명.yaml): 작가·장르·연재처·상태·줄거리·표지 등
+        const fm = data.file_meta && !data.file_meta.error ? data.file_meta : null;
+        const facts = fm ? [
+            ['작가', (fm.authors || []).join(', ')], ['연재처', fm.platform], ['상태', fm.status], ['연재 요일', fm.day],
+            ['연령', fm.age], ['연재 시작', fm.year], ['태그', (fm.tags || []).join(', ')], ['링크', fm.url],
+            ...(fm.extra || []),
+        ].filter(([, v]) => v) : [];
+        if (data.file_meta && data.file_meta.error) facts.push(['작품 정보 파일', data.file_meta.error]);
         return {
-            pid: this.id, id, type: 'show', title: data.title, subtitle: '',
-            poster: cover, posterShape: 'poster', art: '',
-            metaLine: ['웹툰', `${eps.length}화`, unread ? `안 본 회차 ${unread}` : '다 봄'],
-            rating: null, summary: '', tagline: '', genres: [], directors: [], cast: [],
+            pid: this.id, id, type: 'show', title: (fm && fm.title) || data.title, subtitle: '',
+            poster: (fm && fm.cover) || cover, posterShape: 'poster', art: '',
+            metaLine: ['웹툰', fm && fm.status, fm && fm.platform, `${eps.length}화`, unread ? `안 본 회차 ${unread}` : '다 봄'].filter(Boolean),
+            rating: null, summary: (fm && fm.summary) || '', tagline: '', genres: (fm && fm.genres) || [], directors: [], cast: [],
+            extraFacts: facts,
             playable: false, unwatched: unread, watched: unread === 0,
             viewOffset: 0, duration: 0, progress: 0,
             parent: { label: this.channelTitle(channel), route: `#/library/${this.id}/${channel}` },
