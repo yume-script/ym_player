@@ -944,6 +944,34 @@ body.viewer-open { overflow: hidden; }
 .reader-end-title { font-weight: 600; color: #c9cdd2; }
 .reader-end-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: center; }
 @media (max-width: 600px) { .reader-bar .viewer-sub { display: none; } }
+/* 책 보기 (PDF / EPUB - docreader.js) */
+.doc-body { position: absolute; inset: 0; }
+.doc-tools { display: flex; align-items: center; gap: 0.15rem; }
+.doc-zoom { min-width: 3.2rem; text-align: center; font-size: 0.8rem; font-variant-numeric: tabular-nums; color: #c9cdd2;
+    background: none; border: none; cursor: pointer; padding: 0.3rem 0.2rem; border-radius: 6px; }
+button.doc-zoom:hover { background: rgba(255, 255, 255, 0.12); }
+.doc-reader .viewer-count { cursor: pointer; }
+.doc-pdf .reader-scroll { overflow-x: auto; }
+.doc-pages { margin: 0 auto; padding: 3.5rem 0 2rem; display: flex; flex-direction: column; gap: 10px; }
+.doc-page { position: relative; background: #fff; display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5); }
+.doc-page:not(.ready) { background: #1b1b1e; }
+.doc-canvas { display: block; width: 100%; height: 100%; }
+.doc-epub .epub-view { position: absolute; top: 3.2rem; bottom: 1.2rem; left: max(2.5rem, 4vw); right: max(2.5rem, 4vw); }
+.epub-zone { position: absolute; top: 3.2rem; bottom: 0; width: max(2.5rem, 4vw); border: none; background: none; cursor: pointer; z-index: 1; padding: 0; }
+.epub-zone-l { left: 0; }
+.epub-zone-r { right: 0; }
+.epub-zone:hover { background: rgba(127, 127, 127, 0.08); }
+.doc-epub.epub-theme-sepia { background: #f4ecd8; }
+.doc-epub.epub-theme-light { background: #fff; }
+.doc-epub.bars-hidden .epub-view { top: 1.2rem; }
+.big-font i { font-size: 1.25em; }
+.epub-toc { top: 3.4rem; right: 1rem; bottom: auto; left: auto; width: 320px; max-height: 70vh; z-index: 4; }
+@media (max-width: 600px) {
+    .doc-tools .doc-zoom { display: none; }
+    .doc-epub .epub-view { left: 1rem; right: 1rem; }
+    .epub-zone { width: 22vw; }
+}
 .ep-row.card-book { flex-direction: row; }
 
 /* 설정 > MCP */

@@ -668,7 +668,7 @@ def test_existing_index_titles_are_repaired_once(monkeypatch, tmp_path):
     row = telegram_src.get_video("tg", 1, 2)
     assert row["title"] == "영화" and row["file_name"] == "영화.mkv"
     with telegram_src.db() as c:
-        assert c.execute("PRAGMA user_version").fetchone()[0] == 13
+        assert c.execute("PRAGMA user_version").fetchone()[0] == 14
 
 
 def test_split_parts_are_grouped(monkeypatch, tmp_path):
@@ -1544,3 +1544,59 @@ def test_series_cover_downloads_whole_image(env):
         run(flow)
     finally:
         mp.undo()
+
+
+def test_pdf_epub_are_indexed_as_docs(monkeypatch, tmp_path):
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    telegram_src._migrated.discard(str(tmp_path))
+    pdf = telegram_src.message_to_media(video_msg(5, mime="application/pdf", caption="",
+                                                   attrs=[DocumentAttributeFilename("파이썬 입문.pdf")]))
+    assert pdf["kind"] == "doc" and pdf["title"] == "파이썬 입문" and pdf["mime"] == "application/pdf"
+    epub = telegram_src.message_to_media(video_msg(6, mime="application/octet-stream", caption="",
+                                                    attrs=[DocumentAttributeFilename("소설.EPUB")]))
+    assert epub["kind"] == "doc" and epub["mime"] == "application/epub+zip"
+    assert telegram_src.message_to_media(video_msg(7, mime="application/epub+zip", caption="책 제목", attrs=[]))["kind"] == "doc"
+    # 정하지 않은 채널(영상+사진)과 웹툰 채널, 책 채널에 보이고 영상만 채널에는 안 보인다
+    _insert([(1, "doc", "책1", "책1.pdf", 1), (2, "video", "영상", "a.mp4", 2)], channel=1)
+    _insert([(1, "doc", "책2", "책2.epub", 1), (2, "book", "웹툰 1화", "웹툰 1화.zip", 2)], channel=2)
+    _insert([(1, "doc", "책3", "책3.pdf", 1), (2, "video", "영상3", "b.mp4", 2)], channel=3)
+    _insert([(1, "doc", "책4", "책4.pdf", 1), (2, "video", "영상4", "c.mp4", 2)], channel=4)
+    kinds = {2: "webtoon", 3: "doc", 4: "video"}
+    rows, _ = telegram_src.query_videos("tg", [1, 2, 3, 4], limit=50, kinds=kinds)
+    assert {(r["channel"], r["msg"]) for r in rows} == {(1, 1), (1, 2), (2, 1), (2, 2), (3, 1), (4, 2)}
+    rows, _ = telegram_src.query_videos("tg", [1, 2, 3, 4], limit=50, kinds=kinds, kind="video,doc")
+    assert {(r["channel"], r["msg"]) for r in rows} == {(1, 1), (1, 2), (2, 1), (3, 1), (4, 2)}
+    assert telegram_src.random_video("tg", [3], kinds=kinds) is None
+    # 보던 쪽 (PDF는 쪽 / 쪽 수) -> 이어보기에도
+    telegram_src.save_progress("tg", 1, 1, 3.5, 120)
+    assert telegram_src.get_video("tg", 1, 1)["duration"] == 120
+    assert [(c["msg"], c["position"], c["duration"]) for c in telegram_src.continue_watching("tg", [1])] == [(1, 3.5, 120)]
+    src = config_store._clean_source({"id": "t", "type": "telegram", "name": "t", "channels": [
+        {"id": 1, "title": "a", "kind": "doc"}]}, None)
+    assert src["channels"] == [{"id": 1, "title": "a", "kind": "doc"}]
+
+
+def test_doc_stream_serves_ranges(env):
+    data = b"%PDF-1.4\n" + bytes(range(256)) * 40
+    doc = SimpleNamespace(mime_type="application/pdf", size=len(data), thumbs=[], data=data,
+                          attributes=[DocumentAttributeFilename("책.pdf")])
+    env.msgs[1002] = SimpleNamespace(id=1002, document=doc, photo=None, message="",
+                                     date=datetime(2026, 3, 1, tzinfo=timezone.utc))
+    cfg = config_store.load()
+    cfg["sources"][0]["channels"] = [{"id": 777, "title": "책", "kind": "doc"}]
+    config_store.save(cfg)
+
+    async def flow(c):
+        env.authorized = True
+        items = (await (await c.get("/api/tg/tg/videos?channel=777&limit=5")).json())["items"]
+        assert [(i["msg"], i["kind"]) for i in items] == [(1002, "doc")]
+        home = await (await c.get("/api/tg/tg/home")).json()
+        assert [v["msg"] for row in home["channels"] for v in row["items"]] == [1002]
+        # PDF.js는 필요한 부분만 Range로 받는다
+        r = await c.get("/api/tg/tg/stream/777/1002", headers={"Range": "bytes=0-8"})
+        assert r.status == 206 and r.content_type == "application/pdf" and await r.read() == b"%PDF-1.4\n"
+        assert r.headers["Content-Range"] == f"bytes 0-8/{len(data)}"
+        r = await c.get("/api/tg/tg/stream/777/1002")
+        assert r.status == 200 and await r.read() == data
+
+    run(flow)

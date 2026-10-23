@@ -3,6 +3,7 @@
 import { api, fmtDuration, h, modal, storeGet, storeSet, IS_SAFARI } from '../util.js';
 import { registry } from './index.js';
 import { openReader } from '../reader.js';
+import { openDocReader } from '../docreader.js';
 
 // "새로 올라온 영상"의 NEW: 지난번 방문(서버 설정 tg_seen) 뒤 올라왔고 아직 안 본 영상.
 // 이번 방문 동안은 같은 기준을 쓰도록 처음 값을 세션에 붙잡아 둔다 (홈을 다시 열어도 NEW가 바로 사라지지 않게)
@@ -65,6 +66,12 @@ function looksLikePart(v) {
 const ORDINAL = ['첫', '두', '세', '네', '다섯', '여섯', '일곱', '여덟', '아홉', '열'];
 const nth = (n) => `${ORDINAL[n - 1] || n} 번째`;
 
+/** "pdf" / "epub" (파일 이름, 없으면 형식으로) */
+function docFormat(v) {
+    const name = String(v.file_name || '').toLowerCase();
+    return name.endsWith('.epub') || v.mime === 'application/epub+zip' ? 'epub' : 'pdf';
+}
+
 function fmtSize(bytes) {
     if (!bytes) return '';
     const gb = bytes / 1024 ** 3;
@@ -101,7 +108,7 @@ export class TelegramProvider {
         this.id = src.id;
         this.name = src.name;
         this.kind = 'telegram';
-        // kind: 관리자가 정한 채널 종류 ("video" 영상만 / "image" 사진만 / "webtoon" 웹툰 압축 파일 / "" 영상+사진)
+        // kind: 관리자가 정한 채널 종류 ("video" 영상만 / "image" 사진만 / "webtoon" 웹툰 압축 파일 / "doc" 책(PDF·EPUB) / "" 영상+사진)
         // epOrder: 시리즈 회차 목록 순서 ("asc" 1화부터 / "desc" 최신 회차부터)
         this.channels = (src.channels || []).map((c) => ({ id: String(c.id), title: c.title, kind: c.kind || '', epOrder: c.ep_order || 'asc' }));
         this.base = `/api/tg/${encodeURIComponent(src.id)}`;
@@ -149,6 +156,20 @@ export class TelegramProvider {
                 thumb: cover, wideThumb: cover, shape: book ? 'poster' : 'wide', cardClass: book ? 'card-book' : '',
                 unwatched: v.series.unwatched, progress: 0,
                 route: `#/item/${this.id}/${encodeURIComponent(sid)}`,
+                ts: v.updated || 0,
+                isNew: !!(seenBefore() && v.date && v.date > seenBefore() && !v.watched && !(v.position > 0)),
+                raw: v,
+            };
+        }
+        if (v.kind === 'doc') {
+            // 책 (PDF / EPUB): 누르면 책 보기로 (docreader.js). duration = PDF 쪽 수 / EPUB 1000 (한 번 열어 본 뒤에 앎)
+            return {
+                pid: this.id, id, type: 'book', playable: true, title: cleanBookTitle(v.title),
+                subtitle: [this.channelTitle(v.channel), docFormat(v).toUpperCase(), fmtSize(v.size)].filter(Boolean).join(' · '),
+                thumb, wideThumb: thumb, shape: 'poster', cardClass: 'card-book card-doc',
+                progress: v.duration && v.position ? Math.min(1, v.position / v.duration) : 0,
+                watched: !!v.watched,
+                onOpen: () => this.readDoc(id),
                 ts: v.updated || 0,
                 isNew: !!(seenBefore() && v.date && v.date > seenBefore() && !v.watched && !(v.position > 0)),
                 raw: v,
@@ -207,9 +228,9 @@ export class TelegramProvider {
         markSeen([...(data.recent || []), ...(data.channels || []).flatMap((r) => r.items)]);
         for (const row of data.channels || []) {
             if (!row.items.length) continue;
-            const webtoon = (this.channels.find((c) => c.id === String(row.channel)) || {}).kind === 'webtoon';
+            const ck = (this.channels.find((c) => c.id === String(row.channel)) || {}).kind;
             hubs.push({
-                title: `${this.channelTitle(row.channel) || '채널'} ${webtoon ? '최신 웹툰' : '최신 영상'}`, source: this.name,
+                title: `${this.channelTitle(row.channel) || '채널'} ${{ webtoon: '최신 웹툰', doc: '최신 책' }[ck] || '최신 영상'}`, source: this.name,
                 items: row.items.map((v) => this.toItem(v)), more: `#/library/${this.id}/${row.channel}`,
             });
         }
@@ -224,7 +245,7 @@ export class TelegramProvider {
     libraryKinds(channel) {
         const c = this.channels.find((x) => x.id === String(channel));
         if (c && c.kind) return null;
-        return [['', '전체'], ['video', '영상'], ['image', '사진']];
+        return [['', '전체'], ['video', '영상'], ['image', '사진'], ['doc', '책']];
     }
 
     async getLibraryItems(channel, { start = 0, size = 60, sort = 'latest', kind = '' } = {}) {
@@ -242,7 +263,7 @@ export class TelegramProvider {
     /** 사진/웹툰 채널에는 랜덤 재생할 영상이 없다 */
     canRandom(channel) {
         const c = this.channels.find((x) => x.id === String(channel));
-        return !(c && (c.kind === 'image' || c.kind === 'webtoon'));
+        return !(c && (c.kind === 'image' || c.kind === 'webtoon' || c.kind === 'doc'));
     }
 
     /**
@@ -261,12 +282,13 @@ export class TelegramProvider {
     async search(query) {
         const data = await api(`${this.base}/videos?${new URLSearchParams({ q: query, limit: 40 })}`);
         const items = data.items.map((v) => this.toItem(v));
-        const isBook = (it) => it.raw && it.raw.kind === 'book';
-        const videos = items.filter((it) => it.type !== 'photo' && !isBook(it)), photos = items.filter((it) => it.type === 'photo');
-        const books = items.filter(isBook);
+        const kindOf = (it) => (it.raw && it.raw.kind) || '';
+        const videos = items.filter((it) => it.type !== 'photo' && !['book', 'doc'].includes(kindOf(it))), photos = items.filter((it) => it.type === 'photo');
+        const books = items.filter((it) => kindOf(it) === 'book'), docs = items.filter((it) => kindOf(it) === 'doc');
         return [
             videos.length ? { title: `영상 · ${this.name}`, items: videos } : null,
             books.length ? { title: `웹툰 · ${this.name}`, items: books } : null,
+            docs.length ? { title: `책 · ${this.name}`, items: docs } : null,
             photos.length ? { title: `사진 · ${this.name}`, items: photos } : null,
         ].filter(Boolean);
     }
@@ -283,6 +305,7 @@ export class TelegramProvider {
      */
     warm(id, head = false) {
         if (String(id).startsWith('series:') || this._warmed.has(head ? `${id}+` : id)) return;
+        if (['book', 'doc'].includes((this._seen.get(String(id)) || {}).kind)) return;   // 영상만 (웹툰·책은 형식 확인 없음)
         this._warmed.add(id);
         if (head) this._warmed.add(`${id}+`);
         const [channel, msg] = String(id).split(':');
@@ -464,6 +487,7 @@ export class TelegramProvider {
     /** 재생기 대신 이 소스가 직접 여는 항목이면 열고 true (웹툰 한 화 / 웹툰 작품 -> 다음 볼 회차) */
     async openItem(id) {
         const v = this._seen.get(String(id));
+        if (v && v.kind === 'doc') { this.readDoc(id); return true; }
         if (!v || v.kind !== 'book') return false;
         const target = String(id).startsWith('series:') ? await this._seriesNext(id) : id;
         if (target) this.read(target);
@@ -486,6 +510,25 @@ export class TelegramProvider {
             // 닫으면 회차 목록 화면의 진행 표시를 새로 (긴 목록은 스크롤 위치를 잃지 않게 그대로)
             onClose: () => { if (location.hash.startsWith('#/item/')) window.dispatchEvent(new HashChangeEvent('hashchange')); },
         }, id);
+    }
+
+    /** 책 (PDF / EPUB). 파일은 영상과 같은 주소에서 Range로 받는다 */
+    readDoc(id) {
+        const [channel, msg] = String(id).split(':');
+        const v = this._seen.get(String(id)) || {};
+        openDocReader({
+            id: `${this.id}:${id}`,
+            url: `${this.base}/stream/${channel}/${msg}`,
+            format: docFormat(v),
+            title: cleanBookTitle(v.title || ''),
+            sub: this.channelTitle(channel),
+            position: v.watched ? 0 : (v.position || 0),
+            save: (position, total, done) => {
+                Object.assign(v, { position: done ? 0 : position, duration: total, watched: done || v.watched });
+                return api(`${this.base}/progress`, { method: 'POST', json: { channel, msg, position, duration: total, ...(done ? { watched: true } : {}) } });
+            },
+            onClose: () => { if (location.hash.startsWith('#/item/') || location.hash.startsWith('#/library/')) window.dispatchEvent(new HashChangeEvent('hashchange')); },
+        });
     }
 
     /** 압축 파일을 서버가 받을 때까지 기다렸다가 쪽 주소들 */

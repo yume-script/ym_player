@@ -97,7 +97,8 @@ export function itemFacts(item) {
         year: '',
         date: (m.date || '').slice(0, 10),
         length: m.series ? `${m.series.count}화`
-            : m.kind === 'book' ? (m.duration ? `${Math.round(m.duration)}쪽` : '')
+            : m.kind === 'book' || (m.kind === 'doc' && m.mime === 'application/pdf') ? (m.duration ? `${Math.round(m.duration)}쪽` : '')
+                : m.kind === 'doc' ? ''
                 : (m.duration ? fmtDuration(m.duration * 1000) : ''),
         rating: '',
         extra: '',

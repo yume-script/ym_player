@@ -1016,13 +1016,17 @@ async def tg_random(request, tg):
     return web.json_response({"success": True, "item": item})
 
 
+# 홈 채널 줄에 보일 것 (채널 종류마다). 정하지 않은 채널은 영상과 책 (사진은 홈에 안 보임)
+_HOME_KIND = {"webtoon": "book,doc", "doc": "doc", "video": "video", "image": "video"}
+
+
 @telegram_api
 async def tg_home(request, tg):
     """홈 줄: 이어보기 + 채널마다 최신 영상 몇 개. 채널들을 동시에, 오래된 쪽 채우기 없이."""
     async def one(ch):
         try:
             data = await tg.videos([ch], limit=12, fill=False, user=username(request),
-                                   kind="book" if tg.kinds.get(ch) == "webtoon" else "video", group=True)
+                                   kind=_HOME_KIND.get(tg.kinds.get(ch, ""), "video,doc"), group=True)
         except telegram_src.TgError:
             raise
         except Exception as e:
@@ -1034,7 +1038,7 @@ async def tg_home(request, tg):
     rows = [r for r in await asyncio.gather(*(one(ch) for ch in mine)) if r]
     # 채널이 여럿이면 채널들을 합친 "새로 올라온 영상" 줄도 (사진만 보는 채널은 빼고)
     recent = []
-    vid_channels = [c for c in mine if tg.kinds.get(c, "") not in ("image", "webtoon")]
+    vid_channels = [c for c in mine if tg.kinds.get(c, "") not in ("image", "webtoon", "doc")]
     if len(vid_channels) > 1:
         recent = (await tg.videos(vid_channels, limit=30, fill=False, user=username(request), kind="video"))["items"]
     return web.json_response({"success": True,
@@ -1848,7 +1852,7 @@ def _mcp_tg_channels(user, src):
 
 def _mcp_tg_item(base, src, row):
     titles = {int(c["id"]): c.get("title", "") for c in src.get("channels") or []}
-    kind = {"book": "webtoon", "image": "photo"}.get(row.get("kind"), "video")
+    kind = {"book": "webtoon", "image": "photo", "doc": "ebook"}.get(row.get("kind"), "video")
     out = {"source": src["name"], "channel": titles.get(row["channel"], ""), "date": (row.get("date") or "")[:10]}
     s = row.get("series")
     if s:
@@ -1945,7 +1949,7 @@ async def _mcp_call(request, user, name, args):
                          "url": f"{base}/#/library/{quote(src['id'], safe='')}/{d.get('key')}"}
                         for d in dirs if str(d.get("key")) not in hidden and (allowed is None or str(d.get("key")) in allowed)]
             if src["type"] == "telegram":
-                kinds = {"video": "영상", "image": "사진", "webtoon": "웹툰"}
+                kinds = {"video": "영상", "image": "사진", "webtoon": "웹툰", "doc": "책(PDF·EPUB)"}
                 return [{"source": src["name"], "library": c.get("title"), "type": "telegram:" + (c.get("kind") or "video+photo"),
                          "kind": kinds.get(c.get("kind"), "영상+사진"),
                          "url": f"{base}/#/library/{quote(src['id'], safe='')}/{c['id']}"} for c in _mcp_tg_channels(user, src)]

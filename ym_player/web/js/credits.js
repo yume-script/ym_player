@@ -59,6 +59,16 @@ export const CREDITS = {
             "note": "DASH(.mpd) 재생"
         },
         {
+            "name": "PDF.js",
+            "url": "https://github.com/mozilla/pdf.js",
+            "note": "텔레그램 PDF 책 보기"
+        },
+        {
+            "name": "epub.js",
+            "url": "https://github.com/futurepress/epub.js",
+            "note": "텔레그램 EPUB 책 보기 (JSZip과 함께)"
+        },
+        {
             "name": "Telethon",
             "url": "https://github.com/LonamiWebs/Telethon",
             "note": "텔레그램 접속"
@@ -94,6 +104,12 @@ export const CREDITS = {
 export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
+    {
+        "pr": 76,
+        "version": "1.1.39",
+        "date": "2026-10-23",
+        "title": "텔레그램 PDF / EPUB 책 보기 추가 (PDF는 필요한 쪽만 받기, EPUB 목차·글자 크기·바탕색, 이어 보기)"
+    },
     {
         "pr": 75,
         "version": "1.1.38",
