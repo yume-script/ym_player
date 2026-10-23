@@ -95,6 +95,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 75,
+        "version": "1.1.38",
+        "date": "2026-10-23",
+        "title": "Plex·텔레그램 영상 재생 속도(배속) 조절 버튼 추가 (0.5~3배, Shift + > / <)"
+    },
+    {
         "pr": 74,
         "version": "1.1.37",
         "date": "2026-10-22",
