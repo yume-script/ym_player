@@ -178,6 +178,9 @@ IMAGE_MAX_BYTES = 40 * 1024 * 1024   # 뷰어로 열 이미지 파일 크기 한
 BOOK_EXTS = {".zip", ".cbz"}
 BOOK_MIMES = {"application/zip", "application/x-zip-compressed", "application/x-cbz", "application/vnd.comicbook+zip"}
 BOOK_MAX_BYTES = 1024 * 1024 * 1024
+# 전자책·문서 (PDF / EPUB): 책 보기(docreader.js)로 연다. 영상+사진 채널, 웹툰 채널, "책" 채널에 보인다
+DOC_EXTS = {".pdf": "application/pdf", ".epub": "application/epub+zip"}
+DOC_MAX_BYTES = 2 * 1024 * 1024 * 1024
 # 작품 정보 파일: 채널에 "웹툰명.yaml"(.yml)로 올린 것 -> 같은 이름의 작품(시리즈) 상세 화면에 보여 준다 (목록에는 안 나옴)
 META_EXTS = {".yaml", ".yml"}
 META_MAX_BYTES = 8 * 1024 * 1024   # 첫 회차 표지(base64)가 들어 있어 클 수 있다
@@ -256,6 +259,14 @@ def message_to_media(msg):
         date = getattr(msg, "date", None)
         return {"msg": int(msg.id), "kind": "book", "title": title, "caption": caption[:4000], "file_name": file_name,
                 "mime": mime or "application/zip", "duration": 0, "size": int(getattr(doc, "size", 0) or 0),
+                "width": 0, "height": 0, "date": date.isoformat() if date else "",
+                "has_thumb": 1 if (getattr(doc, "thumbs", None) or []) else 0}
+    doc_mime = DOC_EXTS.get(ext) or (mime if not ext and mime in DOC_EXTS.values() else "")
+    if not is_video and doc_mime and int(getattr(doc, "size", 0) or 0) <= DOC_MAX_BYTES:
+        caption, title = _caption_title(msg, file_name, "문서")
+        date = getattr(msg, "date", None)
+        return {"msg": int(msg.id), "kind": "doc", "title": title, "caption": caption[:4000], "file_name": file_name,
+                "mime": doc_mime, "duration": 0, "size": int(getattr(doc, "size", 0) or 0),
                 "width": 0, "height": 0, "date": date.isoformat() if date else "",
                 "has_thumb": 1 if (getattr(doc, "thumbs", None) or []) else 0}
     if not (is_video or mime.startswith("video/") or ext in VIDEO_EXTS):
@@ -392,6 +403,11 @@ def db():
             for sid, ch in conn.execute("SELECT DISTINCT source, channel FROM videos").fetchall():
                 _link_series(conn, sid, ch)
             conn.execute("PRAGMA user_version = 13")
+        if conn.execute("PRAGMA user_version").fetchone()[0] < 14:
+            # PDF / EPUB도 색인한다 -> 예전에 훑은 채널은 그 파일을 건너뛰었으니 처음부터 다시 훑게
+            with conn:
+                conn.execute("DELETE FROM sync_state")
+            conn.execute("PRAGMA user_version = 14")
     return conn
 
 
@@ -1072,7 +1088,7 @@ def _row(r, prog, posters=None):
     d["position"] = p["position"] if p else 0
     d["watched"] = bool(p and p["watched"])
     d["poster"] = (posters or {}).get((d["channel"], d["msg"]), 0)
-    if d.get("kind") == "book":   # 웹툰: 보던 위치는 쪽, duration은 쪽 수 (처음 열어 봐야 앎)
+    if d.get("kind") in ("book", "doc"):   # 웹툰·책: 보던 위치는 쪽(EPUB은 천분율), duration은 쪽 수 (처음 열어 봐야 앎)
         d["duration"] = p["duration"] if p else 0
     return d
 
@@ -1086,12 +1102,14 @@ def _progress_map(conn, sid, rows, user=""):
     return {(p["channel"], p["msg"]): dict(p) for p in got if (p["channel"], p["msg"]) in keys}
 
 
-CHANNEL_KINDS = ("video", "image", "webtoon")
+CHANNEL_KINDS = ("video", "image", "webtoon", "doc")
+LIST_KINDS = ("video", "image", "book", "doc")
 
 
 def _channel_clause(channels, kinds, col=""):
-    """채널마다 정한 종류를 지키는 WHERE 조각. kinds: {채널: "video"|"image"|"webtoon"|""}
-    웹툰 압축 파일(book)은 "웹툰" 채널에서만, 웹툰 채널에서는 압축 파일만 (다른 채널의 zip은 자막 묶음 따위일 수 있음)"""
+    """채널마다 정한 종류를 지키는 WHERE 조각. kinds: {채널: "video"|"image"|"webtoon"|"doc"|""}
+    웹툰 압축 파일(book)은 "웹툰" 채널에서만, 웹툰 채널에서는 압축 파일과 책(PDF·EPUB)만
+    (다른 채널의 zip은 자막 묶음 따위일 수 있음)"""
     groups = {}
     for c in channels:
         groups.setdefault((kinds or {}).get(c, "") if (kinds or {}).get(c, "") in CHANNEL_KINDS else "", []).append(c)
@@ -1099,7 +1117,7 @@ def _channel_clause(channels, kinds, col=""):
     for k, chans in groups.items():
         marks = ",".join("?" * len(chans))
         if k == "webtoon":
-            parts.append(f"({col}channel IN ({marks}) AND {col}kind='book')")
+            parts.append(f"({col}channel IN ({marks}) AND {col}kind IN ('book','doc'))")
         elif k:
             parts.append(f"({col}channel IN ({marks}) AND {col}kind=?)")
         else:
@@ -1109,17 +1127,19 @@ def _channel_clause(channels, kinds, col=""):
 
 
 def query_videos(sid, channels, offset=0, limit=40, q="", sort="latest", user="", kind="", kinds=None, group=False):
-    """kind: "video" / "image" / "book" / ""(전부 - 영상의 포스터로 짝지은 사진은 뺌). kinds: 채널마다 정한 종류"""
+    """kind: "video" / "image" / "book" / "doc" / "video,doc"처럼 여럿 / ""(전부 - 영상의 포스터로 짝지은 사진은 뺌).
+    kinds: 채널마다 정한 종류"""
     if not channels:
         return [], 0
     clause, cargs = _channel_clause(channels, kinds)
     where = f"source=? AND {clause}"
     args = [sid, *cargs]
-    if kind in ("video", "image", "book"):
-        where += " AND kind=?"
-        args.append(kind)
+    want = [k for k in str(kind or "").split(",") if k in LIST_KINDS]
+    if want:
+        where += f" AND kind IN ({','.join('?' * len(want))})"
+        args += want
     else:
-        where += " AND kind IN ('video','image','book')"   # 자막 파일은 목록에 안 보임 (영상에 붙음)
+        where += " AND kind IN ('video','image','book','doc')"   # 자막 파일은 목록에 안 보임 (영상에 붙음)
         where += (" AND NOT (kind='image' AND EXISTS (SELECT 1 FROM posters p WHERE p.source=videos.source"
                   " AND p.channel=videos.channel AND p.image=videos.msg))")
     if group and kind != "image":
@@ -1200,7 +1220,7 @@ def random_video(sid, channels, user="", unwatched=False, exclude=(), kinds=None
     unwatched=True면 다 본 영상은 뺀다. exclude는 방금 틀었던 (채널, 메시지)들 (연달아 같은 게 안 나오게).
     나눠 올린 영상의 중간 조각이 뽑히면 그 묶음의 첫 조각으로 바꾼다 (다음 조각은 이어서 재생됨).
     """
-    channels = [c for c in channels if (kinds or {}).get(c, "") not in ("image", "webtoon")]  # 사진/웹툰 채널은 빼고
+    channels = [c for c in channels if (kinds or {}).get(c, "") not in ("image", "webtoon", "doc")]  # 사진/웹툰 채널은 빼고
     if not channels:
         return None
     marks = ",".join("?" * len(channels))
@@ -1241,14 +1261,14 @@ def continue_watching(sid, channels, limit=20, user=""):
             f"""SELECT v.*, p.position, p.watched, p.updated, p.duration AS pages FROM user_progress p JOIN videos v
                 ON v.source=p.source AND v.channel=p.channel AND v.msg=p.msg
                 WHERE p.source=? AND p.user=? AND p.channel IN ({marks}) AND p.watched=0
-                  AND (p.position > 30 OR (v.kind='book' AND p.position > 0))
+                  AND (p.position > 30 OR (v.kind IN ('book','doc') AND p.position > 0))
                 ORDER BY p.updated DESC LIMIT ?""", [sid, user, *channels, limit]).fetchall()
         posters = _poster_map(conn, sid, rows)
     out = []
     for r in rows:
         d = {**dict(r), "poster": posters.get((r["channel"], r["msg"]), 0)}
         pages = d.pop("pages", 0)
-        if d["kind"] == "book":
+        if d["kind"] in ("book", "doc"):
             d["duration"] = pages
         out.append(d)
     return out
@@ -1504,7 +1524,7 @@ class TelegramSource:
             log.warning("cryptg가 없어 텔레그램 암호화를 순수 파이썬으로 처리합니다 (느림): pip install cryptg")
 
     def set_channels(self, src):
-        """설정에서 고른 채널과 채널마다 정한 종류 (영상만 "video" / 사진만 "image" / 웹툰 "webtoon" / 영상+사진 "")"""
+        """설정에서 고른 채널과 채널마다 정한 종류 (영상만 "video" / 사진만 "image" / 웹툰 "webtoon" / 책 "doc" / 영상+사진 "")"""
         chans = src.get("channels") or []
         self.channels = [int(c["id"]) for c in chans]
         self.kinds = {int(c["id"]): c.get("kind", "") for c in chans if c.get("kind") in CHANNEL_KINDS}
