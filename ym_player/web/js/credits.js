@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 77,
+        "version": "1.1.40",
+        "date": "2026-10-24",
+        "title": "디스코드 채널에 새 글이 올라오면 화면 아래쪽에 흐르는 글로 보여 주기 (설정 > 디스코드)"
+    },
+    {
         "pr": 76,
         "version": "1.1.39",
         "date": "2026-10-23",

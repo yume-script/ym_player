@@ -650,6 +650,10 @@ body[data-cue-size="l"] .player video::cue { font-size: 2.2rem; }
 @media (max-width: 900px) { .grid-wide { grid-template-columns: repeat(auto-fill, minmax(calc(160px * var(--poster-scale)), 1fr)); } }
 .row-2 { display: grid; grid-template-columns: 1fr 2fr; gap: 0.75rem; }
 @media (max-width: 900px) { .row-2 { grid-template-columns: 1fr; } }
+.row-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; }
+@media (max-width: 700px) { .row-3 { grid-template-columns: 1fr; } }
+.discord-status p { margin: 0.25rem 0; }
+.ticker-pref { margin-top: 1rem; }
 
 /* ---------- 로그인 화면 ---------- */
 body.login-body { overflow: auto; min-height: 100vh; display: flex; align-items: flex-start; justify-content: center;
@@ -1043,3 +1047,33 @@ body.nav-editing .nav-order-edit { display: flex; }
 .detail-summary-box .detail-summary { margin: 0; }
 .detail-summary.clamped { display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden; }
 .summary-toggle { margin-top: 0.4rem; }
+
+/* ---------- 아래쪽 흐르는 글 (디스코드 새 글 - ticker.js) ---------- */
+:root { --ticker-h: 36px; }
+.ticker {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 120; height: calc(var(--ticker-h) + env(safe-area-inset-bottom));
+    padding-bottom: env(safe-area-inset-bottom); display: flex; align-items: center; gap: 0.6rem;
+    padding-left: max(0.75rem, env(safe-area-inset-left)); padding-right: max(0.25rem, env(safe-area-inset-right));
+    background: rgba(10, 11, 14, 0.92); backdrop-filter: blur(8px); border-top: 1px solid rgba(var(--accent-rgb), 0.55);
+    color: #f1f1f1; font-size: 0.95rem; transform: translateY(110%); transition: transform 0.3s; pointer-events: none;
+}
+.ticker.show { transform: none; pointer-events: auto; }
+.ticker-icon { color: var(--accent); flex-shrink: 0; }
+.ticker-label { flex-shrink: 0; font-weight: 700; color: var(--accent); font-size: 0.85rem; max-width: 30vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ticker-label:empty { display: none; }
+.ticker-track { position: relative; flex: 1; min-width: 0; height: 100%; overflow: hidden;
+    mask-image: linear-gradient(90deg, transparent, #000 2%, #000 98%, transparent); -webkit-mask-image: linear-gradient(90deg, transparent, #000 2%, #000 98%, transparent); }
+.ticker-text { position: absolute; left: 0; top: 50%; margin-top: -0.75em; line-height: 1.5; white-space: nowrap; will-change: transform; transform: translateX(100vw); }
+.ticker-author { margin-right: 0.5rem; color: #ffd27a; }
+.ticker-author::after { content: ':'; }
+.ticker-count { flex-shrink: 0; font-size: 0.75rem; font-weight: 700; color: var(--accent-ink); background: var(--accent); border-radius: 999px; padding: 0.05rem 0.45rem; }
+.ticker-close { flex-shrink: 0; width: 30px; height: 30px; border: none; border-radius: 50%; background: none; color: #aab; cursor: pointer; }
+.ticker-close:hover { background: rgba(255, 255, 255, 0.12); color: #fff; }
+body.viewer-open .ticker { display: none; }
+/* 막대가 떠 있는 동안은 그 아래 것들을 막대 높이만큼 올린다 */
+body.ticker-on .mini { bottom: calc(1.25rem + var(--ticker-h)); }
+body.ticker-on .player-bottom { padding-bottom: calc(1rem + var(--ticker-h)); }
+body.ticker-on .toast-box { bottom: calc(1.5rem + var(--ticker-h)); }
+body.ticker-on .main { padding-bottom: calc(2rem + var(--ticker-h)); }
+body.ticker-on .sidebar { bottom: var(--ticker-h); }
+@media (max-width: 600px) { .ticker { font-size: 0.88rem; } .ticker-label { max-width: 26vw; } }

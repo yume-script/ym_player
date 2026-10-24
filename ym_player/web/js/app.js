@@ -6,6 +6,7 @@ import './player.js';
 import { loadFavorites } from './providers/iptv.js';
 import { loadMyTheme, openThemeDialog } from './theme.js';
 import { initVersionNotice } from './notice.js';
+import { initTicker } from './ticker.js';
 import { initViewMode } from './viewmode.js';
 import { renderHome } from './views/home.js';
 import { renderLibrary } from './views/library.js';
@@ -325,6 +326,7 @@ async function boot() {
         applySourceOrder();
         if (prefs) loadMyTheme(prefs);
         initVersionNotice(prefs, registry.isAdmin());
+        initTicker();
     } catch (e) {
         toast(`설정을 불러오지 못했습니다: ${e.message}`, 'error', 8000);
     }

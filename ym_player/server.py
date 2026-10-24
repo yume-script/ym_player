@@ -43,7 +43,7 @@ from urllib.parse import quote, urlencode
 from aiohttp import ClientSession, ClientTimeout, web
 from yarl import URL
 
-from . import __version__, auth, config_store, iptv, mcp, media_cache, prefs, radio, subtitles, telegram_src, tmdb, transcode, updates
+from . import __version__, auth, config_store, discord_feed, iptv, mcp, media_cache, prefs, radio, subtitles, telegram_src, tmdb, transcode, updates
 
 log = logging.getLogger("ym_player")
 
@@ -92,6 +92,8 @@ HLS_JOBS = web.AppKey("hls_jobs", dict)  # HLS 변환 id -> HlsJob (Safari용 �
 HLS_SWEEPER = web.AppKey("hls_sweeper", asyncio.Task)
 UPDATES = web.AppKey("updates", updates.UpdateChecker)
 UPDATE_TASK = web.AppKey("update_task", asyncio.Task)
+DISCORD = web.AppKey("discord", discord_feed.Feed)   # 디스코드 채널 새 글 -> 아래쪽 흐르는 글
+DISCORD_TASK = web.AppKey("discord_task", asyncio.Task)
 PROBES = web.AppKey("probes", dict)  # (소스id, 채널, 메시지) -> 돌고 있는 ffprobe (같은 영상을 겹쳐 보지 않게)  # 소스 id -> telegram_src.TelegramSource (연결을 계속 유지)
 
 
@@ -2259,6 +2261,50 @@ async def admin_cache_clear(request):
     return web.json_response({"success": True, "stats": await asyncio.to_thread(media_cache.STORE.stats)})
 
 
+# ---- 디스코드 채널 새 글 (아래쪽 흐르는 글) -------------------------------------------
+async def ticker_get(request):
+    """?after=마지막으로 받은 seq&boot=서버 켠 시각. 처음(after 없음)이면 방금 올라온 것 몇 개"""
+    feed = request.app[DISCORD]
+    st = discord_feed.clean_settings(config_store.load().get("discord"))
+    after = request.query.get("after")
+    if request.query.get("boot") != str(feed.boot) or not str(after or "").isdigit():
+        after = None
+    items = feed.since(int(after) if after is not None else None)   # 꺼져 있으면 받아 온 글이 없다 (관리자의 시험 글만)
+    return web.json_response({"success": True, "enabled": st["enabled"], "boot": feed.boot, "latest": feed.seq,
+                              "items": items, "repeat": st["repeat"], "speed": st["speed"]})
+
+
+def _discord_state(request):
+    feed = request.app[DISCORD]
+    return {"success": True, "settings": discord_feed.public_settings(config_store.load().get("discord")), "status": feed.status}
+
+
+@admin_only
+async def admin_discord_get(request):
+    return web.json_response(_discord_state(request))
+
+
+@admin_only
+async def admin_discord_put(request):
+    body = await _json_body(request)
+    cfg = config_store.load()
+    try:
+        cfg["discord"] = discord_feed.clean_settings(body, cfg.get("discord"))
+    except ValueError as e:
+        return _json_error(400, str(e))
+    config_store.save(cfg)
+    request.app[DISCORD].reconfigure()
+    await asyncio.sleep(1.5)   # 바로 한 번 확인해 본 결과(채널 이름·오류)를 같이 돌려주려고
+    return web.json_response(_discord_state(request))
+
+
+@admin_only
+async def admin_discord_test(request):
+    """흐르는 글이 어떻게 보이는지 시험 글 하나"""
+    request.app[DISCORD].add("#시험", username(request), "흐르는 글 시험입니다. 디스코드 채널에 새 글이 올라오면 이렇게 보입니다.")
+    return web.json_response({"success": True})
+
+
 # ---- 화면 이름/아이콘 (관리자가 바꿈) --------------------------------------------
 # 이름은 config.json의 branding.title, 아이콘은 data/brand_icon.<확장자> (그림 파일만 - SVG는 스크립트를 품을 수 있어 받지 않음)
 DEFAULT_TITLE = PRODUCT
@@ -2402,6 +2448,8 @@ async def admin_restore(request):
             cfg["client_id"] = config_store.load()["client_id"]
         if "cache" in raw_cfg:
             cfg["cache"] = media_cache.clean_settings(raw_cfg.get("cache"))
+        if isinstance(raw_cfg.get("discord"), dict):
+            cfg["discord"] = discord_feed.clean_settings(raw_cfg["discord"])
         if isinstance(raw_cfg.get("branding"), dict):
             raw_b = raw_cfg["branding"]
             cfg["branding"] = _clean_branding({"title": str(raw_b.get("title") or "")[:40],
@@ -2415,6 +2463,7 @@ async def admin_restore(request):
     old_tg = {s["id"] for s in config_store.load().get("sources", []) if s.get("type") == "telegram"}
     config_store.save(cfg)
     media_cache.STORE.configure(cfg.get("cache"))
+    request.app[DISCORD].reconfigure()
     auth.save_users(users)
     prefs.replace_all(body.get("prefs") if isinstance(body.get("prefs"), dict) else {})
     old_icon = _brand_icon_path()
@@ -2521,6 +2570,7 @@ async def _on_startup(app):
     shutil.rmtree(_hls_root(), ignore_errors=True)  # 지난번에 남은 HLS 변환 파일
     app[HLS_SWEEPER] = asyncio.ensure_future(_hls_sweeper(app))
     app[UPDATE_TASK] = asyncio.ensure_future(app[UPDATES].loop(app[HTTP]))
+    app[DISCORD_TASK] = asyncio.ensure_future(app[DISCORD].loop(app[HTTP]))
     if app[REQUIRE_AUTH]:
         made = auth.bootstrap_from_env()
         if made:
@@ -2530,7 +2580,7 @@ async def _on_startup(app):
 
 
 async def _on_cleanup(app):
-    for task in (app.get(HLS_SWEEPER), app.get(UPDATE_TASK)):
+    for task in (app.get(HLS_SWEEPER), app.get(UPDATE_TASK), app.get(DISCORD_TASK)):
         if task:
             task.cancel()
     for job in list(app[HLS_JOBS].values()):
@@ -2562,6 +2612,7 @@ def create_app(require_auth=True):
     app[PROBES] = {}
     app[HLS_JOBS] = {}
     app[UPDATES] = updates.UpdateChecker()
+    app[DISCORD] = discord_feed.Feed()
     app[RADIO_NOW] = {}
     app[RADIO_ART] = {}
     app[PLEX_FILES] = {}
@@ -2595,6 +2646,10 @@ def create_app(require_auth=True):
     app.router.add_route("*", "/mcp/{token}", mcp_endpoint)
     app.router.add_post("/api/admin/update/check", admin_update_check)
     app.router.add_get("/api/admin/cache", admin_cache_get)
+    app.router.add_get("/api/ticker", ticker_get)
+    app.router.add_get("/api/admin/discord", admin_discord_get)
+    app.router.add_put("/api/admin/discord", admin_discord_put)
+    app.router.add_post("/api/admin/discord/test", admin_discord_test)
     app.router.add_put("/api/admin/cache", admin_cache_put)
     app.router.add_delete("/api/admin/cache", admin_cache_clear)
     app.router.add_post("/api/admin/restore", admin_restore)
