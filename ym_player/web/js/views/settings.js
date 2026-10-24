@@ -67,9 +67,10 @@ export async function renderSettings(main, _params, query, ctx) {
         look: h('div', { class: 'settings-pane' }),
         backup: h('div', { class: 'settings-pane' }),
         mcp: h('div', { class: 'settings-pane' }),
+        discord: h('div', { class: 'settings-pane' }),
         thanks: h('div', { class: 'settings-pane' }),
     };
-    const TABS = [['sources', 'layer-group', '소스'], ['users', 'users', '사용자'], ['status', 'heart-pulse', '상태'], ['cache', 'hard-drive', '캐시'], ['look', 'palette', '화면'], ['backup', 'box-archive', '백업'], ['mcp', 'robot', 'MCP'], ['thanks', 'heart', 'Thanks to']];
+    const TABS = [['sources', 'layer-group', '소스'], ['users', 'users', '사용자'], ['status', 'heart-pulse', '상태'], ['cache', 'hard-drive', '캐시'], ['look', 'palette', '화면'], ['backup', 'box-archive', '백업'], ['mcp', 'robot', 'MCP'], ['discord', 'comment-dots', '디스코드'], ['thanks', 'heart', 'Thanks to']];
     const tabBar = h('div', { class: 'tabs', role: 'tablist' });
     const showTab = (key) => {
         if (!panes[key]) key = 'sources';
@@ -82,6 +83,7 @@ export async function renderSettings(main, _params, query, ctx) {
         if (key === 'backup' && !panes.backup.firstChild) renderBackup(panes.backup);
         if (key === 'thanks' && !panes.thanks.firstChild) renderThanks(panes.thanks);
         if (key === 'mcp') renderMcp(panes.mcp);
+        if (key === 'discord') renderDiscord(panes.discord);
     };
     TABS.forEach(([key, ic, label]) => tabBar.appendChild(h('button', {
         class: 'tab', role: 'tab', dataset: { tab: key }, on: { click: () => showTab(key) },
@@ -887,6 +889,68 @@ async function renderMcp(pane) {
             h('h3', { class: 'pane-title' }, icon('key'), ' 토큰'),
             rows,
             h('div', { class: 'toolbar mcp-new' }, nameIn, userSel, h('button', { class: 'btn btn-accent', on: { click: create } }, icon('plus'), ' 토큰 만들기'))));
+}
+
+/** 디스코드 채널의 새 글을 화면 아래쪽에 흘리기 (서버: discord_feed.py, 화면: ticker.js) */
+async function renderDiscord(pane) {
+    let data;
+    try { data = await api('/api/admin/discord'); } catch (e) { clear(pane).appendChild(h('p', { class: 'muted error', text: e.message })); return; }
+    const st = data.settings;
+    const enabledIn = h('input', { type: 'checkbox', checked: st.enabled });
+    const tokenIn = h('input', { class: 'input', type: 'password', autocomplete: 'off',
+        placeholder: st.has_token ? '저장됨 (바꿀 때만 입력)' : '봇 토큰' });
+    const chanIn = h('textarea', { class: 'input', rows: '3', placeholder: '채널 ID (한 줄에 하나, 채널 링크를 붙여 넣어도 됨)' });
+    chanIn.value = st.channels.join('\n');
+    const num = (v, min, max) => h('input', { class: 'input', type: 'number', min: String(min), max: String(max), value: String(v) });
+    const intervalIn = num(st.interval, 10, 600), repeatIn = num(st.repeat, 1, 5), speedIn = num(st.speed, 30, 300);
+    const statusBox = h('div', { class: 'discord-status' });
+    const paint = (s) => {
+        const chans = Object.entries(s.channels || {});
+        statusBox.replaceChildren(
+            s.error ? h('p', { class: 'muted error', text: s.error })
+                : h('p', { class: 'muted', text: s.checked ? `마지막 확인 ${new Date(s.checked * 1000).toLocaleTimeString()}` : (st.enabled ? '아직 확인 전' : '꺼져 있음') }),
+            ...chans.map(([id, c]) => h('p', { class: c.error ? 'muted error' : 'muted' },
+                icon(c.error ? 'triangle-exclamation' : 'check'), ` ${c.name || id}${c.error ? ` - ${c.error}` : ' 지켜보는 중'}`)));
+    };
+    paint(data.status);
+    const save = h('button', { class: 'btn btn-accent' }, icon('check'), ' 저장');
+    save.addEventListener('click', async () => {
+        save.disabled = true;
+        try {
+            const r = await api('/api/admin/discord', { method: 'PUT', json: {
+                enabled: enabledIn.checked, token: tokenIn.value.trim(), channels: chanIn.value,
+                interval: Number(intervalIn.value), repeat: Number(repeatIn.value), speed: Number(speedIn.value) } });
+            toast('디스코드 설정을 저장했습니다.', 'success');
+            tokenIn.value = '';
+            Object.assign(st, r.settings);
+            tokenIn.placeholder = st.has_token ? '저장됨 (바꿀 때만 입력)' : '봇 토큰';
+            chanIn.value = st.channels.join('\n');
+            paint(r.status);
+        } catch (e) { toast(e.message, 'error', 6000); } finally { save.disabled = false; }
+    });
+    const test = h('button', { class: 'btn', on: { click: async () => {
+        try { await api('/api/admin/discord/test', { method: 'POST' }); toast('몇 초 안에 아래쪽에 시험 글이 흐릅니다.'); } catch (e) { toast(e.message, 'error'); }
+    } } }, icon('play'), ' 시험 글 흘리기');
+    const refresh = h('button', { class: 'btn', on: { click: () => renderDiscord(pane) } }, icon('rotate-right'), ' 상태 새로 보기');
+    clear(pane).append(
+        h('div', { class: 'src-card' },
+            h('h3', { class: 'pane-title' }, icon('comment-dots'), ' 디스코드 새 글 흘리기'),
+            h('p', { text: '정한 디스코드 채널에 새 글이 올라오면 모든 사용자의 화면 아래쪽에 글이 흘러갑니다 (재생 중에도, 전체화면에서도). '
+                + '마우스를 올리면 멈추고, 사용자는 사이드바 [테마]에서 자기 브라우저만 끌 수 있습니다.' }),
+            h('label', { class: 'check' }, enabledIn, ' 켜기'),
+            field('봇 토큰', tokenIn, 'Discord Developer Portal > 내 앱 > Bot에서 [Reset Token]으로 받은 값. 서버에만 저장되고 브라우저로는 다시 보내지 않습니다.'),
+            field('채널', chanIn, '디스코드 설정 > 고급 > 개발자 모드를 켜고 채널을 오른쪽 클릭 > [채널 ID 복사]. 10개까지.'),
+            h('div', { class: 'row-3' },
+                field('확인 간격 (초)', intervalIn, '10~600'),
+                field('글마다 흘리는 횟수', repeatIn, '1~5'),
+                field('흐르는 속도 (px/초)', speedIn, '30~300')),
+            h('div', { class: 'toolbar' }, save, test, refresh)),
+        h('div', { class: 'src-card' },
+            h('h3', { class: 'pane-title' }, icon('heart-pulse'), ' 상태'),
+            statusBox,
+            h('p', { class: 'field-hint', text: '봇 준비: ① Developer Portal에서 앱을 만들고 Bot 메뉴에서 MESSAGE CONTENT INTENT를 켭니다 (안 켜면 글 내용이 비어 옵니다). '
+                + '② OAuth2 > URL Generator에서 scope "bot", 권한 "View Channels"와 "Read Message History"를 골라 나온 주소로 봇을 그 서버에 초대합니다. '
+                + '③ 위에 토큰과 채널 ID를 넣고 저장. 켠 뒤에 올라온 글부터 보입니다 (예전 글은 흘리지 않음).' })));
 }
 
 function showMcpToken(r) {

@@ -2,6 +2,7 @@
 // 관리자 기본값은 서버가 HTML에 넣어 주고(data-default-*), 사용자가 고른 값은 서버(/api/me/prefs)에 두고
 // 다음에 열 때 깜빡이지 않게 브라우저(yp_theme)에도 적어 둔다 - index.html/login.html 머리의 짧은 스크립트가 먼저 읽는다.
 import { api, h, icon, modal, storeGet, storeSet, toast } from './util.js';
+import { TICKER_OFF_KEY, refreshTicker } from './ticker.js';
 
 export const THEMES = [
     { id: 'dark', label: '다크', colors: ['#141517', '#1d1f22', '#ececec'] },
@@ -114,7 +115,12 @@ export async function useDefaultTheme() {
 }
 
 export function openThemeDialog() {
-    const m = modal('테마', themePicker(), [h('button', { class: 'btn btn-accent', on: { click: () => m.close() } }, '닫기')]);
+    // 아래쪽 흐르는 글(디스코드)은 이 브라우저에서만 끌 수 있다
+    const tickerChk = h('input', { type: 'checkbox', checked: !storeGet(TICKER_OFF_KEY, false),
+        on: { change: () => { storeSet(TICKER_OFF_KEY, !tickerChk.checked); refreshTicker(); } } });
+    const body = h('div', {}, themePicker(),
+        h('label', { class: 'check ticker-pref' }, tickerChk, ' 아래쪽에 흐르는 글(디스코드 새 글) 보기 (이 브라우저)'));
+    const m = modal('테마', body, [h('button', { class: 'btn btn-accent', on: { click: () => m.close() } }, '닫기')]);
 }
 
 // 시스템 테마가 바뀌면 (auto일 때) 주소창 색도 따라가게
