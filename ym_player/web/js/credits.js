@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 85,
+        "version": "1.1.48",
+        "date": "2026-10-25",
+        "title": "자동 올리기 자막 첨부 고침: 옆 자막 파일도 찾기, 언어 이름 맞추기, 한글 글꼴 없으면 파일로, 기록에 자막 결과"
+    },
+    {
         "pr": 84,
         "version": "1.1.47",
         "date": "2026-10-25",

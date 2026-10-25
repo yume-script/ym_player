@@ -150,7 +150,7 @@ def test_mirror_uploads_new_items(data, tmp_path, monkeypatch):
             tg.fail = 1                                  # 첫 번째는 한 번 실패
             await mirror.run_queue(st)
             names = [x["name"] for x in tg.sent]
-            assert names == ["Big part1.mkv", "Big part1.kor.srt", "Big part2.mkv", "Big part2.kor.srt"], names
+            assert names == ["Big part1.mkv", "Big part1.ko.srt", "Big part2.mkv", "Big part2.ko.srt"], names
             p1, s1, p2, s2 = tg.sent
             assert p1["caption"] == "큰 영화 (2026)\n(1/2)\n\n새 영화" and p1["thumb"] == b"\xff\xd8thumb" and p1["stream"] is False
             assert s1["doc"] and "첫 자막" in s1["body"].decode() and "뒤 자막" not in s1["body"].decode()
@@ -158,7 +158,7 @@ def test_mirror_uploads_new_items(data, tmp_path, monkeypatch):
             assert len(p1["body"]) + len(p2["body"]) >= big.stat().st_size * 0.9
             state = plex_to_tg.load_state()
             assert list(state["rules"]["r1"]["waiting"]) == ["3"]
-            assert [(h["title"], h["ok"], h["note"]) for h in state["history"]] == [("큰 영화 (2026)", True, "2개로 나눠 올림"), ("호프 (2026)", False, "일시 오류")]
+            assert [(h["title"], h["ok"], h["note"]) for h in state["history"]] == [("큰 영화 (2026)", True, "2개로 나눠 올림, 자막 파일 2개 첨부"), ("호프 (2026)", False, "일시 오류")]
             # 올린 두 조각 메시지에 Plex 작품 정보
             m, eps = telegram_src.plex_meta_for("tg", -100123, msg=501)
             assert m["title"] == "큰 영화" and m["genres"] == ["드라마"] and m["cast"][0]["thumb"] == "https://img/x.jpg"
@@ -306,6 +306,7 @@ def test_burn_external_subtitle(data, tmp_path, monkeypatch):
         rule = plex_to_tg.clean_settings({"rules": [{"id": "r", "plex": "px", "section": "1", "tg": "tg", "channel": "-1"}]})["rules"][0]
         assert rule["burn_subs"] is True
         note = await mirror.upload(rule, "7", 2)
+        monkeypatch.setattr(plex_to_tg, "_KO_FONT", True)
         assert note.startswith("자막 입혀 인코딩")
         assert [x["name"] for x in tg.sent] == ["Ep.S01E01.mp4"] and tg.sent[0]["stream"] is True
         out = tmp_path / "out.mp4"
@@ -322,4 +323,36 @@ def test_burn_external_subtitle(data, tmp_path, monkeypatch):
             return sum(abs(a[i] - b[i]) for i in range(320 * 180, 320 * 230)) / (320 * 50)
         with_sub, without = bottom_diff(1.5), bottom_diff(2.5)
         assert with_sub > 0.5 and without < 0.2, (with_sub, without)
+    asyncio.run(main())
+
+
+def test_sidecar_subtitles_and_no_font(data, tmp_path, monkeypatch):
+    """Plex가 아직 못 읽은 옆 자막 파일도 붙이고(기다림도 풀림), 한글 글꼴이 없으면 입히지 않고 파일로"""
+    import shutil as _sh
+    if not _sh.which("ffmpeg"):
+        pytest.skip("ffmpeg 없음")
+    video = tmp_path / "Show.S01E02.mkv"
+    _video(video, 2)
+    (tmp_path / "Show.S01E02.ko-KR.srt").write_text(SRT, encoding="utf-8")
+    (tmp_path / "Show.S01E02.smi").write_text("<SAMI><BODY><SYNC Start=1000><P>자막</SAMI>", encoding="utf-8")
+    (tmp_path / "Other.srt").write_text(SRT, encoding="utf-8")
+    assert sorted((p.rsplit("/", 1)[1], l, e) for p, l, e in plex_to_tg.sidecar_subs(str(video))) == \
+        [("Show.S01E02.ko-KR.srt", "ko", "srt"), ("Show.S01E02.smi", "", "smi")]
+    assert plex_to_tg.sub_lang("ko-KR") == "ko" and plex_to_tg.sub_lang("spa") == ""
+    m = {"ratingKey": "9", "type": "episode", "title": "둘째", "grandparentTitle": "쇼", "parentIndex": 1, "index": 2, "addedAt": 10,
+         "duration": 2000, "Media": [{"Part": [{"key": "/p/9", "file": str(video), "size": video.stat().st_size, "Stream": []}]}]}
+    tg = FakeTg()
+
+    async def plex_json(c, s, path, params=None):
+        return {"MediaContainer": {"Metadata": [m]}}
+
+    async def main():
+        mirror = plex_to_tg.Mirror(plex_json, lambda sid: ({"client_id": "c"}, {"id": "px", "url": "http://x"}), lambda sid: tg, lambda: None)
+        monkeypatch.setattr(mirror, "_art", lambda *a: asyncio.sleep(0))
+        monkeypatch.setattr(mirror, "_save_meta", lambda *a: asyncio.sleep(0))
+        monkeypatch.setattr(plex_to_tg, "_KO_FONT", False)
+        rule = plex_to_tg.clean_settings({"rules": [{"id": "r", "plex": "px", "section": "1", "tg": "tg", "channel": "-1"}]})["rules"][0]
+        note = await mirror.upload(rule, "9", 2)      # Plex에는 자막이 없지만 옆 파일이 있으니 기다리지 않는다
+        assert [x["name"] for x in tg.sent] == ["Show.S01E02.mkv", "Show.S01E02.ko.srt", "Show.S01E02.smi"]
+        assert "한글 글꼴이 없어" in note and "자막 파일 2개 첨부" in note
     asyncio.run(main())
