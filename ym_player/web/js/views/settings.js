@@ -1006,6 +1006,7 @@ async function renderMirror(pane) {
         const tgSel = h('select', { class: 'select' }, opts.telegram.map((t) => opt(t.id, t.name, r.tg === t.id)));
         const chSel = h('select', { class: 'select' }, r.channel ? opt(r.channel, r.channel_title || r.channel, true) : opt('', '채널 고르기', true));
         const waitIn = h('input', { type: 'checkbox', checked: r.wait_subs !== false });
+        const burnIn = h('input', { type: 'checkbox', checked: r.burn_subs !== false });
         const daysIn = h('input', { class: 'input input-sm mirror-days', type: 'number', min: '0', max: '365', value: String(r.wait_days || 0) });
         const capIn = h('textarea', { class: 'input', rows: '3', placeholder: '{name}\n\n{summary}' });
         capIn.value = r.caption || '{name}\n\n{summary}';
@@ -1030,13 +1031,15 @@ async function renderMirror(pane) {
             h('div', { class: 'row-2 mirror-pick' }, field('Plex 라이브러리', plexSel), field('올릴 텔레그램', h('div', { class: 'toolbar' }, tgSel, chSel))),
             h('div', { class: 'mirror-wait' }, h('label', { class: 'check' }, waitIn, ' 자막이 생길 때까지 기다렸다가 올리기'),
                 h('span', { class: 'muted', text: ' 최대' }), daysIn, h('span', { class: 'muted', text: '일 (0이면 계속 기다림)' })),
+            h('label', { class: 'check', title: '영상 안에 자막이 없고 외부 자막만 있을 때. 다시 인코딩하느라 시간이 걸립니다.' }, burnIn,
+                ' 영상 안에 자막이 없으면 외부 자막을 화면에 입혀 다시 인코딩 (텔레그램 앱에서도 자막이 보임)'),
             field('캡션', capIn, '{name} 제목(영화 "제목 (연도)", 에피소드 "작품 S01E02 - 제목") · {summary} 줄거리 · {title} {year} {show} {season} {episode} {code} {genres} {tags}(#장르) {library} {filename}'),
             h('div', { class: 'toolbar' }, test, del));
         const row = { id: r.id, get: () => {
             const [plex, section] = plexSel.value.split('|');
             return { id: row.id, enabled: enabledIn.checked, plex, section, section_title: ((plexSel.selectedOptions[0] || {}).dataset || {}).name || '',
                 tg: tgSel.value, channel: chSel.value, channel_title: ((chSel.selectedOptions[0] || {}).dataset || {}).name || '', caption: capIn.value,
-                wait_subs: waitIn.checked, wait_days: Number(daysIn.value) || 0 };
+                wait_subs: waitIn.checked, wait_days: Number(daysIn.value) || 0, burn_subs: burnIn.checked };
         } };
         rows.push(row);
         rulesBox.appendChild(card);

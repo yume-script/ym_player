@@ -12,11 +12,13 @@
 - 자막 기다리기(규칙마다, 기본 켬): Plex 항목에 자막(내장이든 외부든)이 하나도 없으면 올리지 않고 기다렸다가
   생기면 올린다 (기다릴 날 수를 정하면 그 뒤엔 자막 없이). 외부 자막 파일은 영상 뒤에 같은 이름으로 같이 올려
   YMPlayer가 영상에 자동으로 붙인다 (나눈 영상이면 자막도 조각 시간에 맞춰 자른다).
+- 자막 입혀 인코딩(규칙마다, 기본 켬): 영상 안에 자막이 없고 외부 자막만 있으면(자막을 기다리다 생긴 경우 등) 그 자막을
+  화면에 입혀 H.264 mp4로 다시 인코딩해서 올린다 - 텔레그램 앱에서도 자막이 보인다 (한국어 자막을 먼저 고름).
 - 올린 영상마다 Plex의 작품 정보(포스터·배경·줄거리·장르·출연·회차 제목/줄거리/스틸)를 텔레그램 색인에 같이 남겨
   (telegram_src.plex_meta_put) YMPlayer의 텔레그램 화면이 TMDB 없이도 Plex처럼 보인다.
 
 설정은 config.json의 "plex_to_tg": {interval, max_gb, rules: [{id, enabled, plex, section, section_title, tg, channel,
-channel_title, caption, wait_subs, wait_days}]}
+channel_title, caption, wait_subs, wait_days, burn_subs}]}
 """
 import asyncio
 import hashlib
@@ -49,6 +51,22 @@ MAX_PARTS = 10
 PART_LIMIT = 1000 * 1024 * 1024   # 텔레그램 한도 1GB 단위 (2GB = 2000MiB = 4000조각 x 512KB) - max_gb를 곱해 쓴다
 
 
+_KO_FONT = None
+
+
+def has_korean_font():
+    """libass가 쓸 한글 글꼴이 있나 (fc-list가 없으면 있다고 친다)"""
+    global _KO_FONT
+    if _KO_FONT is None:
+        import subprocess
+        try:
+            out = subprocess.run(["fc-list", ":lang=ko", "family"], capture_output=True, text=True, timeout=10).stdout
+            _KO_FONT = bool(out.strip())
+        except (OSError, subprocess.SubprocessError):
+            _KO_FONT = True
+    return _KO_FONT
+
+
 class Waiting(Exception):
     """자막이 아직 없음 - 나중에 다시"""
 _lock = threading.Lock()
@@ -74,7 +92,8 @@ def clean_settings(raw):
                 "section_title": str(r.get("section_title") or "")[:100], "tg": str(r.get("tg") or ""),
                 "channel": str(r.get("channel") or "").strip(), "channel_title": str(r.get("channel_title") or "")[:100],
                 "caption": str(r.get("caption") or DEFAULT_CAPTION)[:1000],
-                "wait_subs": bool(r.get("wait_subs", True)), "wait_days": num(r.get("wait_days"), 0, 365, 0)}
+                "wait_subs": bool(r.get("wait_subs", True)), "wait_days": num(r.get("wait_days"), 0, 365, 0),
+                "burn_subs": bool(r.get("burn_subs", True))}
         if not (rule["plex"] and rule["section"] and rule["tg"] and re.fullmatch(r"-?\d+", rule["channel"])):
             raise ValueError("규칙마다 Plex 라이브러리와 텔레그램 채널을 골라 주세요.")
         rules.append(rule)
@@ -410,6 +429,14 @@ class Mirror:
                     path = os.path.join(tmp, f"sub{len(sub_files)}.{sext}")
                     if await self._fetch(cfg, src, x["key"], path):
                         sub_files.append((path, lang, sext))
+            burned = False
+            embedded = any(not x.get("key") for x in subs)
+            if rule["burn_subs"] and sub_files and not embedded:   # 영상 안에 자막이 없으면 외부 자막을 입혀 다시 인코딩
+                best = next((f for f in sub_files if f[1].lower() in ("kor", "ko", "ko-kr")), sub_files[0])
+                out = os.path.join(tmp, f"{stem}.burn.mp4")
+                await self._burn(local, best[0], out, duration, fields["name"])
+                local, name, ext, burned = out, f"{stem}.mp4", ".mp4", True
+                sub_files = []   # 화면에 들어갔으니 따로 올리지 않는다
             thumb = await self._art(cfg, src, m.get("thumb") or m.get("grandparentThumb") or m.get("parentThumb"), 320, tmp)
             thumb = thumb if thumb and os.path.getsize(thumb) <= 200 * 1024 else None
             # 나누기 (각 조각이 따로 재생되게 시간으로)
@@ -452,6 +479,9 @@ class Mirror:
             shutil.rmtree(tmp, ignore_errors=True)
         log.info("자동 올리기: %s -> %s", fields["name"], rule["channel_title"] or rule["channel"])
         notes = []
+        if burned:
+            notes.append("자막 입혀 인코딩" + ("" if has_korean_font() else
+                         " (서버에 한글 글꼴이 없어 글자가 네모로 보일 수 있음 - sudo apt install fonts-nanum)"))
         if len(msgs) > 1:
             notes.append(f"{len(msgs)}개로 나눠 올림")
         if not subs:
@@ -463,6 +493,45 @@ class Mirror:
                                                     stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
         _out, err = await proc.communicate()
         return proc.returncode == 0, err.decode("utf-8", "replace")[-300:]
+
+    async def _burn(self, src_path, sub_path, out, duration, title):
+        """자막을 화면에 입혀 H.264/AAC mp4로 (진행률은 ffmpeg -progress로)"""
+        with open(sub_path, "rb") as f:   # 우리말 자막은 CP949인 경우가 많다 -> UTF-8로 맞춰 둔다 (libass는 UTF-8을 기대)
+            raw = f.read()
+        for enc in ("utf-8-sig", "cp949", "utf-16"):
+            try:
+                text = raw.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            text = raw.decode("utf-8", "replace")
+        sub_utf8 = os.path.splitext(sub_path)[0] + ".utf8" + os.path.splitext(sub_path)[1]
+        with open(sub_utf8, "w", encoding="utf-8") as f:
+            f.write(text)
+        args = [transcode.ffmpeg_path(), "-v", "error", "-y", "-nostats", "-progress", "pipe:1", "-i", os.path.abspath(src_path),
+                "-map", "0:v:0", "-map", "0:a?", "-vf", f"subtitles=filename={os.path.basename(sub_utf8)}",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", os.path.abspath(out)]
+        self.current = {"title": title, "phase": "자막 입혀 인코딩 중", "done": 0, "total": int(duration * 1000) or 0}
+        # 자막 파일은 그 폴더에서 이름만으로 (필터 안에서 경로의 : ' 등을 이스케이프하지 않게 - 이름은 subN.utf8.srt 꼴)
+        proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                                                    cwd=os.path.dirname(sub_utf8))
+        errs = []
+
+        async def read_err():
+            async for line in proc.stderr:
+                errs.append(line.decode("utf-8", "replace"))
+                del errs[:-20]
+        err_task = asyncio.ensure_future(read_err())
+        async for line in proc.stdout:   # out_time_ms=12345678 (이름과 달리 마이크로초)
+            k, _, v = line.decode("utf-8", "replace").strip().partition("=")
+            if k == "out_time_ms" and v.isdigit() and self.current:
+                self.current["done"] = int(v) // 1000
+        await proc.wait()
+        await err_task
+        if proc.returncode != 0 or not os.path.exists(out):
+            raise RuntimeError(f"자막 입혀 인코딩 실패: {''.join(errs).strip()[-300:]}")
 
     async def _split(self, src_path, base, ext, duration, limit, title):
         """시간으로 n조각 [(경로, 시작초, 길이초)] - 조각이 한도를 넘으면 더 잘게 다시"""
