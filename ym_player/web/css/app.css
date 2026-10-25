@@ -1077,3 +1077,13 @@ body.ticker-on .toast-box { bottom: calc(1.5rem + var(--ticker-h)); }
 body.ticker-on .main { padding-bottom: calc(2rem + var(--ticker-h)); }
 body.ticker-on .sidebar { bottom: var(--ticker-h); }
 @media (max-width: 600px) { .ticker { font-size: 0.88rem; } .ticker-label { max-width: 26vw; } }
+
+/* 설정 > 자동 올리기 */
+.mirror-rule { border: 1px solid var(--border); border-radius: var(--radius); padding: 0.75rem; margin: 0.75rem 0; display: flex; flex-direction: column; gap: 0.5rem; }
+.mirror-pick { grid-template-columns: 1fr 1fr; }
+.mirror-pick .toolbar { flex-wrap: nowrap; }
+.mirror-pick .toolbar .select { min-width: 0; flex: 1; }
+.mirror-current { margin: 0.5rem 0; }
+.mirror-current .cache-bar { margin-top: 0.35rem; }
+.mirror-history p { margin: 0.2rem 0; font-size: 0.88rem; }
+@media (max-width: 900px) { .mirror-pick { grid-template-columns: 1fr; } }

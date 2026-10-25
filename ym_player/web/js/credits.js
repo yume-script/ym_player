@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 80,
+        "version": "1.1.43",
+        "date": "2026-10-25",
+        "title": "Plex 라이브러리에 새 동영상이 들어오면 텔레그램 채널에 자동으로 올리기 (설정 > 자동 올리기)"
+    },
+    {
         "pr": 79,
         "version": "1.1.42",
         "date": "2026-10-25",

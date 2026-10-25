@@ -69,9 +69,10 @@ export async function renderSettings(main, _params, query, ctx) {
         backup: h('div', { class: 'settings-pane' }),
         mcp: h('div', { class: 'settings-pane' }),
         discord: h('div', { class: 'settings-pane' }),
+        mirror: h('div', { class: 'settings-pane' }),
         thanks: h('div', { class: 'settings-pane' }),
     };
-    const TABS = [['sources', 'layer-group', '소스'], ['general', 'sliders', '공통'], ['users', 'users', '사용자'], ['status', 'heart-pulse', '상태'], ['cache', 'hard-drive', '캐시'], ['look', 'palette', '화면'], ['backup', 'box-archive', '백업'], ['mcp', 'robot', 'MCP'], ['discord', 'comment-dots', '디스코드'], ['thanks', 'heart', 'Thanks to']];
+    const TABS = [['sources', 'layer-group', '소스'], ['general', 'sliders', '공통'], ['users', 'users', '사용자'], ['status', 'heart-pulse', '상태'], ['cache', 'hard-drive', '캐시'], ['look', 'palette', '화면'], ['backup', 'box-archive', '백업'], ['mcp', 'robot', 'MCP'], ['discord', 'comment-dots', '디스코드'], ['mirror', 'cloud-arrow-up', '자동 올리기'], ['thanks', 'heart', 'Thanks to']];
     const tabBar = h('div', { class: 'tabs', role: 'tablist' });
     const showTab = (key) => {
         if (!panes[key]) key = 'sources';
@@ -86,6 +87,7 @@ export async function renderSettings(main, _params, query, ctx) {
         if (key === 'thanks' && !panes.thanks.firstChild) renderThanks(panes.thanks);
         if (key === 'mcp') renderMcp(panes.mcp);
         if (key === 'discord') renderDiscord(panes.discord);
+        if (key === 'mirror') renderMirror(panes.mirror);
     };
     TABS.forEach(([key, ic, label]) => tabBar.appendChild(h('button', {
         class: 'tab', role: 'tab', dataset: { tab: key }, on: { click: () => showTab(key) },
@@ -976,6 +978,114 @@ async function renderDiscord(pane) {
             h('p', { class: 'field-hint', text: '봇 준비: ① Developer Portal에서 앱을 만들고 Bot 메뉴에서 MESSAGE CONTENT INTENT를 켭니다 (안 켜면 글 내용이 비어 옵니다). '
                 + '② OAuth2 > URL Generator에서 scope "bot", 권한 "View Channels"와 "Read Message History"를 골라 나온 주소로 봇을 그 서버에 초대합니다. '
                 + '③ 위에 토큰과 채널 ID를 넣고 저장. 켠 뒤에 올라온 글부터 보입니다 (예전 글은 흘리지 않음).' })));
+}
+
+/** Plex 라이브러리에 새로 들어온 동영상을 텔레그램 채널에 자동으로 올리기 (서버: plex_to_tg.py) */
+async function renderMirror(pane) {
+    clear(pane).appendChild(h('div', { class: 'loading' }, icon('circle-notch', 'fa-spin'), h('span', { text: '불러오는 중...' })));
+    let data, opts;
+    try {
+        [data, opts] = await Promise.all([api('/api/admin/plex-tg'), api('/api/admin/plex-tg/options')]);
+    } catch (e) { clear(pane).appendChild(h('p', { class: 'muted error', text: e.message })); return; }
+    const st = data.settings;
+    const channelCache = {};
+    const loadChannels = (sid) => (channelCache[sid] = channelCache[sid]
+        || api(`/api/tg/${encodeURIComponent(sid)}/channels`).then((r) => r.channels).catch((e) => { delete channelCache[sid]; throw e; }));
+    const intervalIn = h('input', { class: 'input', type: 'number', min: '2', max: '1440', value: String(st.interval) });
+    const maxSel = h('select', { class: 'select' }, [[2, '2GB (일반 계정)'], [4, '4GB (텔레그램 프리미엄)']].map(([v, t]) =>
+        h('option', { value: String(v), text: t, selected: st.max_gb === v })));
+    const rulesBox = h('div', { class: 'mirror-rules' });
+    const rows = [];
+    const opt = (v, t, sel, name) => h('option', { value: v, text: t, selected: sel, dataset: { name: name || t } });
+
+    const addRule = (r = {}) => {
+        const enabledIn = h('input', { type: 'checkbox', checked: r.enabled !== false });
+        const plexSel = h('select', { class: 'select' }, opt('', 'Plex 라이브러리 고르기', !r.section),
+            ...opts.plex.flatMap((p) => p.sections.map((sec) => opt(`${p.id}|${sec.key}`, `${p.name} · ${sec.title} (${sec.type === 'show' ? 'TV' : '영화'})`,
+                r.plex === p.id && r.section === sec.key, sec.title))));
+        const tgSel = h('select', { class: 'select' }, opts.telegram.map((t) => opt(t.id, t.name, r.tg === t.id)));
+        const chSel = h('select', { class: 'select' }, r.channel ? opt(r.channel, r.channel_title || r.channel, true) : opt('', '채널 고르기', true));
+        const capIn = h('textarea', { class: 'input', rows: '3', placeholder: '{name}\n\n{summary}' });
+        capIn.value = r.caption || '{name}\n\n{summary}';
+        const fillChannels = async () => {
+            if (!tgSel.value) return;
+            const keep = chSel.value;
+            try {
+                const list = await loadChannels(tgSel.value);
+                clear(chSel).append(opt('', '채널 고르기', !keep),
+                    ...list.map((c) => opt(String(c.id), `${c.title}${c.kind === 'group' ? ' (그룹)' : ''}`, String(c.id) === keep, c.title)));
+            } catch (e) { toast(`텔레그램 채널 목록을 못 받았습니다: ${e.message}`, 'error'); }
+        };
+        tgSel.addEventListener('change', () => { chSel.value = ''; fillChannels(); });
+        chSel.addEventListener('focus', fillChannels, { once: true });
+        const test = h('button', { class: 'btn btn-sm', title: '저장한 뒤에 쓰세요', on: { click: async () => {
+            try { const t = await api('/api/admin/plex-tg/test', { method: 'POST', json: { rule: row.id } }); toast(`"${t.title}"을(를) 올리기 시작합니다. 아래 상태에서 진행을 보세요.`); setTimeout(paintStatus, 1500); }
+            catch (e) { toast(e.message, 'error', 6000); }
+        } } }, icon('paper-plane'), ' 가장 최근 것 하나 올려 보기');
+        const del = h('button', { class: 'btn btn-sm', on: { click: () => { rows.splice(rows.indexOf(row), 1); card.remove(); } } }, icon('trash'), ' 지우기');
+        const card = h('div', { class: 'mirror-rule' },
+            h('label', { class: 'check' }, enabledIn, ' 켜기'),
+            h('div', { class: 'row-2 mirror-pick' }, field('Plex 라이브러리', plexSel), field('올릴 텔레그램', h('div', { class: 'toolbar' }, tgSel, chSel))),
+            field('캡션', capIn, '{name} 제목(영화 "제목 (연도)", 에피소드 "작품 S01E02 - 제목") · {summary} 줄거리 · {title} {year} {show} {season} {episode} {code} {genres} {tags}(#장르) {library} {filename}'),
+            h('div', { class: 'toolbar' }, test, del));
+        const row = { id: r.id, get: () => {
+            const [plex, section] = plexSel.value.split('|');
+            return { id: row.id, enabled: enabledIn.checked, plex, section, section_title: ((plexSel.selectedOptions[0] || {}).dataset || {}).name || '',
+                tg: tgSel.value, channel: chSel.value, channel_title: ((chSel.selectedOptions[0] || {}).dataset || {}).name || '', caption: capIn.value };
+        } };
+        rows.push(row);
+        rulesBox.appendChild(card);
+        if (r.channel) fillChannels();
+    };
+    st.rules.forEach(addRule);
+
+    const save = h('button', { class: 'btn btn-accent' }, icon('check'), ' 저장');
+    save.addEventListener('click', async () => {
+        save.disabled = true;
+        try {
+            const r = await api('/api/admin/plex-tg', { method: 'PUT', json: { interval: Number(intervalIn.value), max_gb: Number(maxSel.value), rules: rows.map((x) => x.get()) } });
+            r.settings.rules.forEach((x, i) => { if (rows[i]) rows[i].id = x.id; });
+            toast('저장했습니다. 새 규칙은 지금 있는 것 다음부터 올립니다.', 'success', 5000);
+            setTimeout(paintStatus, 1500);
+        } catch (e) { toast(e.message, 'error', 6000); } finally { save.disabled = false; }
+    });
+    const check = h('button', { class: 'btn', on: { click: async () => { await api('/api/admin/plex-tg/check', { method: 'POST' }); toast('지금 확인합니다.'); setTimeout(paintStatus, 2000); } } }, icon('rotate-right'), ' 지금 확인');
+    const statusBox = h('div', { class: 'mirror-status' });
+    const fmtB = (n) => (n >= 1024 ** 3 ? `${(n / 1024 ** 3).toFixed(2)}GB` : `${Math.round(n / 1024 ** 2)}MB`);
+    async function paintStatus() {
+        if (!statusBox.isConnected && pane.isConnected === false) return;
+        let s;
+        try { s = (await api('/api/admin/plex-tg')).status; } catch (e) { return; }
+        const cur = s.current;
+        statusBox.replaceChildren(...[
+            s.error ? h('p', { class: 'muted error', text: s.error }) : null,
+            h('p', { class: 'muted', text: s.last_check ? `마지막 확인 ${new Date(s.last_check * 1000).toLocaleString()}` : '아직 확인 전' }),
+            cur ? h('div', { class: 'mirror-current' },
+                h('b', { text: cur.title }), h('span', { class: 'muted', text: ` ${cur.phase}${cur.total ? ` · ${fmtB(cur.done)} / ${fmtB(cur.total)}` : ''}` }),
+                h('div', { class: 'cache-bar' }, h('div', { style: { width: `${cur.total ? Math.min(100, (cur.done / cur.total) * 100) : 0}%` } }))) : null,
+            s.queue.length ? h('p', { class: 'muted', text: `기다리는 중: ${s.queue.map((q) => q.title).join(', ')}` }) : null,
+            h('h4', { text: '최근 기록' }),
+            s.history.length ? h('div', { class: 'mirror-history' }, s.history.map((x) => h('p', { class: x.ok ? '' : 'muted error' },
+                icon(x.ok ? 'check' : 'triangle-exclamation'), ` ${new Date(x.at * 1000).toLocaleString()} · ${x.title}${x.channel ? ` → ${x.channel}` : ''}${x.note ? ` · ${x.note}` : ''}`)))
+                : h('p', { class: 'muted', text: '아직 올린 것이 없습니다.' })].filter(Boolean));
+        clearTimeout(pane._mirrorTimer);
+        if (pane.isConnected && !pane.classList.contains('hidden')) pane._mirrorTimer = setTimeout(paintStatus, cur || s.queue.length ? 2000 : 15000);
+    }
+    const plexErr = opts.plex.filter((p) => p.error).map((p) => h('p', { class: 'muted error', text: `${p.name}: ${p.error}` }));
+    clear(pane).append(
+        h('div', { class: 'src-card' },
+            h('h3', { class: 'pane-title' }, icon('cloud-arrow-up'), ' Plex → 텔레그램 자동 올리기'),
+            h('p', { text: '고른 Plex 라이브러리에 새 동영상(영화·에피소드)이 들어오면, 로그인해 둔 텔레그램 계정으로 고른 채널에 파일을 올립니다. '
+                + '규칙을 처음 저장할 때 이미 있던 것은 올리지 않고 그 뒤에 들어온 것부터 올립니다. 한 번에 하나씩 올리고, 실패하면 다음 확인 때 다시(3번까지).' }),
+            ...(opts.plex.length && opts.telegram.length ? [] : [h('p', { class: 'muted error', text: 'Plex 소스와 텔레그램 소스(로그인까지)가 둘 다 있어야 합니다.' })]),
+            ...plexErr,
+            h('div', { class: 'row-2' }, field('확인 간격 (분)', intervalIn, '2~1440'), field('파일 크기 한도', maxSel, '넘는 파일은 건너뜁니다.')),
+            rulesBox,
+            h('div', { class: 'toolbar' }, h('button', { class: 'btn', on: { click: () => addRule() } }, icon('plus'), ' 규칙 추가'), save, check),
+            h('p', { class: 'field-hint', text: '올리려면 그 채널에 글을 쓸 수 있어야 합니다(채널 관리자). Plex 서버가 이 컴퓨터에 있고 원본 파일 경로가 보이면 그대로 올리고, '
+                + '아니면 Plex에서 데이터 폴더의 임시 폴더로 받은 뒤 올리고 지웁니다(파일 크기만큼 빈 공간 필요). mp4는 텔레그램 앱에서 바로 재생되고, mkv 등은 파일로 올라갑니다(YMPlayer에서는 재생됨).' })),
+        h('div', { class: 'src-card' }, h('h3', { class: 'pane-title' }, icon('heart-pulse'), ' 상태'), statusBox));
+    paintStatus();
 }
 
 function showMcpToken(r) {

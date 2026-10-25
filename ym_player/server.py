@@ -43,7 +43,7 @@ from urllib.parse import quote, urlencode
 from aiohttp import ClientSession, ClientTimeout, web
 from yarl import URL
 
-from . import __version__, auth, config_store, discord_feed, iptv, mcp, media_cache, prefs, radio, subtitles, telegram_src, tmdb, transcode, updates
+from . import __version__, auth, config_store, discord_feed, iptv, mcp, media_cache, plex_to_tg, prefs, radio, subtitles, telegram_src, tmdb, transcode, updates
 
 log = logging.getLogger("ym_player")
 
@@ -94,6 +94,8 @@ UPDATES = web.AppKey("updates", updates.UpdateChecker)
 UPDATE_TASK = web.AppKey("update_task", asyncio.Task)
 DISCORD = web.AppKey("discord", discord_feed.Feed)   # 디스코드 채널 새 글 -> 아래쪽 흐르는 글
 DISCORD_TASK = web.AppKey("discord_task", asyncio.Task)
+MIRROR = web.AppKey("mirror", plex_to_tg.Mirror)   # Plex 새 동영상 -> 텔레그램 채널 자동 올리기
+MIRROR_TASK = web.AppKey("mirror_task", asyncio.Task)
 PROBES = web.AppKey("probes", dict)  # (소스id, 채널, 메시지) -> 돌고 있는 ffprobe (같은 영상을 겹쳐 보지 않게)  # 소스 id -> telegram_src.TelegramSource (연결을 계속 유지)
 
 
@@ -2261,6 +2263,82 @@ async def admin_cache_clear(request):
     return web.json_response({"success": True, "stats": await asyncio.to_thread(media_cache.STORE.stats)})
 
 
+# ---- Plex 새 동영상 -> 텔레그램 채널 자동 올리기 -------------------------------------
+def _make_mirror(app):
+    def plex_src(sid):
+        cfg = config_store.load()
+        src = config_store.get_source(cfg, sid)
+        return cfg, (src if src and src.get("type") == "plex" else None)
+
+    def tg_for(sid):
+        src = config_store.get_source(config_store.load(), sid)
+        if not src or src.get("type") != "telegram":
+            raise RuntimeError("텔레그램 소스를 찾을 수 없습니다.")
+        return _tg_source(app, src)
+
+    async def plex_json(cfg, src, path, params=None):
+        return await _plex_json(app, cfg, src, path, params)
+    return plex_to_tg.Mirror(plex_json, plex_src, tg_for, lambda: app[HTTP])
+
+
+def _mirror_state(request):
+    return {"success": True, "settings": plex_to_tg.load_settings(), "status": request.app[MIRROR].status()}
+
+
+@admin_only
+async def admin_mirror_get(request):
+    return web.json_response(_mirror_state(request))
+
+
+@admin_only
+async def admin_mirror_put(request):
+    body = await _json_body(request)
+    cfg = config_store.load()
+    try:
+        cfg["plex_to_tg"] = plex_to_tg.clean_settings(body)
+    except ValueError as e:
+        return _json_error(400, str(e))
+    config_store.save(cfg)
+    request.app[MIRROR].wake()   # 새 규칙은 바로 기준을 잡게
+    return web.json_response(_mirror_state(request))
+
+
+@admin_only
+async def admin_mirror_options(request):
+    """규칙 고르기용: Plex 소스마다 영화·TV 라이브러리, 텔레그램 소스 목록 (채널은 /api/tg/{id}/channels)"""
+    cfg = config_store.load()
+    plex, tgs = [], []
+    for src in cfg.get("sources", []):
+        if src.get("type") == "plex":
+            item = {"id": src["id"], "name": src.get("name", ""), "sections": [], "error": ""}
+            try:
+                data = await _plex_json(request.app, cfg, src, "/library/sections")
+                item["sections"] = [{"key": str(d.get("key")), "title": d.get("title", ""), "type": d.get("type")}
+                                    for d in (data.get("MediaContainer") or {}).get("Directory") or [] if d.get("type") in ("movie", "show")]
+            except Exception as e:
+                item["error"] = f"Plex에 연결하지 못했습니다: {e}"
+            plex.append(item)
+        elif src.get("type") == "telegram":
+            tgs.append({"id": src["id"], "name": src.get("name", "")})
+    return web.json_response({"success": True, "plex": plex, "telegram": tgs})
+
+
+@admin_only
+async def admin_mirror_check(request):
+    request.app[MIRROR].wake()
+    return web.json_response({"success": True})
+
+
+@admin_only
+async def admin_mirror_test(request):
+    body = await _json_body(request)
+    try:
+        title = await request.app[MIRROR].test_latest(str(body.get("rule") or ""))
+    except Exception as e:
+        return _json_error(400, str(e))
+    return web.json_response({"success": True, "title": title})
+
+
 # ---- 공통 설정 (모든 사용자에게 적용) ------------------------------------------------
 def _apply_general(app, raw):
     st = config_store.clean_general(raw)
@@ -2472,6 +2550,8 @@ async def admin_restore(request):
             cfg["client_id"] = config_store.load()["client_id"]
         if "cache" in raw_cfg:
             cfg["cache"] = media_cache.clean_settings(raw_cfg.get("cache"))
+        if isinstance(raw_cfg.get("plex_to_tg"), dict):
+            cfg["plex_to_tg"] = plex_to_tg.clean_settings(raw_cfg["plex_to_tg"])
         if isinstance(raw_cfg.get("general"), dict):
             cfg["general"] = config_store.clean_general(raw_cfg["general"])
         if isinstance(raw_cfg.get("discord"), dict):
@@ -2599,6 +2679,7 @@ async def _on_startup(app):
     app[HLS_SWEEPER] = asyncio.ensure_future(_hls_sweeper(app))
     app[UPDATE_TASK] = asyncio.ensure_future(app[UPDATES].loop(app[HTTP]))
     app[DISCORD_TASK] = asyncio.ensure_future(app[DISCORD].loop(app[HTTP]))
+    app[MIRROR_TASK] = asyncio.ensure_future(app[MIRROR].loop())
     if app[REQUIRE_AUTH]:
         made = auth.bootstrap_from_env()
         if made:
@@ -2608,7 +2689,7 @@ async def _on_startup(app):
 
 
 async def _on_cleanup(app):
-    for task in (app.get(HLS_SWEEPER), app.get(UPDATE_TASK), app.get(DISCORD_TASK)):
+    for task in (app.get(HLS_SWEEPER), app.get(UPDATE_TASK), app.get(DISCORD_TASK), app.get(MIRROR_TASK)):
         if task:
             task.cancel()
     for job in list(app[HLS_JOBS].values()):
@@ -2641,6 +2722,7 @@ def create_app(require_auth=True):
     app[HLS_JOBS] = {}
     app[UPDATES] = updates.UpdateChecker()
     app[DISCORD] = discord_feed.Feed()
+    app[MIRROR] = _make_mirror(app)
     app[RADIO_NOW] = {}
     app[RADIO_ART] = {}
     app[PLEX_FILES] = {}
@@ -2676,6 +2758,11 @@ def create_app(require_auth=True):
     app.router.add_get("/api/admin/cache", admin_cache_get)
     app.router.add_get("/api/ticker", ticker_get)
     app.router.add_get("/api/admin/general", admin_general_get)
+    app.router.add_get("/api/admin/plex-tg", admin_mirror_get)
+    app.router.add_put("/api/admin/plex-tg", admin_mirror_put)
+    app.router.add_get("/api/admin/plex-tg/options", admin_mirror_options)
+    app.router.add_post("/api/admin/plex-tg/check", admin_mirror_check)
+    app.router.add_post("/api/admin/plex-tg/test", admin_mirror_test)
     app.router.add_put("/api/admin/general", admin_general_put)
     app.router.add_get("/api/admin/discord", admin_discord_get)
     app.router.add_put("/api/admin/discord", admin_discord_put)
