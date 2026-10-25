@@ -67,6 +67,35 @@ def has_korean_font():
     return _KO_FONT
 
 
+_LANG = {"ko": "ko", "kor": "ko", "korean": "ko", "kr": "ko", "en": "en", "eng": "en", "english": "en",
+         "ja": "ja", "jpn": "ja", "jp": "ja", "zh": "zh", "chi": "zh", "zho": "zh", "chs": "chs", "cht": "cht"}
+
+
+def sub_lang(code):
+    """자막 파일 이름 꼬리에 붙일 언어 (YMPlayer가 영상 이름과 짝지을 때 떼어 내는 것만 - 그 밖에는 붙이지 않음)"""
+    c = str(code or "").strip().lower().replace("_", "-")
+    return _LANG.get(c) or _LANG.get(c.split("-")[0], "")
+
+
+def sidecar_subs(video_path):
+    """영상 파일 옆의 자막 파일들 [(경로, 언어, 확장자)] - Plex가 아직 못 읽었어도 (같은 이름 + .ko.srt / .smi 등)"""
+    folder, base = os.path.split(video_path)
+    stem = os.path.splitext(base)[0]
+    out = []
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:
+        return out
+    for n in names:
+        root, ext = os.path.splitext(n)
+        sext = SUB_EXT.get(ext[1:].lower())
+        if not sext or not (root == stem or root.startswith(stem + ".")):
+            continue
+        tail = root[len(stem) + 1:] if root != stem else ""
+        out.append((os.path.join(folder, n), sub_lang(tail.split(".")[-1]) if tail else "", sext))
+    return out
+
+
 class Waiting(Exception):
     """자막이 아직 없음 - 나중에 다시"""
 _lock = threading.Lock()
@@ -394,7 +423,10 @@ class Mirror:
             raise RuntimeError("Plex 항목에 파일 정보가 없습니다.")
         fields = item_fields(m, rule["section_title"])
         subs = [x for x in part.get("Stream") or [] if x.get("streamType") == 3]
-        if rule["wait_subs"] and not subs and not test:
+        local_file = str(part.get("file") or "")
+        local_ok = bool(local_file and os.path.isfile(local_file) and os.access(local_file, os.R_OK))
+        side = sidecar_subs(local_file) if local_ok else []   # Plex가 아직 못 읽은 옆 자막 파일도 자막으로 친다
+        if rule["wait_subs"] and not subs and not side and not test:
             w = (load_state()["rules"].get(rule["id"], {}).get("waiting") or {}).get(key)
             if not rule["wait_days"] or not w or time.time() - w.get("since", time.time()) < rule["wait_days"] * 86400:
                 raise Waiting()
@@ -416,27 +448,40 @@ class Mirror:
         os.makedirs(tmp, exist_ok=True)
         msgs = []
         try:
-            local = str(part.get("file") or "")
-            if not (local and os.path.isfile(local) and os.access(local, os.R_OK)):   # Plex가 다른 컴퓨터면 받아 온다
+            local = local_file
+            if not local_ok:   # Plex가 다른 컴퓨터면 받아 온다
                 local = os.path.join(tmp, name)
                 await self._download(cfg, src, part["key"], local, fields["name"], size)
             # 외부 자막 파일 (내장 자막은 영상 안에 그대로 들어 있다)
-            sub_files = []
+            sub_files, seen, sub_fail = [], set(), 0
             for x in subs:
                 sext = SUB_EXT.get(str(x.get("codec") or x.get("format") or "").lower())
                 if x.get("key") and sext:
-                    lang = re.sub(r"[^A-Za-z-]", "", str(x.get("languageCode") or x.get("languageTag") or ""))[:8]
                     path = os.path.join(tmp, f"sub{len(sub_files)}.{sext}")
                     if await self._fetch(cfg, src, x["key"], path):
-                        sub_files.append((path, lang, sext))
-            burned = False
+                        with open(path, "rb") as f:
+                            seen.add(hashlib.sha1(f.read()).hexdigest())
+                        sub_files.append((path, sub_lang(x.get("languageCode") or x.get("languageTag")), sext))
+                    else:
+                        sub_fail += 1
+                        log.warning("자동 올리기: Plex 자막 %s를 받지 못했습니다 (%s)", x.get("key"), fields["name"])
+            for path, lang, sext in side:   # 옆 자막 파일 (Plex에서 받은 것과 내용이 같으면 빼고)
+                with open(path, "rb") as f:
+                    h = hashlib.sha1(f.read()).hexdigest()
+                if h not in seen:
+                    seen.add(h)
+                    sub_files.append((path, lang, sext))
+            burned, burn_skip = False, ""
             embedded = any(not x.get("key") for x in subs)
-            if rule["burn_subs"] and sub_files and not embedded:   # 영상 안에 자막이 없으면 외부 자막을 입혀 다시 인코딩
+            if rule["burn_subs"] and sub_files and not embedded and not has_korean_font():
+                burn_skip = "한글 글꼴이 없어 자막을 입히지 않고 파일로 올림 (sudo apt install fonts-nanum)"
+            elif rule["burn_subs"] and sub_files and not embedded:   # 영상 안에 자막이 없으면 외부 자막을 입혀 다시 인코딩
                 best = next((f for f in sub_files if f[1].lower() in ("kor", "ko", "ko-kr")), sub_files[0])
                 out = os.path.join(tmp, f"{stem}.burn.mp4")
                 await self._burn(local, best[0], out, duration, fields["name"])
                 local, name, ext, burned = out, f"{stem}.mp4", ".mp4", True
                 sub_files = []   # 화면에 들어갔으니 따로 올리지 않는다
+            sent_subs = 0
             thumb = await self._art(cfg, src, m.get("thumb") or m.get("grandparentThumb") or m.get("parentThumb"), 320, tmp)
             thumb = thumb if thumb and os.path.getsize(thumb) <= 200 * 1024 else None
             # 나누기 (각 조각이 따로 재생되게 시간으로)
@@ -474,17 +519,25 @@ class Mirror:
                             continue
                     sname = f"{os.path.splitext(vname)[0]}{'.' + lang if lang else ''}.{'srt' if many and sext == 'smi' else sext}"
                     await client.send_file(peer, out, force_document=True, attributes=[DocumentAttributeFilename(sname)])
+                    sent_subs += 1
             await self._save_meta(rule, cfg, src, m, [x for x in msgs if x], tmp)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
         log.info("자동 올리기: %s -> %s", fields["name"], rule["channel_title"] or rule["channel"])
         notes = []
         if burned:
-            notes.append("자막 입혀 인코딩" + ("" if has_korean_font() else
-                         " (서버에 한글 글꼴이 없어 글자가 네모로 보일 수 있음 - sudo apt install fonts-nanum)"))
+            notes.append("자막 입혀 인코딩")
+        if burn_skip:
+            notes.append(burn_skip)
         if len(msgs) > 1:
             notes.append(f"{len(msgs)}개로 나눠 올림")
-        if not subs:
+        if sent_subs:
+            notes.append(f"자막 파일 {sent_subs}개 첨부")
+        elif embedded and not burned:
+            notes.append("내장 자막")
+        if sub_fail:
+            notes.append(f"Plex 자막 {sub_fail}개를 받지 못함")
+        if not subs and not side:
             notes.append("자막 없음")
         return ", ".join(notes)
 
