@@ -107,10 +107,15 @@ export function itemFacts(item) {
 }
 
 /** 세부 보기(포스터 + 제목·정보·줄거리) / 테이블 보기(작은 그림 + 한 줄) 한 항목. 누르면 카드를 누른 것과 같다 */
-export function listItem(item, mode) {
-    const card = posterCard(item);
-    const f = itemFacts(item);
-    const status = item.watched ? h('span', { class: 'list-status done', title: '봤음' }, icon('check'))
+export function listItem(item, mode, playlist = null) {
+    // 라이브 채널(IPTV·라디오 방송국)은 채널 카드를 그림으로, 날짜·길이 대신 분류와 LIVE
+    const live = item.type === 'channel';
+    const card = live ? channelCard(item, playlist) : posterCard(item);
+    // (세부 보기에선 부제가 이미 분류이거나 지금 나오는 곡이라 분류는 부제와 다를 때만, LIVE는 그림 위에 이미 있음)
+    const group = live && item.group !== item.subtitle ? item.group || '' : '';
+    const f = live ? { year: '', date: mode === 'table' ? item.group || '' : '', length: '', extra: group, rating: '', summary: '' } : itemFacts(item);
+    const status = live ? h('span', { class: 'list-status' }, mode === 'table' ? h('span', { class: 'live-badge', text: 'LIVE' }) : null)
+        : item.watched ? h('span', { class: 'list-status done', title: '봤음' }, icon('check'))
         : item.progress > 0 ? h('span', { class: 'list-status', text: `${Math.round(item.progress * 100)}%` })
             : item.unwatched ? h('span', { class: 'list-status', text: `안 본 ${item.unwatched}` }) : h('span', { class: 'list-status' });
     const open = (e) => { if (!e.target.closest('a, button')) card.click(); };
