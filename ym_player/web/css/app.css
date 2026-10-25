@@ -1101,3 +1101,26 @@ body.docpip { margin: 0; background: #000; overflow: hidden; }
 .docpip-src { flex-shrink: 0; font-size: 11px; font-weight: 800; letter-spacing: 0.06em; color: var(--accent, #e5a00d); }
 .docpip-src:empty { display: none; }
 .docpip-title { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* 자동 올리기 상태 표 (제목 | 상태 | 자막 | 비고) */
+.mirror-table { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; margin-bottom: 0.5rem; }
+.mirror-row { display: grid; grid-template-columns: minmax(0, 1fr) 7.5rem 5.5rem minmax(0, 0.8fr); gap: 0.75rem; align-items: center;
+    padding: 0.45rem 0.75rem; border-top: 1px solid var(--border); font-size: 0.88rem; }
+.mirror-row:first-child { border-top: none; }
+.mirror-head { background: var(--bg-elev2); color: var(--muted); font-size: 0.78rem; font-weight: 600; }
+.mirror-title, .mirror-note { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mirror-subs { color: var(--text-soft); }
+.mirror-chip { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 999px; font-size: 0.75rem; font-weight: 700; white-space: nowrap; }
+.mirror-chip.run { background: rgba(var(--accent-rgb), 0.2); color: var(--accent); }
+.mirror-chip.queue { background: var(--bg-elev2); color: var(--text-soft); }
+.mirror-chip.wait { background: rgba(120, 140, 255, 0.18); color: #9fb0ff; }
+.mirror-chip.ok { background: rgba(60, 190, 110, 0.18); color: #5fd38d; }
+.mirror-chip.fail { background: rgba(240, 80, 70, 0.18); color: #ff8a80; }
+.mirror-chip.skip { background: rgba(200, 160, 60, 0.18); color: #e0b85a; }
+.mirror-bar { margin-top: 0.3rem; height: 4px; }
+@media (max-width: 700px) {
+    .mirror-row { grid-template-columns: minmax(0, 1fr) auto; }
+    .mirror-row > :nth-child(3), .mirror-row > :nth-child(4) { grid-column: 1 / -1; font-size: 0.8rem; }
+    .mirror-head > :nth-child(3), .mirror-head > :nth-child(4) { display: none; }
+    .mirror-row:not(.mirror-head) > .mirror-subs:not(:empty)::before { content: '자막 '; color: var(--muted); }
+}

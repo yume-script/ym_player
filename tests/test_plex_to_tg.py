@@ -17,6 +17,11 @@ def test_caption_fields():
     assert plex_to_tg.make_caption("{name}\n\n{summary}\n{없는칸}", f) == "호프 S01E02 - 시작\n\n줄거리"
     assert plex_to_tg.make_caption("{name", f) == "호프 S01E02 - 시작\n\n줄거리"      # 틀을 잘못 쓰면 기본 틀로
     assert plex_to_tg.item_fields({"type": "movie", "title": "호프", "year": 2026})["name"] == "호프 (2026)"
+    # 에피소드 제목이 파일 이름·작품 이름 반복·"Episode 4"면 붙이지 않는다
+    ep = lambda title, show: plex_to_tg.item_fields({"type": "episode", "title": title, "grandparentTitle": show, "parentIndex": 1, "index": 4})["name"]
+    assert ep("다이아몬드 에이스 actII part 2.E16.261026.1080p-KL", "다이아몬드 에이스 actII -Second Season- 2쿨") == "다이아몬드 에이스 actII -Second Season- 2쿨 S01E04"
+    assert ep("Episode 4", "유루유리") == "유루유리 S01E04" and ep("4화", "유루유리") == "유루유리 S01E04"
+    assert ep("새로운 시작", "호프") == "호프 S01E04 - 새로운 시작"
     with pytest.raises(ValueError):
         plex_to_tg.clean_settings({"rules": [{"plex": "px", "section": "1", "tg": "tg", "channel": "abc"}]})
 
