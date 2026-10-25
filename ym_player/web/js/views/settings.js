@@ -1005,6 +1005,8 @@ async function renderMirror(pane) {
                 r.plex === p.id && r.section === sec.key, sec.title))));
         const tgSel = h('select', { class: 'select' }, opts.telegram.map((t) => opt(t.id, t.name, r.tg === t.id)));
         const chSel = h('select', { class: 'select' }, r.channel ? opt(r.channel, r.channel_title || r.channel, true) : opt('', '채널 고르기', true));
+        const waitIn = h('input', { type: 'checkbox', checked: r.wait_subs !== false });
+        const daysIn = h('input', { class: 'input input-sm mirror-days', type: 'number', min: '0', max: '365', value: String(r.wait_days || 0) });
         const capIn = h('textarea', { class: 'input', rows: '3', placeholder: '{name}\n\n{summary}' });
         capIn.value = r.caption || '{name}\n\n{summary}';
         const fillChannels = async () => {
@@ -1026,12 +1028,15 @@ async function renderMirror(pane) {
         const card = h('div', { class: 'mirror-rule' },
             h('label', { class: 'check' }, enabledIn, ' 켜기'),
             h('div', { class: 'row-2 mirror-pick' }, field('Plex 라이브러리', plexSel), field('올릴 텔레그램', h('div', { class: 'toolbar' }, tgSel, chSel))),
+            h('div', { class: 'mirror-wait' }, h('label', { class: 'check' }, waitIn, ' 자막이 생길 때까지 기다렸다가 올리기'),
+                h('span', { class: 'muted', text: ' 최대' }), daysIn, h('span', { class: 'muted', text: '일 (0이면 계속 기다림)' })),
             field('캡션', capIn, '{name} 제목(영화 "제목 (연도)", 에피소드 "작품 S01E02 - 제목") · {summary} 줄거리 · {title} {year} {show} {season} {episode} {code} {genres} {tags}(#장르) {library} {filename}'),
             h('div', { class: 'toolbar' }, test, del));
         const row = { id: r.id, get: () => {
             const [plex, section] = plexSel.value.split('|');
             return { id: row.id, enabled: enabledIn.checked, plex, section, section_title: ((plexSel.selectedOptions[0] || {}).dataset || {}).name || '',
-                tg: tgSel.value, channel: chSel.value, channel_title: ((chSel.selectedOptions[0] || {}).dataset || {}).name || '', caption: capIn.value };
+                tg: tgSel.value, channel: chSel.value, channel_title: ((chSel.selectedOptions[0] || {}).dataset || {}).name || '', caption: capIn.value,
+                wait_subs: waitIn.checked, wait_days: Number(daysIn.value) || 0 };
         } };
         rows.push(row);
         rulesBox.appendChild(card);
@@ -1063,7 +1068,8 @@ async function renderMirror(pane) {
             cur ? h('div', { class: 'mirror-current' },
                 h('b', { text: cur.title }), h('span', { class: 'muted', text: ` ${cur.phase}${cur.total ? ` · ${fmtB(cur.done)} / ${fmtB(cur.total)}` : ''}` }),
                 h('div', { class: 'cache-bar' }, h('div', { style: { width: `${cur.total ? Math.min(100, (cur.done / cur.total) * 100) : 0}%` } }))) : null,
-            s.queue.length ? h('p', { class: 'muted', text: `기다리는 중: ${s.queue.map((q) => q.title).join(', ')}` }) : null,
+            s.queue.length ? h('p', { class: 'muted', text: `올릴 차례 기다리는 중: ${s.queue.map((q) => q.title).join(', ')}` }) : null,
+            (s.waiting || []).length ? h('p', { class: 'muted', text: `자막 기다리는 중: ${s.waiting.map((w) => `${w.title} (${new Date(w.since * 1000).toLocaleDateString()}부터)`).join(', ')}` }) : null,
             h('h4', { text: '최근 기록' }),
             s.history.length ? h('div', { class: 'mirror-history' }, s.history.map((x) => h('p', { class: x.ok ? '' : 'muted error' },
                 icon(x.ok ? 'check' : 'triangle-exclamation'), ` ${new Date(x.at * 1000).toLocaleString()} · ${x.title}${x.channel ? ` → ${x.channel}` : ''}${x.note ? ` · ${x.note}` : ''}`)))
@@ -1076,10 +1082,12 @@ async function renderMirror(pane) {
         h('div', { class: 'src-card' },
             h('h3', { class: 'pane-title' }, icon('cloud-arrow-up'), ' Plex → 텔레그램 자동 올리기'),
             h('p', { text: '고른 Plex 라이브러리에 새 동영상(영화·에피소드)이 들어오면, 로그인해 둔 텔레그램 계정으로 고른 채널에 파일을 올립니다. '
-                + '규칙을 처음 저장할 때 이미 있던 것은 올리지 않고 그 뒤에 들어온 것부터 올립니다. 한 번에 하나씩 올리고, 실패하면 다음 확인 때 다시(3번까지).' }),
+                + '규칙을 처음 저장할 때 이미 있던 것은 올리지 않고 그 뒤에 들어온 것부터 올립니다. 한 번에 하나씩 올리고, 실패하면 다음 확인 때 다시(3번까지). '
+                + '한도를 넘는 파일은 ffmpeg로 시간을 나눠 "이름 part1", "part2"…로 올리고(YMPlayer에서 이어서 재생), 외부 자막 파일도 같이 올립니다. '
+                + 'Plex의 포스터·줄거리·장르·출연·회차 정보를 같이 남겨 텔레그램 화면에서 Plex처럼 보입니다.' }),
             ...(opts.plex.length && opts.telegram.length ? [] : [h('p', { class: 'muted error', text: 'Plex 소스와 텔레그램 소스(로그인까지)가 둘 다 있어야 합니다.' })]),
             ...plexErr,
-            h('div', { class: 'row-2' }, field('확인 간격 (분)', intervalIn, '2~1440'), field('파일 크기 한도', maxSel, '넘는 파일은 건너뜁니다.')),
+            h('div', { class: 'row-2' }, field('확인 간격 (분)', intervalIn, '2~1440'), field('파일 크기 한도', maxSel, '넘는 파일은 나눠서 올립니다 (서버에 ffmpeg 필요).')),
             rulesBox,
             h('div', { class: 'toolbar' }, h('button', { class: 'btn', on: { click: () => addRule() } }, icon('plus'), ' 규칙 추가'), save, check),
             h('p', { class: 'field-hint', text: '올리려면 그 채널에 글을 쓸 수 있어야 합니다(채널 관리자). Plex 서버가 이 컴퓨터에 있고 원본 파일 경로가 보이면 그대로 올리고, '

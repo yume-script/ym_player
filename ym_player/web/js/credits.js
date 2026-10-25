@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 81,
+        "version": "1.1.44",
+        "date": "2026-10-25",
+        "title": "자동 올리기: 자막이 생길 때까지 기다리기, 2GB 넘는 파일은 나눠 올리기, Plex 작품 정보로 텔레그램 화면을 Plex처럼"
+    },
+    {
         "pr": 80,
         "version": "1.1.43",
         "date": "2026-10-25",

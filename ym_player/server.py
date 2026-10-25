@@ -1128,6 +1128,17 @@ async def tg_meta(request, tg):
     msg = request.match_info.get("msg")
     target = telegram_src.meta_target(tg.sid, channel, msg=int(msg) if msg else None,
                                       series_key=None if msg else request.query.get("series", ""))
+    # Plex -> 텔레그램 자동 올리기로 올린 영상이면 그때 붙여 둔 Plex 작품 정보 (TMDB 키가 없어도)
+    plex = telegram_src.plex_meta_for(tg.sid, channel, msg=int(msg) if msg else None,
+                                      series_key=None if msg else request.query.get("series", ""))
+    if plex:
+        meta, episodes = plex
+        if target and target.get("season") is None and meta.get("kind") == "tv" and msg:   # 회차를 이름에서 못 읽었으면 Plex 값으로
+            ep = next((e for eps in episodes.values() for e in eps.values()), None)
+            if ep:
+                target = {**target, "season": ep.get("season"), "ep": ep.get("ep")}
+        return web.json_response({"success": True, "meta": meta, "episodes": episodes,
+                                  "target": {k: target[k] for k in ("kind", "season", "ep")} if target else None})
     if not _tmdb_for(request, tg).key:
         return web.json_response({"success": True, "meta": None, "reason": "nokey"})
     try:
@@ -1145,6 +1156,19 @@ async def tg_meta(request, tg):
     episodes = await _tg_seasons(request, tg, meta, seasons) if meta else {}
     return web.json_response({"success": True, "meta": meta, "episodes": episodes,
                               "target": {k: target[k] for k in ("kind", "season", "ep")} if target else None})
+
+
+async def tg_plex_art(request):
+    """자동 올리기가 받아 둔 Plex 포스터·배경·스틸 (data/telegram_thumbs/{소스}/plex/)"""
+    sid, name = request.match_info["sid"], request.match_info["name"]
+    src = config_store.get_source(config_store.load(), sid)
+    if not src or src.get("type") != "telegram":
+        raise web.HTTPNotFound()
+    require_source(request, sid)
+    path = os.path.join(config_store.DATA_DIR, "telegram_thumbs", sid, "plex", name)
+    if not os.path.isfile(path):
+        raise web.HTTPNotFound()
+    return web.FileResponse(path, headers={"Cache-Control": "private, max-age=604800", "Content-Type": "image/jpeg"})
 
 
 @telegram_api
@@ -2808,6 +2832,7 @@ def create_app(require_auth=True):
     app.router.add_get(r"/api/tg/{sid}/meta/{channel:-?\d+}/{msg:\d+}", tg_meta)
     app.router.add_get(r"/api/tg/{sid}/meta/{channel:-?\d+}", tg_meta)
     app.router.add_get("/api/tg/{sid}/meta-search", tg_meta_search)
+    app.router.add_get(r"/api/tg/{sid}/plex-art/{name:[0-9a-f]{16}\.jpg}", tg_plex_art)
     app.router.add_post("/api/tg/{sid}/meta-fix", tg_meta_fix)
     app.router.add_post("/api/tg/{sid}/progress", tg_progress)
     app.router.add_route("*", "/api/plex/{sid}/{tail:.*}", plex_proxy)

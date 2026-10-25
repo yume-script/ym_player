@@ -126,7 +126,8 @@ export class TelegramProvider {
         this._seen.set(id, v);
         // 영상 옆에 올린 포스터 사진(서버가 짝지음)이 있으면 카드 썸네일과 상세 화면 포스터로
         // (텔레그램 영상 썸네일은 검은 첫 화면이거나 없는 경우가 많아 포스터를 먼저)
-        const posterImg = v.poster ? `${this.base}/thumb/${v.channel}/${v.poster}` : '';
+        // Plex -> 텔레그램 자동 올리기로 올린 영상은 그때 받아 둔 Plex 포스터 (plex_poster)
+        const posterImg = v.plex_poster || (v.poster ? `${this.base}/thumb/${v.channel}/${v.poster}` : '');
         const thumb = posterImg || (v.has_thumb ? `${this.base}/thumb/${v.channel}/${v.msg}` : '');
         if (v.kind === 'image') {
             // 사진: 누르면 뷰어로 (cards.js). 원본은 처음 열 때 서버가 텔레그램에서 받아 둔다
@@ -148,12 +149,13 @@ export class TelegramProvider {
             const sid = `series:${v.channel}:${v.series.key}`;
             this._seen.set(sid, v);
             // 작품 정보 파일(웹툰명.yaml)이 있으면 그 표지 (서버가 받아 둠), 없으면 회차 그림
-            const cover = v.series.meta ? this.seriesCoverUrl(v.channel, v.series.key)
-                : thumb || (v.series.cover ? `${this.base}/thumb/${v.channel}/${v.series.cover}` : '');
+            const plexCover = v.series.plex_poster || '';
+            const cover = plexCover || (v.series.meta ? this.seriesCoverUrl(v.channel, v.series.key)
+                : thumb || (v.series.cover ? `${this.base}/thumb/${v.channel}/${v.series.cover}` : ''));
             return {
                 pid: this.id, id: sid, type: 'show', playable: true, title: v.series.title,
                 subtitle: [this.channelTitle(v.channel), `${v.series.count}화`, (v.date || '').slice(0, 10)].filter(Boolean).join(' · '),
-                thumb: cover, wideThumb: cover, shape: book ? 'poster' : 'wide', cardClass: book ? 'card-book' : '',
+                thumb: cover, wideThumb: cover, shape: book || plexCover ? 'poster' : 'wide', cardClass: book ? 'card-book' : '',
                 unwatched: v.series.unwatched, progress: 0,
                 route: `#/item/${this.id}/${encodeURIComponent(sid)}`,
                 ts: v.updated || 0,
@@ -197,9 +199,9 @@ export class TelegramProvider {
             type: 'movie',            // 카드/상세에서 "재생 가능한 단일 영상"으로 다루게
             title: v.title,
             subtitle: sub,
-            thumb,
+            thumb: v.plex_poster || thumb,
             wideThumb: thumb,
-            shape: 'wide',
+            shape: v.plex_poster ? 'poster' : 'wide',
             progress: v.duration && v.position ? v.position / v.duration : 0,
             watched: !!v.watched,
             route: `#/item/${this.id}/${id}`,
