@@ -1087,3 +1087,5 @@ body.ticker-on .sidebar { bottom: var(--ticker-h); }
 .mirror-current .cache-bar { margin-top: 0.35rem; }
 .mirror-history p { margin: 0.2rem 0; font-size: 0.88rem; }
 @media (max-width: 900px) { .mirror-pick { grid-template-columns: 1fr; } }
+.mirror-wait { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+.mirror-wait .mirror-days { width: 5rem; }

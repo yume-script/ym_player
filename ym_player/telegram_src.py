@@ -329,6 +329,7 @@ CREATE TABLE IF NOT EXISTS series(source TEXT, channel INTEGER, video INTEGER, s
 CREATE INDEX IF NOT EXISTS series_by_key ON series(source, channel, skey);
 CREATE TABLE IF NOT EXISTS meta(source TEXT, mkey TEXT, kind TEXT, tmdb_id INTEGER, data TEXT, fetched REAL,
     manual INTEGER DEFAULT 0, PRIMARY KEY(source, mkey));
+CREATE TABLE IF NOT EXISTS plex_meta(source TEXT, channel INTEGER, msg INTEGER, meta TEXT, ep TEXT, PRIMARY KEY(source, channel, msg));
 CREATE TABLE IF NOT EXISTS meta_flags(source TEXT, channel INTEGER, msg INTEGER, bl INTEGER, PRIMARY KEY(source, channel, msg));
 CREATE TABLE IF NOT EXISTS meta_season(tmdb_id INTEGER, season INTEGER, data TEXT, fetched REAL, PRIMARY KEY(tmdb_id, season));
 """
@@ -749,12 +750,17 @@ def _series_map(conn, sid, rows, user=""):
             d["rep"] = s["video"]
         if s["has_thumb"] and s["video"] > d.get("cover", 0):
             d["cover"] = s["video"]   # 대표 회차에 그림이 없을 때 카드에 쓸 회차 (웹툰은 한 번 열어 본 회차만 그림이 있음)
+    plex = _plex_posters(conn, sid, [(s["channel"], s["video"]) for s in srows if (s["channel"], s["skey"]) in keys])
+    for s in srows:
+        k = (s["channel"], s["skey"])
+        if k in info and (s["channel"], s["video"]) in plex and s["video"] >= info[k].get("_pv", 0):
+            info[k]["plex_poster"], info[k]["_pv"] = plex[(s["channel"], s["video"])], s["video"]
     metas = {c: _meta_names(conn, sid, c) for c in {c for c, _k in info}}
     for (c, k), d in info.items():
         m = _match_meta(metas[c], k) if metas[c] else None
         if m:
             d["meta"] = m   # 작품 정보 파일(웹툰명.yaml)이 있음 -> 카드 그림은 그 표지로 (/series-cover)
-    return {(c, d["rep"]): {k: v for k, v in d.items() if k != "rep"} for (c, _), d in info.items()}
+    return {(c, d["rep"]): {k: v for k, v in d.items() if k not in ("rep", "_pv")} for (c, _), d in info.items()}
 
 
 def series_episodes(sid, channel, key, user=""):
@@ -1093,6 +1099,55 @@ def meta_target(sid, channel, msg=None, series_key=None):
     return {"mkey": f"movie:{name}:{year}", "kind": "movie", "titles": titles, "year": year, "season": None, "ep": None}
 
 
+# ---------------------------------------------------------------------------
+# Plex 작품 정보 - Plex -> 텔레그램 자동 올리기(plex_to_tg.py)가 올린 메시지에 붙여 둔 것. 있으면 TMDB보다 먼저 쓴다.
+# meta는 TMDB details와 같은 모양, ep는 회차 하나 {season, ep, name, overview, still, air_date}
+# ---------------------------------------------------------------------------
+def plex_meta_put(sid, channel, msgs, meta, ep=None):
+    with db() as conn:
+        conn.executemany("INSERT OR REPLACE INTO plex_meta(source,channel,msg,meta,ep) VALUES(?,?,?,?,?)",
+                         [(sid, int(channel), int(m), json.dumps(meta, ensure_ascii=False), json.dumps(ep, ensure_ascii=False) if ep else None)
+                          for m in msgs])
+
+
+def plex_meta_for(sid, channel, msg=None, series_key=None):
+    """(meta, {"시즌": {"회차": ep}}) - 영상 하나(msg) 또는 시리즈(series_key)의 Plex 작품 정보. 없으면 None"""
+    with db() as conn:
+        if series_key is not None:
+            rows = conn.execute("SELECT p.msg, p.meta, p.ep FROM plex_meta p JOIN series s ON s.source=p.source AND s.channel=p.channel "
+                                "AND s.video=p.msg WHERE p.source=? AND p.channel=? AND s.skey=? ORDER BY p.msg DESC",
+                                (sid, channel, series_key)).fetchall()
+        else:
+            rows = conn.execute("SELECT msg, meta, ep FROM plex_meta WHERE source=? AND channel=? AND msg=?", (sid, channel, msg)).fetchall()
+    if not rows:
+        return None
+    episodes = {}
+    for r in rows:
+        ep = json.loads(r["ep"]) if r["ep"] else None
+        if ep and ep.get("season") is not None and ep.get("ep") is not None:
+            episodes.setdefault(str(ep["season"]), {}).setdefault(str(ep["ep"]), ep)
+    meta = json.loads(rows[0]["meta"])
+    if episodes:
+        meta["seasons"] = sorted({int(k) for k in episodes})
+    return meta, episodes
+
+
+def _plex_posters(conn, sid, keys):
+    """{(채널, 메시지): Plex 포스터 주소} - 목록 카드용"""
+    keys = list(keys)
+    if not keys:
+        return {}
+    out = {}
+    for c in {c for c, _m in keys}:
+        msgs = [m for cc, m in keys if cc == c]
+        for r in conn.execute(f"SELECT msg, meta FROM plex_meta WHERE source=? AND channel=? AND msg IN ({','.join('?' * len(msgs))})",
+                              [sid, c, *msgs]):
+            poster = (json.loads(r["meta"]) or {}).get("poster")
+            if poster:
+                out[(c, r["msg"])] = poster
+    return out
+
+
 def meta_get(sid, mkey):
     with db() as conn:
         r = conn.execute("SELECT * FROM meta WHERE source=? AND mkey=?", (sid, mkey)).fetchone()
@@ -1236,11 +1291,14 @@ def query_videos(sid, channels, offset=0, limit=40, q="", sort="latest", user=""
         prog = _progress_map(conn, sid, rows, user)
         posters = _poster_map(conn, sid, rows)
         series = _series_map(conn, sid, rows, user) if group else {}
+        plex = _plex_posters(conn, sid, [(r["channel"], r["msg"]) for r in rows])
     out = [_row(r, prog, posters) for r in rows]
     for d in out:
         s = series.get((d["channel"], d["msg"]))
         if s:
             d["series"] = s
+        if (d["channel"], d["msg"]) in plex:
+            d["plex_poster"] = plex[(d["channel"], d["msg"])]
     return out, total
 
 
@@ -1342,6 +1400,7 @@ def continue_watching(sid, channels, limit=20, user=""):
                   AND (p.position > 30 OR (v.kind IN ('book','doc') AND p.position > 0))
                 ORDER BY p.updated DESC LIMIT ?""", [sid, user, *channels, limit]).fetchall()
         posters = _poster_map(conn, sid, rows)
+        plex = _plex_posters(conn, sid, [(r["channel"], r["msg"]) for r in rows])
     if HIDE_BL:
         with db() as conn:
             hidden = _bl_checker(conn, sid, channels)
@@ -1350,6 +1409,8 @@ def continue_watching(sid, channels, limit=20, user=""):
     for r in rows:
         d = {**dict(r), "poster": posters.get((r["channel"], r["msg"]), 0)}
         pages = d.pop("pages", 0)
+        if (r["channel"], r["msg"]) in plex:
+            d["plex_poster"] = plex[(r["channel"], r["msg"])]
         if d["kind"] in ("book", "doc"):
             d["duration"] = pages
         out.append(d)
