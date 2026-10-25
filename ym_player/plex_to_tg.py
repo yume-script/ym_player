@@ -174,6 +174,17 @@ class _Blank(dict):
         return ""
 
 
+def _plain_title(title, show):
+    """에피소드 제목이 쓸모없으면(파일 이름 그대로, 작품 이름 반복, "Episode 4") 빈 칸"""
+    t = title.strip()
+    squash = lambda x: re.sub(r"[\s._\-:~]+", "", x).casefold()
+    if not t or (show and squash(t).startswith(squash(show)[:12])):
+        return ""
+    if re.search(r"\d{3,4}p|\bS\d+E\d+|\.E\d+\.", t, re.I) or re.fullmatch(r"(?:episode|ep\.?|에피소드)\s*\d+|제?\s*\d+\s*화", t, re.I):
+        return ""
+    return t
+
+
 def item_fields(m, section_title=""):
     """Plex 메타데이터 -> 캡션에 넣을 값들"""
     kind = m.get("type", "")
@@ -183,7 +194,8 @@ def item_fields(m, section_title=""):
         show = str(m.get("grandparentTitle") or "")
         s, e = m.get("parentIndex"), m.get("index")
         code = f"S{int(s):02d}E{int(e):02d}" if isinstance(s, int) and isinstance(e, int) else ""
-        name = " ".join(x for x in (show, code) if x) + (f" - {title}" if title else "")
+        ep_title = _plain_title(title, show)
+        name = " ".join(x for x in (show, code) if x) + (f" - {ep_title}" if ep_title else "")
     else:
         show, s, e, code = "", "", "", ""
         name = f"{title} ({year})" if year else title
@@ -277,6 +289,8 @@ class Mirror:
         self.plex_json, self.plex_src, self.tg_for, self.http = plex_json, plex_src, tg_for, http
         self.queue = []          # [{rule, key, title, tries}]
         self.current = None      # {title, phase, done, total}
+        self.current_job = None  # {rule, key} - 지금 올리는 것
+        self.subs_label = ""     # 마지막으로 올린 것의 자막 (기록의 "자막" 칸)
         self.last_check = 0
         self.error = ""
         self._wake = asyncio.Event()
@@ -286,10 +300,11 @@ class Mirror:
 
     def status(self):
         st = load_state()
-        return {"queue": [{"title": j["title"], "rule": j["rule"]} for j in self.queue], "current": self.current,
+        return {"queue": [{"title": j["title"], "rule": j["rule"], "key": j["key"]} for j in self.queue],
+                "current": {**self.current, **(self.current_job or {})} if self.current else None,
                 "last_check": self.last_check, "error": self.error, "history": st["history"][:KEEP_HISTORY],
                 "rules": {rid: {"baseline": r.get("baseline", 0), "count": len(r.get("done", []))} for rid, r in st["rules"].items()},
-                "waiting": [{"title": w.get("title", k), "since": w.get("since", 0), "rule": rid}
+                "waiting": [{"title": w.get("title", k), "since": w.get("since", 0), "rule": rid, "key": k}
                             for rid, r in st["rules"].items() for k, w in (r.get("waiting") or {}).items()]}
 
     async def loop(self):
@@ -375,6 +390,7 @@ class Mirror:
             job = self.queue[0]
             rule = rules.get(job["rule"])
             ok, note, waiting = False, "", False
+            self.current_job, self.subs_label = {"rule": job["rule"], "key": job["key"]}, ""
             if rule:
                 try:
                     note = await self.upload(rule, job["key"], st["max_gb"], test=job.get("test"))
@@ -390,7 +406,7 @@ class Mirror:
                     note = str(e) or type(e).__name__
                     log.warning("자동 올리기 실패 (%s): %s", job["title"], note)
             self.queue.pop(0)
-            self.current = None
+            self.current = self.current_job = None
             state = load_state()
             rs = state["rules"].setdefault(job["rule"], {"done": [], "fails": {}})
             if waiting:   # 자막이 생길 때까지 (기록에는 남기지 않고 상태의 "자막 기다리는 중"에)
@@ -407,8 +423,9 @@ class Mirror:
                 fails.pop(job["key"], None)
             elif not job.get("test"):
                 fails[job["key"]] = fails.get(job["key"], 0) + 1
-            state["history"] = [{"title": job["title"], "ok": ok, "note": note, "at": int(time.time()),
-                                 "channel": (rule or {}).get("channel_title", "")}, *state["history"]][:KEEP_HISTORY]
+            state["history"] = [{"title": job["title"], "ok": ok, "note": note, "at": int(time.time()), "key": job["key"],
+                                 "subs": self.subs_label if ok else "", "channel": (rule or {}).get("channel_title", "")},
+                                *state["history"]][:KEEP_HISTORY]
             save_state(state)
 
     async def upload(self, rule, key, max_gb, test=False):
@@ -524,6 +541,8 @@ class Mirror:
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
         log.info("자동 올리기: %s -> %s", fields["name"], rule["channel_title"] or rule["channel"])
+        self.subs_label = ("화면에 입힘" if burned else f"파일 {sent_subs}개" if sent_subs
+                           else "내장" if embedded else "없음")
         notes = []
         if burned:
             notes.append("자막 입혀 인코딩")

@@ -1065,18 +1065,48 @@ async function renderMirror(pane) {
         let s;
         try { s = (await api('/api/admin/plex-tg')).status; } catch (e) { return; }
         const cur = s.current;
+        const when = (t) => (t ? new Date(t * 1000).toLocaleString([], { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '');
+        const chip = (cls, text) => h('span', { class: `mirror-chip ${cls}`, text });
+        const row = (title, status, subs, note, extra = null) => h('div', { class: 'mirror-row', role: 'row' },
+            h('span', { class: 'mirror-title', title, text: title }), h('span', {}, status, extra), h('span', { class: 'mirror-subs', text: subs }),
+            h('span', { class: 'mirror-note muted', title: note, text: note }));
+        const head = () => h('div', { class: 'mirror-row mirror-head', role: 'row' },
+            h('span', { text: '제목' }), h('span', { text: '상태' }), h('span', { text: '자막' }), h('span', { text: '비고' }));
+        // 진행: 지금 올리는 것 -> 올릴 차례 -> 자막 기다리는 것 (자막을 기다리는 것은 확인할 때마다 대기열에 다시 들어가므로 한 줄로)
+        const waitKeys = new Map((s.waiting || []).map((w) => [`${w.rule}/${w.key}`, w]));
+        const live = [];
+        if (cur) {
+            const pct = cur.total ? Math.min(100, (cur.done / cur.total) * 100) : 0;
+            live.push(row(cur.title, chip('run', '올리는 중'), '', `${cur.phase}${cur.total && /올리는|받는/.test(cur.phase) ? ` · ${fmtB(cur.done)} / ${fmtB(cur.total)}` : ''}`,
+                h('div', { class: 'cache-bar mirror-bar' }, h('div', { style: { width: `${pct}%` } }))));
+        }
+        const curKey = cur ? `${cur.rule}/${cur.key}` : '';
+        const shown = new Set([curKey]);
+        for (const q of s.queue) {
+            const k = `${q.rule}/${q.key}`;
+            if (shown.has(k) || waitKeys.has(k)) continue;
+            shown.add(k);
+            live.push(row(q.title, chip('queue', '올릴 차례'), '확인 전', ''));
+        }
+        for (const [k, w] of waitKeys) {
+            if (shown.has(k)) continue;
+            live.push(row(w.title, chip('wait', '자막 기다림'), '없음', `${when(w.since)}부터`));
+        }
+        const hist = s.history.map((x) => row(x.title,
+            x.ok ? chip('ok', '완료') : String(x.note || '').startsWith('건너뜀') ? chip('skip', '건너뜀') : chip('fail', '실패'),
+            x.subs || (x.ok ? '' : '-'),
+            // 자막 이야기는 자막 칸에 있으니 비고에서는 뺀다
+            [when(x.at), x.channel ? `→ ${x.channel}` : '',
+                ...String(x.note || '').split(', ').filter((n) => n && !(x.subs && /^(자막 파일 \d+개 첨부|내장 자막|자막 없음|자막 입혀 인코딩)$/.test(n)))]
+                .filter(Boolean).join(' · ')));
         statusBox.replaceChildren(...[
             s.error ? h('p', { class: 'muted error', text: s.error }) : null,
             h('p', { class: 'muted', text: s.last_check ? `마지막 확인 ${new Date(s.last_check * 1000).toLocaleString()}` : '아직 확인 전' }),
-            cur ? h('div', { class: 'mirror-current' },
-                h('b', { text: cur.title }), h('span', { class: 'muted', text: ` ${cur.phase}${cur.total ? ` · ${fmtB(cur.done)} / ${fmtB(cur.total)}` : ''}` }),
-                h('div', { class: 'cache-bar' }, h('div', { style: { width: `${cur.total ? Math.min(100, (cur.done / cur.total) * 100) : 0}%` } }))) : null,
-            s.queue.length ? h('p', { class: 'muted', text: `올릴 차례 기다리는 중: ${s.queue.map((q) => q.title).join(', ')}` }) : null,
-            (s.waiting || []).length ? h('p', { class: 'muted', text: `자막 기다리는 중: ${s.waiting.map((w) => `${w.title} (${new Date(w.since * 1000).toLocaleDateString()}부터)`).join(', ')}` }) : null,
+            h('h4', { text: `진행 (${live.length})` }),
+            live.length ? h('div', { class: 'mirror-table', role: 'table' }, head(), ...live) : h('p', { class: 'muted', text: '올릴 것이 없습니다.' }),
             h('h4', { text: '최근 기록' }),
-            s.history.length ? h('div', { class: 'mirror-history' }, s.history.map((x) => h('p', { class: x.ok ? '' : 'muted error' },
-                icon(x.ok ? 'check' : 'triangle-exclamation'), ` ${new Date(x.at * 1000).toLocaleString()} · ${x.title}${x.channel ? ` → ${x.channel}` : ''}${x.note ? ` · ${x.note}` : ''}`)))
-                : h('p', { class: 'muted', text: '아직 올린 것이 없습니다.' })].filter(Boolean));
+            hist.length ? h('div', { class: 'mirror-table', role: 'table' }, head(), ...hist) : h('p', { class: 'muted', text: '아직 올린 것이 없습니다.' }),
+        ].filter(Boolean));
         clearTimeout(pane._mirrorTimer);
         if (pane.isConnected && !pane.classList.contains('hidden')) pane._mirrorTimer = setTimeout(paintStatus, cur || s.queue.length ? 2000 : 15000);
     }

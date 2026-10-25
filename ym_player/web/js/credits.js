@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 86,
+        "version": "1.1.49",
+        "date": "2026-10-26",
+        "title": "자동 올리기 상태를 표로 (제목 | 상태 | 자막 | 비고), 쓸모없는 에피소드 제목(파일 이름·Episode 4) 빼기"
+    },
+    {
         "pr": 85,
         "version": "1.1.48",
         "date": "2026-10-25",
