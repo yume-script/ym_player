@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 79,
+        "version": "1.1.42",
+        "date": "2026-10-25",
+        "title": "화면 속 화면(PiP)으로 보다가 새로고침하면 같은 자리부터 이어 틀고, 한 번 누르면 PiP로 복귀"
+    },
+    {
         "pr": 78,
         "version": "1.1.41",
         "date": "2026-10-25",

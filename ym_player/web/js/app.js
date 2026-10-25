@@ -2,7 +2,7 @@
 import { h, icon, clear, toast, storeGet, storeSet, api, modal } from './util.js';
 import { registry } from './providers/index.js';
 import { emptyState } from './cards.js';
-import './player.js';
+import { player } from './player.js';
 import { loadFavorites } from './providers/iptv.js';
 import { loadMyTheme, openThemeDialog } from './theme.js';
 import { initVersionNotice } from './notice.js';
@@ -333,6 +333,7 @@ async function boot() {
     await buildNav();
     window.addEventListener('hashchange', render);
     render();
+    player.resumeAfterReload();   // 화면 속 화면으로 보다가 새로고침했으면 이어서
 }
 
 boot();
