@@ -48,7 +48,7 @@ sudo systemctl enable --now ym_player
 - **관리자**: 사이드바 맨 아래 ⚙️ **설정**에서 탭으로 관리합니다 — **소스** / **사용자**(추가·삭제, 권한, 비밀번호, 볼 수 있는 범위) /
   **상태**(소스마다 실제 연결 점검, 서버 정보, 최근 경고) / **캐시** / **화면**(왼쪽 위 이름과 아이콘 - 로그인 화면과 브라우저 탭에도 쓰임, 아이콘의 버전 배지 켜기/끄기, 모든 사용자의 **기본 테마**) /
   **백업**(설정·사용자·즐겨찾기·아이콘을 JSON으로 받기, 그 파일로 복원) / **Thanks to**(참고한 저장소, 쓰는 오픈소스, 변경 이력).
-- **버전**: `ym_player/__init__.py`의 `__version__` 한 곳에서 정합니다. 왼쪽 위 아이콘 배지(예: 1.1.40), 설정 > 상태,
+- **버전**: `ym_player/__init__.py`의 `__version__` 한 곳에서 정합니다. 왼쪽 위 아이콘 배지(예: 1.1.41), 설정 > 상태,
   시작 로그에 그대로 나오므로 버전을 올릴 때 아이콘 그림을 다시 만들 필요가 없습니다(배지는 화면에서 글자로 얹음).
   업데이트(PR)마다 셋째 자리를 하나씩 올리고, `web/js/credits.js` CHANGELOG 맨 위 줄에 같은 `version`을 적습니다.
 - **새 버전 알림**: 아이콘 옆에 **[NEW]**가 뜨면 아직 안 본 새 버전입니다. 누르면 그 뒤로 새로워진 점이 나오고, 본 버전은 사람마다
@@ -176,6 +176,7 @@ ym_player/                       저장소 루트
 | `GET /api/tg/{id}/channels · videos · video/{c}/{m} · home` | 채널 목록, 영상 목록(색인·과거 채우기), 영상 하나, 홈 줄 |
 | `GET /api/tg/{id}/stream/{c}/{m}` · `thumb/{c}/{m}` · `POST progress` | Range 스트림, 썸네일, 재생 위치 저장 (설정에서 고른 채널만) |
 | `GET /api/tg/{id}/video/{c}/{m}?probe=1` · `GET /api/tg/{id}/transcode/{c}/{m}?start=초&mode=` | 재생 방법 판단(ffprobe), ffmpeg 서버 변환 스트림 (조각난 MP4) |
+| `GET/PUT /api/admin/general` | 공통 설정 (웹툰 BL·GL 숨기기 `hide_bl_gl`, 관리자만) |
 | `GET /api/ticker?after=&boot=` · `GET/PUT /api/admin/discord`, `POST /api/admin/discord/test` | 아래쪽에 흘릴 디스코드 새 글 / 디스코드 설정·상태·시험 글 (관리자만) |
 | `POST /mcp` (Bearer 토큰) · `POST /mcp/{토큰}` · `GET/POST /api/admin/mcp`, `DELETE /api/admin/mcp/{id}` | MCP 서버 (JSON-RPC) / 토큰 목록·만들기·지우기 (관리자만) |
 | `GET /api/tg/{id}/series-cover/{c}?key=` | 작품 표지 (작품 정보 파일의 표지, 없으면 회차 그림) |
@@ -307,6 +308,10 @@ Jazz24)가 들어갑니다. 방송국은 한 줄에 하나 `이름 | 스트림 �
   (requirements가 바뀐 업데이트는 `.venv/bin/pip install -r requirements.txt` 후 재시작)
   다른 채널의 zip(자막 묶음 따위)은 목록에 나오지 않습니다. rar/cbr/7z는 아직 못 엽니다. 이 기능 전에 훑은 채널은
   압축 파일을 찾으려고 처음부터 한 번 다시 훑습니다.
+- **BL·GL 작품 숨기기**: **설정 > 공통**의 [웹툰 목록에서 BL·GL 작품 숨기기]를 켜면(모든 사용자에게 적용) 작품 정보 파일(웹툰명.yaml)의
+  장르·태그에 BL / GL(보이즈러브·걸즈러브·백합·Boys' Love·Girls' Love·yaoi·yuri 포함)이 있거나, 회차의 제목·캡션·파일 이름에 `#BL`, `[GL]`처럼
+  BL / GL 표시가 있는 작품을 **작품 전체** 웹툰 목록·검색·홈·이어보기에서 뺍니다. 켜면 아직 안 읽은 작품 정보 파일을 뒤에서 하나씩 읽어
+  장르를 기억해 둡니다(`telegram.db`의 `meta_flags`). 영상·책(PDF·EPUB)은 건드리지 않습니다.
 - **책 (PDF / EPUB)**: 채널에 올린 `.pdf` / `.epub` 파일은 영상+사진 채널, 웹툰 채널, **책(PDF·EPUB)** 채널(책만 보임)에 책 카드로 나오고
   (영상만·사진만 채널에는 안 나옴, 라이브러리 [보기]에 "책"), 누르면 **책 보기**가 열립니다. 보던 위치는 사람마다 저장되어 이어보기에도 나옵니다.
   - **PDF**: [PDF.js](https://github.com/mozilla/pdf.js)(Apache-2.0)로 쪽을 위아래로 이어 그립니다. 파일을 통째로 받지 않고

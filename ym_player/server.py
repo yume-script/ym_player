@@ -2261,6 +2261,30 @@ async def admin_cache_clear(request):
     return web.json_response({"success": True, "stats": await asyncio.to_thread(media_cache.STORE.stats)})
 
 
+# ---- 공통 설정 (모든 사용자에게 적용) ------------------------------------------------
+def _apply_general(app, raw):
+    st = config_store.clean_general(raw)
+    telegram_src.HIDE_BL = st["hide_bl_gl"]
+    if st["hide_bl_gl"]:   # 작품 정보 파일(웹툰명.yaml)의 장르를 아직 안 봤으면 뒤에서 읽어 둔다
+        for tg in list(app[TELEGRAM].values()):
+            tg.background(("meta_flags",), tg.scan_meta_flags)
+    return st
+
+
+@admin_only
+async def admin_general_get(request):
+    return web.json_response({"success": True, "settings": config_store.clean_general(config_store.load().get("general"))})
+
+
+@admin_only
+async def admin_general_put(request):
+    body = await _json_body(request)
+    cfg = config_store.load()
+    cfg["general"] = config_store.clean_general({**(cfg.get("general") or {}), **body})
+    config_store.save(cfg)
+    return web.json_response({"success": True, "settings": _apply_general(request.app, cfg["general"])})
+
+
 # ---- 디스코드 채널 새 글 (아래쪽 흐르는 글) -------------------------------------------
 async def ticker_get(request):
     """?after=마지막으로 받은 seq&boot=서버 켠 시각. 처음(after 없음)이면 방금 올라온 것 몇 개"""
@@ -2448,6 +2472,8 @@ async def admin_restore(request):
             cfg["client_id"] = config_store.load()["client_id"]
         if "cache" in raw_cfg:
             cfg["cache"] = media_cache.clean_settings(raw_cfg.get("cache"))
+        if isinstance(raw_cfg.get("general"), dict):
+            cfg["general"] = config_store.clean_general(raw_cfg["general"])
         if isinstance(raw_cfg.get("discord"), dict):
             cfg["discord"] = discord_feed.clean_settings(raw_cfg["discord"])
         if isinstance(raw_cfg.get("branding"), dict):
@@ -2464,6 +2490,7 @@ async def admin_restore(request):
     config_store.save(cfg)
     media_cache.STORE.configure(cfg.get("cache"))
     request.app[DISCORD].reconfigure()
+    _apply_general(request.app, cfg.get("general"))
     auth.save_users(users)
     prefs.replace_all(body.get("prefs") if isinstance(body.get("prefs"), dict) else {})
     old_icon = _brand_icon_path()
@@ -2567,6 +2594,7 @@ def _render_page(name, token=""):
 async def _on_startup(app):
     app[HTTP] = ClientSession(auto_decompress=True)
     media_cache.STORE.configure(config_store.load().get("cache"))
+    _apply_general(app, config_store.load().get("general"))
     shutil.rmtree(_hls_root(), ignore_errors=True)  # 지난번에 남은 HLS 변환 파일
     app[HLS_SWEEPER] = asyncio.ensure_future(_hls_sweeper(app))
     app[UPDATE_TASK] = asyncio.ensure_future(app[UPDATES].loop(app[HTTP]))
@@ -2647,6 +2675,8 @@ def create_app(require_auth=True):
     app.router.add_post("/api/admin/update/check", admin_update_check)
     app.router.add_get("/api/admin/cache", admin_cache_get)
     app.router.add_get("/api/ticker", ticker_get)
+    app.router.add_get("/api/admin/general", admin_general_get)
+    app.router.add_put("/api/admin/general", admin_general_put)
     app.router.add_get("/api/admin/discord", admin_discord_get)
     app.router.add_put("/api/admin/discord", admin_discord_put)
     app.router.add_post("/api/admin/discord/test", admin_discord_test)
