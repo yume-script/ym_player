@@ -54,6 +54,12 @@ def save(cfg):
         os.replace(tmp, CONFIG_FILE)
 
 
+def clean_general(raw):
+    """설정 > 공통 (모든 사용자에게 적용). hide_bl_gl: 웹툰 목록에서 BL·GL 작품 숨기기"""
+    raw = raw if isinstance(raw, dict) else {}
+    return {"hide_bl_gl": bool(raw.get("hide_bl_gl"))}
+
+
 def get_source(cfg, source_id):
     for s in cfg.get("sources", []):
         if s.get("id") == source_id:

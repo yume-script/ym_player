@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 78,
+        "version": "1.1.41",
+        "date": "2026-10-25",
+        "title": "설정 > 공통 탭 추가: 웹툰 목록에서 BL·GL 작품 숨기기 (작품 정보 파일 장르·태그, 캡션의 #BL/#GL)"
+    },
+    {
         "pr": 77,
         "version": "1.1.40",
         "date": "2026-10-24",

@@ -329,6 +329,7 @@ CREATE TABLE IF NOT EXISTS series(source TEXT, channel INTEGER, video INTEGER, s
 CREATE INDEX IF NOT EXISTS series_by_key ON series(source, channel, skey);
 CREATE TABLE IF NOT EXISTS meta(source TEXT, mkey TEXT, kind TEXT, tmdb_id INTEGER, data TEXT, fetched REAL,
     manual INTEGER DEFAULT 0, PRIMARY KEY(source, mkey));
+CREATE TABLE IF NOT EXISTS meta_flags(source TEXT, channel INTEGER, msg INTEGER, bl INTEGER, PRIMARY KEY(source, channel, msg));
 CREATE TABLE IF NOT EXISTS meta_season(tmdb_id INTEGER, season INTEGER, data TEXT, fetched REAL, PRIMARY KEY(tmdb_id, season));
 """
 # 이어보기는 사용자마다 따로 (user_progress). 예전 progress(사용자 구분 없음)는 처음 한 번 MIGRATE_USER 몫으로 옮긴다.
@@ -794,6 +795,79 @@ def series_of(sid, channel, msg):
             "prev": {"msg": prv["video"], "title": prv["title"]} if prv else None}
 
 
+# ---------------------------------------------------------------------------
+# BL·GL 작품 숨기기 (설정 > 공통). 작품 정보 파일(웹툰명.yaml)의 장르·태그, 또는 회차의 제목·캡션·파일 이름에
+# BL / GL 표시(#BL, [GL], 보이즈러브 …)가 있으면 그 작품 전체를 웹툰 목록·검색·홈·이어보기에서 뺀다.
+# ---------------------------------------------------------------------------
+HIDE_BL = False   # server.py가 설정에서 읽어 맞춘다
+_BL_WORDS = {"bl", "gl", "보이즈러브", "걸즈러브", "백합", "비엘", "지엘", "boyslove", "girlslove", "yaoi", "yuri",
+             "shounenai", "shoujoai", "shonenai", "shojoai"}
+_BL_TEXT_RE = re.compile(r"(?<![A-Za-z0-9])(?:BL|GL)(?![A-Za-z0-9])|보이즈\s*러브|걸즈\s*러브|[#\[(]백합")
+
+
+def is_bl_text(*texts):
+    return any(t and _BL_TEXT_RE.search(t) for t in texts)
+
+
+def is_bl_meta(meta):
+    """작품 정보(parse_meta 결과)의 장르·태그에 BL/GL이 있나"""
+    for x in [*(meta.get("genres") or []), *(meta.get("tags") or [])]:
+        for part in re.split(r"[/,·|&]", str(x)):
+            if re.sub(r"[\s'’_.\-]", "", part).casefold() in _BL_WORDS:
+                return True
+    return False
+
+
+def set_meta_flag(sid, channel, msg, bl):
+    with db() as conn:
+        conn.execute("INSERT OR REPLACE INTO meta_flags(source,channel,msg,bl) VALUES(?,?,?,?)", (sid, int(channel), int(msg), int(bl)))
+
+
+def meta_flags_pending(sid, channels):
+    """아직 장르를 보지 않은 작품 정보 파일들 [(채널, 메시지)]"""
+    if not channels:
+        return []
+    with db() as conn:
+        return [(r[0], r[1]) for r in conn.execute(
+            f"SELECT v.channel, v.msg FROM videos v WHERE v.source=? AND v.kind='meta' AND v.channel IN ({','.join('?' * len(channels))}) "
+            "AND NOT EXISTS (SELECT 1 FROM meta_flags f WHERE f.source=v.source AND f.channel=v.channel AND f.msg=v.msg)",
+            [sid, *channels]).fetchall()]
+
+
+def _bl_checker(conn, sid, channels):
+    """(채널, 메시지, 제목, 캡션, 파일 이름) -> 숨길 웹툰 회차인가. 작품(시리즈) 단위로: 회차 하나라도 표시가 있거나
+    작품 정보 파일이 BL/GL이면 그 작품의 모든 회차"""
+    hidden_msgs, in_series, bl_metas = set(), set(), {}
+    for c in channels:
+        flagged = {r[0] for r in conn.execute("SELECT msg FROM meta_flags WHERE source=? AND channel=? AND bl=1", (sid, c))}
+        if flagged:
+            bl_metas[c] = [(m, names) for m, names in _meta_names(conn, sid, c) if m in flagged]
+        srows = conn.execute("SELECT s.skey, s.video, v.title, v.caption, v.file_name FROM series s JOIN videos v ON v.source=s.source "
+                             "AND v.channel=s.channel AND v.msg=s.video WHERE s.source=? AND s.channel=? AND v.kind='book'", (sid, c)).fetchall()
+        if not srows:
+            continue
+        keys = {r["skey"] for r in srows if is_bl_text(r["title"], r["caption"], r["file_name"])}
+        if c in bl_metas:
+            keys |= {k for k in {r["skey"] for r in srows} - keys if _match_meta(bl_metas[c], k)}
+        hidden_msgs |= {(c, r["video"]) for r in srows if r["skey"] in keys}
+        in_series |= {(c, r["video"]) for r in srows}
+
+    def check(channel, msg, title, caption, file_name):
+        if (channel, msg) in hidden_msgs or is_bl_text(title, caption, file_name):
+            return True
+        if channel in bl_metas and (channel, msg) not in in_series:   # 묶이지 않은 단편: 그 이름의 작품 정보 파일
+            info = _episode_info(title, file_name)
+            key = info[0] if info else _media_key(title or "")[0]
+            return bool(key and _match_meta(bl_metas[channel], "b:" + key))
+        return False
+    return check
+
+
+def _bl_function(conn, sid, channels):
+    check = _bl_checker(conn, sid, channels)
+    conn.create_function("ymp_bl", 5, lambda *a: 1 if check(*a) else 0, deterministic=True)
+
+
 _ID_TAIL_RE = re.compile(r"\d{6,}$")   # 이름 키 끝의 작품 ID ("천하제일곤륜객잔63646168")
 
 
@@ -1150,8 +1224,12 @@ def query_videos(sid, channels, offset=0, limit=40, q="", sort="latest", user=""
         where += " AND (title LIKE ? OR caption LIKE ? OR file_name LIKE ?)"
         like = f"%{q}%"
         args += [like, like, like]
+    if HIDE_BL:   # 설정 > 공통: 웹툰 목록에서 BL·GL 작품 빼기
+        where += " AND NOT (kind='book' AND ymp_bl(channel, msg, title, caption, file_name))"
     order = {"latest": "date DESC, msg DESC", "oldest": "date ASC, msg ASC", "title": "title COLLATE NOCASE ASC"}.get(sort, "date DESC, msg DESC")
     with db() as conn:
+        if HIDE_BL:
+            _bl_function(conn, sid, channels)
         total = conn.execute(f"SELECT COUNT(*) FROM videos WHERE {where}", args).fetchone()[0]
         rows = conn.execute(f"SELECT * FROM videos WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
                             [*args, int(limit), int(offset)]).fetchall()
@@ -1264,6 +1342,10 @@ def continue_watching(sid, channels, limit=20, user=""):
                   AND (p.position > 30 OR (v.kind IN ('book','doc') AND p.position > 0))
                 ORDER BY p.updated DESC LIMIT ?""", [sid, user, *channels, limit]).fetchall()
         posters = _poster_map(conn, sid, rows)
+    if HIDE_BL:
+        with db() as conn:
+            hidden = _bl_checker(conn, sid, channels)
+        rows = [r for r in rows if not (r["kind"] == "book" and hidden(r["channel"], r["msg"], r["title"], r["caption"], r["file_name"]))]
     out = []
     for r in rows:
         d = {**dict(r), "poster": posters.get((r["channel"], r["msg"]), 0)}
@@ -1744,6 +1826,8 @@ class TelegramSource:
             elif time.time() - st["latest_at"] >= LATEST_SYNC_SEC:
                 self.background(("latest", c), lambda c=c: self.sync_latest(c))
                 syncing = True
+        if HIDE_BL and meta_flags_pending(self.sid, channels):
+            self.background(("meta_flags",), self.scan_meta_flags)
         rows, total = query_videos(self.sid, channels, offset, limit, q, sort, user, kind, self.kinds, group)
         if fill and len(channels) == 1 and not q and sort == "latest":
             ch = channels[0]
@@ -2049,6 +2133,18 @@ class TelegramSource:
         os.replace(thumb + ".tmp", thumb)
         set_has_thumb(self.sid, channel, msg)
 
+    async def scan_meta_flags(self):
+        """BL·GL 숨기기를 켰을 때: 아직 안 읽어 본 작품 정보 파일들을 읽어 장르를 기억 (하나씩, 뒤에서)"""
+        pending = meta_flags_pending(self.sid, self.channels)
+        if pending:
+            await self.authorized_client()   # 로그인이 안 됐으면 여기서 멈춘다 (파일을 "못 읽음"으로 적지 않게)
+        for channel, msg in pending:
+            try:
+                await self.file_meta(channel, msg)
+            except Exception as e:   # 모양이 틀린 파일 따위 - BL·GL 아님으로 적고 다음 파일로
+                log.warning("작품 정보 파일 %s/%s 읽기 실패: %s", channel, msg, e)
+                set_meta_flag(self.sid, channel, msg, 0)
+
     async def file_meta(self, channel, msg, with_cover=False):
         """작품 정보 파일을 읽은 결과 (메시지마다 한 번만 읽어 기억 - 표지 base64가 든 큰 YAML은 읽는 데 시간이 걸린다).
         with_cover=False면 base64 표지(data:)는 빼고 (화면에는 /series-cover로 작게 줄인 것을 쓴다)"""
@@ -2058,6 +2154,7 @@ class TelegramSource:
             data = await self.subtitle_bytes(channel, msg)
             meta = await asyncio.to_thread(parse_meta, data)
             self._meta_cache[key] = meta
+            set_meta_flag(self.sid, channel, msg, is_bl_meta(meta))
             while len(self._meta_cache) > 64:
                 self._meta_cache.popitem(last=False)
         if not with_cover and str(meta.get("cover", "")).startswith("data:"):

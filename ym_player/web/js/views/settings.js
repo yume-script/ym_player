@@ -61,6 +61,7 @@ export async function renderSettings(main, _params, query, ctx) {
     };
     const panes = {
         sources: h('div', { class: 'settings-pane' }, srcTabs, addBar, srcNote, list),
+        general: h('div', { class: 'settings-pane' }),
         users: h('div', { class: 'settings-pane' }, usersBox()),
         status: h('div', { class: 'settings-pane' }),
         cache: h('div', { class: 'settings-pane' }),
@@ -70,7 +71,7 @@ export async function renderSettings(main, _params, query, ctx) {
         discord: h('div', { class: 'settings-pane' }),
         thanks: h('div', { class: 'settings-pane' }),
     };
-    const TABS = [['sources', 'layer-group', '소스'], ['users', 'users', '사용자'], ['status', 'heart-pulse', '상태'], ['cache', 'hard-drive', '캐시'], ['look', 'palette', '화면'], ['backup', 'box-archive', '백업'], ['mcp', 'robot', 'MCP'], ['discord', 'comment-dots', '디스코드'], ['thanks', 'heart', 'Thanks to']];
+    const TABS = [['sources', 'layer-group', '소스'], ['general', 'sliders', '공통'], ['users', 'users', '사용자'], ['status', 'heart-pulse', '상태'], ['cache', 'hard-drive', '캐시'], ['look', 'palette', '화면'], ['backup', 'box-archive', '백업'], ['mcp', 'robot', 'MCP'], ['discord', 'comment-dots', '디스코드'], ['thanks', 'heart', 'Thanks to']];
     const tabBar = h('div', { class: 'tabs', role: 'tablist' });
     const showTab = (key) => {
         if (!panes[key]) key = 'sources';
@@ -78,6 +79,7 @@ export async function renderSettings(main, _params, query, ctx) {
         tabBar.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === key));
         Object.entries(panes).forEach(([k, el]) => el.classList.toggle('hidden', k !== key));
         if (key === 'status') renderStatus(panes.status);
+        if (key === 'general') renderGeneral(panes.general);
         if (key === 'cache') renderCache(panes.cache);
         if (key === 'look') renderLook(panes.look);
         if (key === 'backup' && !panes.backup.firstChild) renderBackup(panes.backup);
@@ -682,6 +684,29 @@ function fmtBytes(n) {
 }
 
 /** 동영상 캐시: 텔레그램/Plex 원본 재생 파일의 본 조각을 디스크에 남기고, 재생 중 앞쪽을 미리 받는다 */
+/** 모든 사용자에게 적용되는 설정 (바꾸면 바로 저장) */
+async function renderGeneral(pane) {
+    let st;
+    try { st = (await api('/api/admin/general')).settings; } catch (e) { clear(pane).appendChild(h('p', { class: 'muted error', text: e.message })); return; }
+    const set = async (patch, chk) => {
+        chk.disabled = true;
+        try {
+            st = (await api('/api/admin/general', { method: 'PUT', json: patch })).settings;
+            toast('저장했습니다.', 'success');
+        } catch (e) {
+            toast(e.message, 'error');
+            chk.checked = !chk.checked;
+        } finally { chk.disabled = false; }
+    };
+    const blChk = h('input', { type: 'checkbox', checked: st.hide_bl_gl, on: { change: () => set({ hide_bl_gl: blChk.checked }, blChk) } });
+    clear(pane).append(h('div', { class: 'src-card' },
+        h('h3', { class: 'pane-title' }, icon('sliders'), ' 공통'),
+        h('label', { class: 'check' }, blChk, ' 웹툰 목록에서 BL·GL 작품 숨기기'),
+        h('p', { class: 'field-hint', text: '작품 정보 파일(웹툰명.yaml)의 장르·태그나 회차의 제목·캡션·파일 이름에 BL / GL 표시(#BL, [GL], 보이즈러브, 걸즈러브, 백합 …)가 있으면 '
+            + '그 작품 전체를 웹툰 목록·검색·홈·이어보기에서 뺍니다. 모든 사용자에게 적용됩니다. 처음 켜면 작품 정보 파일을 뒤에서 한 번씩 읽느라 '
+            + '모두 가려지기까지 잠깐 걸릴 수 있습니다.' })));
+}
+
 async function renderCache(pane) {
     clear(pane).appendChild(h('div', { class: 'loading' }, icon('circle-notch', 'fa-spin'), h('span', { text: '불러오는 중...' })));
     let data;

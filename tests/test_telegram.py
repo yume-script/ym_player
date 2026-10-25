@@ -151,6 +151,8 @@ class FakeClient:
             if progress_callback:
                 progress_callback(len(data), len(data))
             return file
+        if data is not None and thumb is None and str(getattr(msg.document, "mime_type", "")).endswith("yaml"):
+            return data   # 작품 정보 파일 내용
         return b"\xff\xd8JPEG" + str(msg.id).encode()
 
 
@@ -1598,5 +1600,61 @@ def test_doc_stream_serves_ranges(env):
         assert r.headers["Content-Range"] == f"bytes 0-8/{len(data)}"
         r = await c.get("/api/tg/tg/stream/777/1002")
         assert r.status == 200 and await r.read() == data
+
+    run(flow)
+
+
+def test_hide_bl_gl_webtoons(monkeypatch, tmp_path):
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    telegram_src._migrated.discard(str(tmp_path))
+    assert telegram_src.is_bl_meta({"genres": ["드라마", "BL"]}) and telegram_src.is_bl_meta({"tags": ["Girls' Love"]})
+    assert telegram_src.is_bl_meta({"genres": ["로맨스/백합"]}) and not telegram_src.is_bl_meta({"genres": ["BLUE", "액션"]})
+    assert telegram_src.is_bl_text("#BL #로맨스") and telegram_src.is_bl_text("[GL] 작품") and not telegram_src.is_bl_text("BLUE LOCK 1화")
+    # 작품 셋: 캡션에 #BL이 있는 작품(1화에만), 작품 정보 파일이 GL인 작품, 보통 작품. 영상은 건드리지 않음
+    _insert([(1, "book", "사랑의 정원 1화", "사랑의 정원 1화.zip", 1), (2, "book", "사랑의 정원 2화", "사랑의 정원 2화.zip", 2),
+             (3, "book", "꽃의 노래 1화", "꽃의 노래 1화.zip", 3), (4, "book", "검의 길 1화", "검의 길 1화.zip", 4),
+             (5, "meta", "꽃의 노래", "꽃의 노래.yaml", 5), (6, "book", "단편 [BL]", "단편.zip", 6)], channel=1)
+    _insert([(1, "video", "BL 다큐", "a.mp4", 1)], channel=2)
+    with telegram_src.db() as conn:
+        conn.execute("UPDATE videos SET caption='#BL #로맨스' WHERE source='tg' AND channel=1 AND msg=1")
+    telegram_src.link_series("tg", 1)
+    kinds = {1: "webtoon"}
+    titles = lambda rows: sorted(r.get("series", {}).get("title") or r["title"] for r in rows)
+    assert len(titles(telegram_src.query_videos("tg", [1], limit=50, kinds=kinds, group=True)[0])) == 4
+    monkeypatch.setattr(telegram_src, "HIDE_BL", True)
+    assert telegram_src.meta_flags_pending("tg", [1]) == [(1, 5)]
+    telegram_src.set_meta_flag("tg", 1, 5, telegram_src.is_bl_meta({"genres": ["GL"]}))
+    assert telegram_src.meta_flags_pending("tg", [1]) == []
+    rows, total = telegram_src.query_videos("tg", [1, 2], limit=50, kinds=kinds, group=True)
+    assert titles(rows) == ["BL 다큐", "검의 길 1화"] and total == 2
+    assert [r["title"] for r in telegram_src.query_videos("tg", [1], q="사랑", kinds=kinds)[0]] == []
+    telegram_src.save_progress("tg", 1, 2, 3, 20)
+    telegram_src.save_progress("tg", 1, 4, 3, 20)
+    assert [c["msg"] for c in telegram_src.continue_watching("tg", [1])] == [4]
+    assert config_store.clean_general({"hide_bl_gl": 1, "x": 2}) == {"hide_bl_gl": True}
+
+
+def test_general_settings_api_reads_yaml_genres(env, monkeypatch):
+    monkeypatch.setattr(telegram_src, "HIDE_BL", False)
+    y = "title: 꽃의 노래\ngenres: [GL, 드라마]\n".encode()
+    doc = SimpleNamespace(mime_type="application/x-yaml", size=len(y), thumbs=[], data=y,
+                          attributes=[DocumentAttributeFilename("꽃의 노래.yaml")])
+    env.msgs[1003] = SimpleNamespace(id=1003, document=doc, photo=None, message="", date=datetime(2026, 4, 1, tzinfo=timezone.utc))
+
+    async def flow(c):
+        env.authorized = True
+        await c.get("/api/tg/tg/videos?channel=777&limit=5")      # 색인
+        r = await (await c.put("/api/admin/general", json={"hide_bl_gl": True})).json()
+        assert r["settings"] == {"hide_bl_gl": True} and telegram_src.HIDE_BL
+        for _ in range(50):     # 켜면 작품 정보 파일을 뒤에서 읽어 장르를 기억
+            if not telegram_src.meta_flags_pending("tg", [777]):
+                break
+            await c.get("/api/tg/tg/videos?channel=777&limit=5")
+            await asyncio.sleep(0.05)
+        with telegram_src.db() as conn:
+            assert conn.execute("SELECT bl FROM meta_flags WHERE msg=1003").fetchone()[0] == 1
+        assert (await (await c.get("/api/admin/general")).json())["settings"]["hide_bl_gl"]
+        await c.put("/api/admin/general", json={"hide_bl_gl": False})
+        assert not telegram_src.HIDE_BL
 
     run(flow)
