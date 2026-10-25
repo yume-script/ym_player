@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 82,
+        "version": "1.1.45",
+        "date": "2026-10-25",
+        "title": "자동 올리기: 영상 안에 자막이 없으면 외부 자막을 화면에 입혀 다시 인코딩해서 올리기"
+    },
+    {
         "pr": 81,
         "version": "1.1.44",
         "date": "2026-10-25",

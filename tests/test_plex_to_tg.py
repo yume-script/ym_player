@@ -134,10 +134,10 @@ def test_mirror_uploads_new_items(data, tmp_path, monkeypatch):
                 return await r.json()
         mirror = plex_to_tg.Mirror(plex_json, lambda sid: (cfg, src if sid == "px" else None), lambda sid: tg, lambda: http)
         config_store.save({**cfg, "plex_to_tg": {"max_gb": 1, "rules": [{"id": "r1", "plex": "px", "section": "1", "section_title": "영화",
-                                                                         "tg": "tg", "channel": "-100123", "channel_title": "내 채널"}]}})
+                                                                         "tg": "tg", "channel": "-100123", "channel_title": "내 채널", "burn_subs": False}]}})
         try:
             st = plex_to_tg.load_settings()
-            assert st["rules"][0]["wait_subs"] is True
+            assert st["rules"][0]["wait_subs"] is True and st["rules"][0]["burn_subs"] is False
             await mirror.check_all(st)                  # 처음: 기준만 (옛 영화는 안 올림)
             assert mirror.queue == [] and plex_to_tg.load_state()["rules"]["r1"]["baseline"] == 100
             small = local.stat().st_size
@@ -269,4 +269,57 @@ def test_tg_meta_uses_plex_info_without_tmdb(data, monkeypatch):
             assert (await c.get("/api/tg/tg/plex-art/0123456789abcdeg.jpg")).status == 404
         finally:
             await c.close()
+    asyncio.run(main())
+
+
+def test_burn_external_subtitle(data, tmp_path, monkeypatch):
+    """영상 안에 자막이 없고 외부 자막(CP949 SRT)만 있으면 화면에 입혀 mp4로 다시 인코딩해서 올린다"""
+    import json as _json
+    import shutil as _sh
+    import subprocess
+
+    from ym_player import telegram_src
+    if not _sh.which("ffmpeg"):
+        pytest.skip("ffmpeg 없음")
+    telegram_src._migrated.discard(str(data))
+    src_video = tmp_path / "Ep.S01E01.mkv"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=gray:size=320x240:rate=25:duration=3",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", str(src_video)], check=True)   # 단색이라 글자가 있으면 바로 티가 난다
+    sub = tmp_path / "ep.srt"
+    sub.write_bytes(SRT.encode("cp949"))
+    m = {"ratingKey": "7", "type": "movie", "title": "자막 영화", "year": 2026, "addedAt": 10, "duration": 3000,
+         "Media": [{"width": 320, "height": 240, "Part": [{"key": "/p/7", "file": str(src_video), "size": src_video.stat().st_size,
+                                                            "Stream": [{"streamType": 3, "codec": "srt", "key": "/s/1", "languageCode": "kor"}]}]}]}
+    tg = FakeTg()
+
+    async def plex_json(c, s, path, params=None):
+        return {"MediaContainer": {"Metadata": [m]}}
+
+    async def main():
+        mirror = plex_to_tg.Mirror(plex_json, lambda sid: ({"client_id": "c"}, {"id": "px", "url": "http://x"}), lambda sid: tg, lambda: None)
+
+        async def fetch(cfg, src, path, dest):
+            _sh.copy(sub, dest)
+            return True
+        monkeypatch.setattr(mirror, "_fetch", fetch)
+        monkeypatch.setattr(mirror, "_art", lambda *a: asyncio.sleep(0))
+        rule = plex_to_tg.clean_settings({"rules": [{"id": "r", "plex": "px", "section": "1", "tg": "tg", "channel": "-1"}]})["rules"][0]
+        assert rule["burn_subs"] is True
+        note = await mirror.upload(rule, "7", 2)
+        assert note.startswith("자막 입혀 인코딩")
+        assert [x["name"] for x in tg.sent] == ["Ep.S01E01.mp4"] and tg.sent[0]["stream"] is True
+        out = tmp_path / "out.mp4"
+        out.write_bytes(tg.sent[0]["body"])
+        info = _json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(out)],
+                                          capture_output=True, text=True).stdout)
+        assert [s["codec_name"] for s in info["streams"]] == ["h264"]
+        # 자막이 있는 1~2초 프레임은 원본과 달라야 한다 (화면에 글자)
+        def frame(path, t):
+            return subprocess.run(["ffmpeg", "-v", "error", "-ss", str(t), "-i", str(path), "-frames:v", "1", "-f", "rawvideo",
+                                   "-pix_fmt", "gray", "-"], capture_output=True).stdout
+        def bottom_diff(t):   # 자막이 그려지는 아래쪽 (320x240 중 아래 50줄)만 비교
+            a, b = frame(src_video, t), frame(out, t)
+            return sum(abs(a[i] - b[i]) for i in range(320 * 180, 320 * 230)) / (320 * 50)
+        with_sub, without = bottom_diff(1.5), bottom_diff(2.5)
+        assert with_sub > 0.5 and without < 0.2, (with_sub, without)
     asyncio.run(main())
