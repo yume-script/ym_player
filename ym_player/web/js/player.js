@@ -28,6 +28,8 @@ const PROXY_FIRST_KEY = 'yp_proxy_first';
 // 화면 속 화면으로 보다가 새로고침하면 같은 것을 같은 자리부터 이어서 (이 탭의 sessionStorage, 10분 안)
 const RESUME_KEY = 'yp_resume_after_reload';
 const RESUME_MAX_MS = 10 * 60 * 1000;
+// 화면 속 화면 창 오른쪽 위에 보일 소스 이름 (Document PiP 창에서만 - 기본 PiP 창에는 영상 말고는 못 넣는다)
+const SOURCE_LABEL = { plex: 'PLEX', telegram: 'TELEGRAM', iptv: 'IPTV', radio: 'RADIO' };
 
 // DASH(.mpd) 엔진은 크고(약 800KB) 쓰는 채널이 드물어서, 처음 필요할 때만 불러온다
 const DASHJS_URL = 'https://cdn.jsdelivr.net/npm/dashjs@4.7.4/dist/dash.all.min.js';
@@ -330,6 +332,7 @@ class Player {
         this.subEl.textContent = pb.subtitle || '';
         this.miniTitle.textContent = pb.title || '';
         this.miniSub.textContent = pb.subtitle || '';
+        this._syncPipLabel();
         // 라디오 그림 PiP 창을 띄운 채 영상을 틀면 그 창은 닫는다 (영상은 원래 <video>로 다시 PiP)
         if (!pb.audioOnly && this.pipArt && this.pipArt.active) document.exitPictureInPicture().catch(() => {});
         // 라디오면 그림 PiP 영상을 미리 준비 (아이패드는 버튼을 누른 그 순간에 바로 요청해야 해서)
@@ -477,6 +480,7 @@ class Player {
         this.video.load();
         this.inPip = false;
         this.mini.classList.remove('pip');
+        this._closeDocPip();
         if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
         if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
         this.viz.show(false);
@@ -504,7 +508,8 @@ class Player {
         if (this.inPip) {
             this.inPip = false;
             this.mini.classList.remove('pip');
-            document.exitPictureInPicture().catch(() => {});
+            if (this.docPip) this._closeDocPip();
+            else document.exitPictureInPicture().catch(() => {});
         }
         this.minimized = false;
         if (this.video.parentNode !== this.stage) this.stage.prepend(this.video);
@@ -760,7 +765,7 @@ class Player {
     }
 
     _recreateVideo() {
-        if (document.pictureInPictureElement === this.video) return;
+        if (document.pictureInPictureElement === this.video || this.docPip) return;
         const old = this.video;
         const fresh = this._newVideo();
         old.replaceWith(fresh);
@@ -904,6 +909,7 @@ class Player {
     }
 
     _pipElement() {
+        if (this.docPip) return this.video;
         return document.pictureInPictureElement
             || [this.video, this.pipArt && this.pipArt.video].find((v) => v && v.webkitPresentationMode === 'picture-in-picture');
     }
@@ -911,6 +917,7 @@ class Player {
     async togglePip() {
         const cur = this._pipElement();
         if (!cur) return this.enterPip();
+        if (this.docPip) return this._closeDocPip(true);
         try {
             if (document.pictureInPictureElement) await document.exitPictureInPicture();
             else cur.webkitSetPresentationMode('inline');
@@ -924,8 +931,84 @@ class Player {
             // 라디오처럼 소리만 있으면 영상 대신 앨범 표지·시각화를 그린 창으로 (pipart.js). 안 되면 원래대로
             // (소리만 있는 원래 <video>는 Chrome·Safari 모두 "영상 트랙 없음"으로 거절하므로 그림 창이 안 되면 거기서 끝)
             if (this.pb && this.pb.audioOnly && PipArt.supported()) return void await this._openPipArt();
+            // Chrome·Edge(PC): 창 안에 영상과 함께 오른쪽 위 "소스 · 제목"을 넣을 수 있는 Document PiP. 안 되면 기본 PiP
+            if (!this.pb.audioOnly && window.documentPictureInPicture && await this._openDocPip()) return;
             await requestPip(this.video);
         } catch (e) { toast(`이 브라우저는 화면 속 화면을 지원하지 않습니다. (${e.name || ''} ${e.message || e})`, 'error', 6000); }
+    }
+
+    // ------------------------------------------------------------------
+    // Document PiP: <video>를 작은 창으로 옮기고 그 위에 소스·제목을 띄운다. 창을 닫거나 "탭으로 돌아가기"를 누르면
+    // <video>를 원래 자리로 돌려놓는다 (옮겨도 재생은 끊기지 않는다). 조작은 그 창의 기본 영상 조작 막대로.
+    // ------------------------------------------------------------------
+    async _openDocPip() {
+        const v = this.video;
+        const vw = v.videoWidth || 16, vh = v.videoHeight || 9;
+        const width = Math.min(720, Math.max(360, Math.round(window.innerWidth * 0.35)));
+        let win;
+        try {
+            win = await window.documentPictureInPicture.requestWindow({ width, height: Math.round((width * vh) / vw) });
+        } catch (e) {
+            console.warn('[Player] Document PiP 실패, 기본 PiP로:', e);
+            return false;
+        }
+        const d = win.document;
+        // 스타일을 그대로: 규칙을 글자로 옮긴다 (링크를 복사하면 새 창에서 안 읽히는 경우가 있다). 다른 도메인 CSS는 주소로
+        for (const sheet of document.styleSheets) {
+            try {
+                const st = d.createElement('style');
+                st.textContent = [...sheet.cssRules].map((r) => r.cssText).join('\n');
+                d.head.appendChild(st);
+            } catch (e) {
+                if (!sheet.href) continue;
+                const link = d.createElement('link');
+                link.rel = 'stylesheet';
+                link.href = sheet.href;
+                d.head.appendChild(link);
+            }
+        }
+        for (const k of ['theme', 'accent']) if (document.documentElement.dataset[k]) d.documentElement.dataset[k] = document.documentElement.dataset[k];
+        d.title = (this.pb && this.pb.title) || 'YMPlayer';
+        d.body.className = 'docpip';
+        d.body.dataset.cueSize = document.body.dataset.cueSize || 'm';
+        this.pipSrcEl = d.createElement('span');
+        this.pipSrcEl.className = 'docpip-src';
+        this.pipTitleEl = d.createElement('span');
+        this.pipTitleEl.className = 'docpip-title';
+        const label = d.createElement('div');
+        label.className = 'docpip-label';
+        label.append(this.pipSrcEl, this.pipTitleEl);
+        const wrap = d.createElement('div');
+        wrap.className = 'docpip-wrap';
+        d.body.appendChild(wrap);
+        v.controls = true;
+        wrap.append(v, label);
+        this.docPip = win;
+        this._syncPipLabel();
+        win.addEventListener('pagehide', () => { if (this.docPip === win) this._closeDocPip(true); });
+        this._onPipEnter();
+        return true;
+    }
+
+    /** Document PiP 창을 닫고 <video>를 이 창으로 (fromUser: 사용자가 창을 닫았으면 그다음 처리도 - _onPipLeave) */
+    _closeDocPip(fromUser = false) {
+        const win = this.docPip;
+        if (!win) return;
+        this.docPip = null;
+        this.video.controls = false;
+        if (this.video.ownerDocument !== document) this.miniSlot.appendChild(this.video);
+        try { win.close(); } catch (e) { /* 이미 닫힘 */ }
+        if (fromUser) this._onPipLeave();
+    }
+
+    /** PiP 창 오른쪽 위: "PLEX" + 제목 (채널을 바꾸면 같이) */
+    _syncPipLabel() {
+        if (!this.docPip || !this.pipSrcEl) return;
+        const pb = this.pb || {};
+        const provider = this.ref && registry.byId(this.ref.pid);
+        this.pipSrcEl.textContent = provider ? (SOURCE_LABEL[provider.kind] || provider.name || '') : '';
+        this.pipTitleEl.textContent = [pb.title, pb.live ? '' : pb.subtitle].filter(Boolean).join(' · ');
+        this.docPip.document.title = pb.title || 'YMPlayer';
     }
 
     /** 라디오 그림 PiP 창 열기. 실패하면 이유를 화면에 알리고 false (원래 방식으로) */
