@@ -62,21 +62,21 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
     const gridClass = `grid${lib.type === 'artist' ? ' grid-square' : ''}${lib.type === 'telegram' ? ' grid-wide' : ''}${lib.type === 'radio' ? ' grid-channels' : ''}`;
     const grid = h('div', { class: gridClass });
     const sentinel = h('div', { class: 'sentinel' });
-    // 보기 방식 (위쪽 [보기] 메뉴): 그리드 / 세부 / 테이블. 라디오 방송국(채널 카드)은 늘 그리드
+    // 보기 방식 (위쪽 [보기] 메뉴): 그리드 / 세부 / 테이블 (라디오 방송국도 - 테이블은 분류·LIVE 칸)
     let loaded = [];
     let mode = 'grid';
     const tableHead = () => h('div', { class: 'table-row table-head', role: 'row' },
-        h('span'), h('span', { text: '제목' }), h('span', { class: 'table-cell', text: '연도·날짜' }),
-        h('span', { class: 'table-cell', text: '길이' }), h('span', { text: '상태' }));
+        h('span'), h('span', { text: lib.type === 'radio' ? '방송국' : '제목' }), h('span', { class: 'table-cell', text: lib.type === 'radio' ? '분류' : '연도·날짜' }),
+        h('span', { class: 'table-cell', text: lib.type === 'radio' ? '' : '길이' }), h('span', { text: '상태' }));
     const setMode = () => {
-        mode = lib.type === 'radio' ? 'grid' : getViewMode();
+        mode = getViewMode();
         grid.className = mode === 'grid' ? gridClass : (mode === 'detail' ? 'item-list' : 'item-table');
     };
     const draw = (items) => {
         const playlist = playlistOf(loaded);
         for (const it of items) {
             if (mode === 'table' && !grid.firstChild) grid.appendChild(tableHead());
-            grid.appendChild(it.type === 'channel' ? channelCard(it, playlist) : mode === 'grid' ? posterCard(it) : listItem(it, mode));
+            grid.appendChild(mode !== 'grid' ? listItem(it, mode, playlist) : it.type === 'channel' ? channelCard(it, playlist) : posterCard(it));
         }
     };
     setMode();

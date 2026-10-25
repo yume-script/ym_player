@@ -66,7 +66,7 @@ export class RadioProvider {
         return {
             pid: this.id, id: ch.id, type: 'channel', title: st.name,
             subtitle: text ? `♪ ${text}` : (st.subtitle || st.group || ''),
-            logo: ch.logo, fallbackIcon: 'radio', shape: 'channel', progress: 0, channel: ch,
+            logo: ch.logo, fallbackIcon: 'radio', shape: 'channel', progress: 0, channel: ch, group: st.group || '',
         };
     }
 

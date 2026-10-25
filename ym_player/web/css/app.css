@@ -223,7 +223,7 @@ body.lib-route .view-mode { display: block; }
     background: none; border: none; padding: 0; cursor: pointer;
 }
 .card-wide { flex-basis: calc(260px * var(--poster-scale)); width: calc(260px * var(--poster-scale)); }
-.card-channel { flex-basis: 260px; width: 260px; }
+.card-channel { flex-basis: calc(260px * var(--poster-scale)); width: calc(260px * var(--poster-scale)); }
 .card-square { flex-basis: calc(170px * var(--poster-scale)); width: calc(170px * var(--poster-scale)); }
 .card-art {
     position: relative; border-radius: var(--radius); overflow: hidden; background: var(--bg-elev2);
@@ -564,7 +564,7 @@ body.player-open { overflow: hidden; }
     .row-track { padding: 0.25rem 1rem 0.5rem; gap: 0.75rem; scroll-padding-inline: 1rem; }
     .row-arrow { display: none; }
     .card-wide { flex-basis: calc(200px * var(--poster-scale)); width: calc(200px * var(--poster-scale)); }
-    .card-channel { flex-basis: 200px; width: 200px; }
+    .card-channel { flex-basis: calc(200px * var(--poster-scale)); width: calc(200px * var(--poster-scale)); }
     .detail-hero { flex-direction: column; gap: 1.25rem; padding-top: 1.5rem; }
     .detail-poster { flex-basis: auto; width: calc(180px * var(--poster-scale)); max-width: 100%; }
     .detail-poster.shape-wide { width: min(100%, calc(100% * var(--poster-scale))); }
@@ -865,7 +865,7 @@ body.viewer-open { overflow: hidden; }
 
 /* 라디오 */
 .src-type.radio { color: #d2a8ff; }
-.grid-channels { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+.grid-channels { grid-template-columns: repeat(auto-fill, minmax(calc(220px * var(--poster-scale)), 1fr)); }
 
 /* 라디오 시각화 / LP 잡음 */
 .player:not(.is-radio) .radio-only { display: none !important; }
@@ -1008,7 +1008,8 @@ button.doc-zoom:hover { background: rgba(255, 255, 255, 0.12); }
 .table-row:hover:not(.table-head) { background: var(--bg-elev); }
 .table-row > .card { width: 100%; flex: none; }
 .table-row > .card .card-art .card-play, .table-row > .card .card-new, .table-row > .card .card-count,
-.table-row > .card .card-kind, .table-row > .card .card-watched { display: none; }
+.table-row > .card .card-kind, .table-row > .card .card-watched, .table-row > .card .live-badge.corner { display: none; }
+.list-row > .card-channel { width: calc(200px * var(--poster-scale)); flex-basis: auto; }
 .table-head { position: sticky; top: 0; z-index: 2; cursor: default; background: var(--bg); color: var(--muted); font-size: 0.78rem; font-weight: 600; }
 .table-title { min-width: 0; display: flex; flex-direction: column; }
 .table-title b, .table-title small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

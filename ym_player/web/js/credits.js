@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 84,
+        "version": "1.1.47",
+        "date": "2026-10-25",
+        "title": "라디오 방송국 목록에도 포스터 크기 막대와 그리드/세부/테이블 보기 적용"
+    },
+    {
         "pr": 83,
         "version": "1.1.46",
         "date": "2026-10-25",
