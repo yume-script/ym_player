@@ -25,6 +25,9 @@ const AUTO_RECOVER_MAX = 3;
 const AUTO_RECOVER_RESET_SEC = 30;
 // 직접 연결로는 끊기고 중계로는 되는 채널 - 다음부터 처음부터 중계로 연다 (이번 탭 동안)
 const PROXY_FIRST_KEY = 'yp_proxy_first';
+// 화면 속 화면으로 보다가 새로고침하면 같은 것을 같은 자리부터 이어서 (이 탭의 sessionStorage, 10분 안)
+const RESUME_KEY = 'yp_resume_after_reload';
+const RESUME_MAX_MS = 10 * 60 * 1000;
 
 // DASH(.mpd) 엔진은 크고(약 800KB) 쓰는 채널이 드물어서, 처음 필요할 때만 불러온다
 const DASHJS_URL = 'https://cdn.jsdelivr.net/npm/dashjs@4.7.4/dist/dash.all.min.js';
@@ -201,6 +204,7 @@ class Player {
         this.vizMenu = h('div', { class: 'lp-menu viz-menu hidden', on: { click: (e) => e.stopPropagation() } });
         this.root = h('div', { class: 'player hidden' }, this.stage, this.top, this.bottom, this.drawer, this.subMenu, this.optMenu, this.rateMenu, this.lpMenu, this.vizMenu);
         this._setupMediaSession();
+        window.addEventListener('pagehide', () => this._saveForReload());
 
         // 라디오(소리만)는 작은 화면에 영상이 없으니 앨범 표지를 덮어 보여 준다 (곡이 바뀌면 같이)
         this.miniArt = h('div', { class: 'mini-art hidden' }, icon('radio'));
@@ -317,7 +321,8 @@ class Player {
         const token = ++this.token;
         this.lastReport = 0;
 
-        if (!this.inPip) this.expand(); // 화면 속 화면에서 채널을 바꾸면 그 창에서 그대로
+        if (this._resuming) { this._resuming = false; this.minimize(); }   // 새로고침 뒤 이어 틀기는 작은 막대로
+        else if (!this.inPip) this.expand(); // 화면 속 화면에서 채널을 바꾸면 그 창에서 그대로
         this.root.classList.toggle('is-live', !!pb.live);
         this.root.classList.toggle('is-audio', !!pb.audioOnly);
         this.liveBadge.classList.toggle('hidden', !pb.live);
@@ -461,6 +466,7 @@ class Player {
 
     stop() {
         this.prepSeq++;
+        this.ref = null;
         if (this.pipArt) setTimeout(() => this.pipArt && this.pipArt.release(), 0);
         this._setShuffle(null);
         this._finishCurrent();
@@ -956,7 +962,8 @@ class Player {
         this.minimize();
         this.mini.classList.add('pip');
         // 직접 PiP를 열었으면 홈으로 (둘러보기 좋게). 자동 PiP는 보던 화면 그대로
-        if (!this._pipAuto && !location.hash.startsWith('#/home')) location.hash = '#/home';
+        if (!this._pipAuto && !this._pipKeepPage && !location.hash.startsWith('#/home')) location.hash = '#/home';
+        this._pipKeepPage = false;
     }
 
     /** 화면 속 화면 창을 닫았거나(일시정지됨) "탭으로 돌아가기"를 눌렀을 때 */
@@ -1001,6 +1008,7 @@ class Player {
         this.prepSeq++; // 준비 중이던 다른 영상은 버린다
         this._setShuffle(null);
         if (provider.kind === 'radio') this.viz.prime(); // 누른 그 순간에 (브라우저 소리 허용 조건)
+        this.ref = { type: 'channel', pid: provider.id, cid: String(channel.id) };
         return this.start(provider.getPlayback(channel), playlist);
     }
 
@@ -1015,6 +1023,7 @@ class Player {
             id = await provider.confirmPlay(id, opts || {});
             if (id == null || ask !== this.prepSeq) return;
         }
+        this.ref = { type: 'item', pid: provider.id, id };
         // 누르자마자 재생 화면부터 띄운다. 준비(서버의 형식 확인, Plex 메타데이터 등)가 몇 초 걸려도
         // 아무 반응 없이 멈칫한 것처럼 보이지 않게.
         const seq = ++this.prepSeq;
@@ -1073,6 +1082,63 @@ class Player {
         return this.playItem(provider, next.id, { auto: true, shuffle: true });
     }
 
+    // ------------------------------------------------------------------
+    // 새로고침해도 이어 보기 (화면 속 화면으로 보던 중일 때만)
+    // 새로고침하면 페이지의 <video>와 화면 속 화면 창은 브라우저가 반드시 닫는다. 그래서 닫히기 직전에 무엇을 어디까지
+    // 봤는지 적어 두고, 다시 열리면 그 자리부터 작은 막대로 이어 틀고, 화면 어디든 한 번 누르면 화면 속 화면으로 되돌린다
+    // (브라우저는 사용자가 누른 순간에만 화면 속 화면을 열어 준다).
+    // ------------------------------------------------------------------
+    _saveForReload() {
+        if (!this.pb || !this.ref || !this.inPip) return;
+        const pos = this.pb.live ? 0 : this._pos();
+        try {
+            sessionStorage.setItem(RESUME_KEY, JSON.stringify({ ref: this.ref, pos, playing: !this.video.paused, at: Date.now() }));
+        } catch (e) { /* 저장소를 못 쓰는 브라우저 */ }
+    }
+
+    async resumeAfterReload() {
+        let s = null;
+        try {
+            s = JSON.parse(sessionStorage.getItem(RESUME_KEY) || 'null');
+            sessionStorage.removeItem(RESUME_KEY);
+        } catch (e) { return; }
+        if (!s || !s.ref || Date.now() - s.at > RESUME_MAX_MS || this.pb) return;
+        const provider = registry.byId(s.ref.pid);
+        if (!provider) return;
+        this._resuming = true;
+        try {
+            if (s.ref.type === 'item') {
+                await this.playItem(provider, s.ref.id, { auto: true, startAt: s.pos > 5 ? s.pos : null });
+            } else {
+                const list = provider.loadChannels ? await provider.loadChannels() : (provider.channels || provider.stations || []);
+                const ch = (list || []).find((c) => String(c.id) === s.ref.cid);
+                if (!ch) throw new Error('채널을 찾지 못했습니다');
+                await this.playChannel(provider, ch, null);
+            }
+        } catch (e) {
+            console.warn('[Player] 새로고침 뒤 이어 틀기 실패:', e);
+            this._resuming = false;
+            return;
+        }
+        this._resuming = false;
+        if (!this.pb) return;
+        if (!s.playing) { this.video.pause(); return; }
+        toast('새로고침 전에 보던 것을 이어서 틉니다. 화면을 한 번 누르면 화면 속 화면으로 돌아갑니다.', 'info', 7000);
+        // 다음에 누르는 순간(사용자 동작) 화면 속 화면으로. 소리 자동 재생이 막혔으면 그때 재생도
+        const back = (e) => {
+            if (e && e.target && e.target.closest && e.target.closest('.mini')) return;   // 작은 막대의 버튼(크게 보기 등)은 그 버튼대로
+            if (this.video.readyState < 1) return;   // 영상 정보가 오기 전엔 화면 속 화면을 못 연다 - 다음 누름에
+            document.removeEventListener('pointerdown', back, true);
+            document.removeEventListener('keydown', back, true);
+            if (!this.pb || this.inPip || !this.minimized) return;
+            if (this.video.paused) this.video.play().catch(() => {});
+            this._pipKeepPage = true;   // 누른 화면(링크 등)을 그대로 두고 홈으로 옮기지 않는다
+            this.enterPip();
+        };
+        document.addEventListener('pointerdown', back, true);
+        document.addEventListener('keydown', back, true);
+    }
+
     /** 지금 보던 것을 정리하고 빈 재생 화면에 "재생 준비 중"을 띄운다 */
     _preparing() {
         this._finishCurrent();
@@ -1097,7 +1163,7 @@ class Player {
         this.durEl.textContent = fmtClock(0);
         this.playedEl.style.width = '0';
         this.bufEl.style.width = '0';
-        if (!this.inPip) this.expand();
+        if (!this.inPip && !this._resuming) this.expand();
         this._showMsg('재생 준비 중...', { spinner: true });
     }
 
