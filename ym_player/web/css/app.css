@@ -1089,3 +1089,14 @@ body.ticker-on .sidebar { bottom: var(--ticker-h); }
 @media (max-width: 900px) { .mirror-pick { grid-template-columns: 1fr; } }
 .mirror-wait { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
 .mirror-wait .mirror-days { width: 5rem; }
+
+/* Document PiP 창 (player.js _openDocPip) - 영상 + 오른쪽 위 소스·제목 */
+body.docpip { margin: 0; background: #000; overflow: hidden; }
+.docpip-wrap { position: fixed; inset: 0; background: #000; }
+.docpip-wrap video { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
+.docpip-label { position: absolute; top: 8px; right: 8px; max-width: calc(100% - 16px); display: flex; align-items: center; gap: 0.45rem;
+    padding: 0.25rem 0.6rem; border-radius: 6px; background: rgba(0, 0, 0, 0.6); color: #fff; font: 600 13px/1.4 system-ui, sans-serif;
+    pointer-events: none; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8); }
+.docpip-src { flex-shrink: 0; font-size: 11px; font-weight: 800; letter-spacing: 0.06em; color: var(--accent, #e5a00d); }
+.docpip-src:empty { display: none; }
+.docpip-title { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

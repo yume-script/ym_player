@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 83,
+        "version": "1.1.46",
+        "date": "2026-10-25",
+        "title": "화면 속 화면(PiP) 창 오른쪽 위에 소스(PLEX·TELEGRAM 등)와 제목 표시 (Chrome·Edge)"
+    },
+    {
         "pr": 82,
         "version": "1.1.45",
         "date": "2026-10-25",
