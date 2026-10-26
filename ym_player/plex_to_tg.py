@@ -443,7 +443,12 @@ class Mirror:
         local_file = str(part.get("file") or "")
         local_ok = bool(local_file and os.path.isfile(local_file) and os.access(local_file, os.R_OK))
         side = sidecar_subs(local_file) if local_ok else []   # Plex가 아직 못 읽은 옆 자막 파일도 자막으로 친다
-        if rule["wait_subs"] and not subs and not side and not test:
+        # 파일 안의 자막 트랙(소프트 자막)은 Plex 정보에 없을 수 있어 파일을 직접 열어 본다 (ffprobe, 머리만 읽음)
+        soft = await self._probe_subs(local_file if local_ok else f"{src['url']}{part['key']}",
+                                      None if local_ok else src.get("token"))
+        if soft is None:   # ffprobe가 없거나 못 열었으면 Plex 정보로
+            soft = [x for x in subs if not x.get("key")]
+        if rule["wait_subs"] and not subs and not side and not soft and not test:
             w = (load_state()["rules"].get(rule["id"], {}).get("waiting") or {}).get(key)
             if not rule["wait_days"] or not w or time.time() - w.get("since", time.time()) < rule["wait_days"] * 86400:
                 raise Waiting()
@@ -489,7 +494,7 @@ class Mirror:
                     seen.add(h)
                     sub_files.append((path, lang, sext))
             burned, burn_skip = False, ""
-            embedded = any(not x.get("key") for x in subs)
+            embedded = bool(soft)
             if rule["burn_subs"] and sub_files and not embedded and not has_korean_font():
                 burn_skip = "한글 글꼴이 없어 자막을 입히지 않고 파일로 올림 (sudo apt install fonts-nanum)"
             elif rule["burn_subs"] and sub_files and not embedded:   # 영상 안에 자막이 없으면 외부 자막을 입혀 다시 인코딩
@@ -542,7 +547,7 @@ class Mirror:
             shutil.rmtree(tmp, ignore_errors=True)
         log.info("자동 올리기: %s -> %s", fields["name"], rule["channel_title"] or rule["channel"])
         self.subs_label = ("화면에 입힘" if burned else f"파일 {sent_subs}개" if sent_subs
-                           else "내장" if embedded else "없음")
+                           else "소프트 자막" if embedded else "없음")
         notes = []
         if burned:
             notes.append("자막 입혀 인코딩")
@@ -556,9 +561,34 @@ class Mirror:
             notes.append("내장 자막")
         if sub_fail:
             notes.append(f"Plex 자막 {sub_fail}개를 받지 못함")
-        if not subs and not side:
+        if not subs and not side and not soft:
             notes.append("자막 없음")
         return ", ".join(notes)
+
+    async def _probe_subs(self, target, token=None):
+        """파일 안의 자막 트랙 [{codec, lang}] (없으면 []). ffprobe가 없거나 못 열면 None"""
+        fp = transcode.ffprobe_path()
+        if not fp or not target:
+            return None
+        args = [fp, "-v", "error", "-select_streams", "s", "-show_entries", "stream=index,codec_name:stream_tags=language", "-of", "json"]
+        if token:   # Plex에서 바로 (파일 머리만 읽는다)
+            args += ["-headers", f"X-Plex-Token: {token}\r\n"]
+        try:
+            proc = await asyncio.create_subprocess_exec(*args, target, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            out, _err = await asyncio.wait_for(proc.communicate(), 120)
+        except (OSError, asyncio.TimeoutError):
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            return None
+        if proc.returncode != 0:
+            return None
+        try:
+            streams = json.loads(out.decode("utf-8", "replace") or "{}").get("streams") or []
+        except ValueError:
+            return None
+        return [{"codec": x.get("codec_name", ""), "lang": (x.get("tags") or {}).get("language", "")} for x in streams]
 
     async def _ffmpeg(self, *args):
         proc = await asyncio.create_subprocess_exec(transcode.ffmpeg_path(), "-v", "error", "-y", *args,
