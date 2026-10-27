@@ -361,3 +361,44 @@ def test_sidecar_subtitles_and_no_font(data, tmp_path, monkeypatch):
         assert [x["name"] for x in tg.sent] == ["Show.S01E02.mkv", "Show.S01E02.ko.srt", "Show.S01E02.smi"]
         assert "한글 글꼴이 없어" in note and "자막 파일 2개 첨부" in note
     asyncio.run(main())
+
+
+def test_soft_subtitle_inside_file_counts(data, tmp_path, monkeypatch):
+    """Plex 정보에 자막이 없어도 파일 안에 자막 트랙(소프트 자막)이 있으면 기다리지 않고, 입히지도 않고 그대로 올린다"""
+    import shutil as _sh
+    import subprocess
+    if not (_sh.which("ffmpeg") and _sh.which("ffprobe")):
+        pytest.skip("ffmpeg 없음")
+    plain = tmp_path / "plain.mkv"
+    _video(plain, 2)
+    srt = tmp_path / "s.srt"
+    srt.write_text(SRT, encoding="utf-8")
+    soft = tmp_path / "Anime.S01E03.mkv"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(plain), "-i", str(srt), "-map", "0", "-map", "1", "-c", "copy",
+                    "-c:s", "ass", "-metadata:s:s:0", "language=kor", str(soft)], check=True)
+    items = {"soft": soft, "plain": plain}
+    tg = FakeTg()
+    cur = {}
+
+    async def plex_json(c, s, path, params=None):
+        f = items[cur["k"]]
+        return {"MediaContainer": {"Metadata": [{"ratingKey": cur["k"], "type": "episode", "title": "Episode 3", "grandparentTitle": "애니",
+                "parentIndex": 1, "index": 3, "duration": 2000,
+                "Media": [{"Part": [{"key": "/p/1", "file": str(f), "size": f.stat().st_size, "Stream": []}]}]}]}}
+
+    async def main():
+        mirror = plex_to_tg.Mirror(plex_json, lambda sid: ({"client_id": "c"}, {"id": "px", "url": "http://x"}), lambda sid: tg, lambda: None)
+        monkeypatch.setattr(mirror, "_art", lambda *a: asyncio.sleep(0))
+        monkeypatch.setattr(mirror, "_save_meta", lambda *a: asyncio.sleep(0))
+        monkeypatch.setattr(plex_to_tg, "_KO_FONT", True)
+        assert await mirror._probe_subs(str(soft)) == [{"codec": "ass", "lang": "kor"}]
+        assert await mirror._probe_subs(str(plain)) == []
+        rule = plex_to_tg.clean_settings({"rules": [{"id": "r", "plex": "px", "section": "1", "tg": "tg", "channel": "-1"}]})["rules"][0]
+        cur["k"] = "plain"
+        with pytest.raises(plex_to_tg.Waiting):      # 자막이 정말 없으면 기다림
+            await mirror.upload(rule, "plain", 2)
+        cur["k"] = "soft"
+        note = await mirror.upload(rule, "soft", 2)
+        assert [x["name"] for x in tg.sent] == ["Anime.S01E03.mkv"] and note == "내장 자막" and mirror.subs_label == "소프트 자막"
+        assert tg.sent[0]["caption"].startswith("애니 S01E03")
+    asyncio.run(main())

@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 87,
+        "version": "1.1.50",
+        "date": "2026-10-26",
+        "title": "자동 올리기: 올리기 전에 파일을 직접 열어 소프트 자막(파일 안의 자막 트랙)까지 확인"
+    },
+    {
         "pr": 86,
         "version": "1.1.49",
         "date": "2026-10-26",

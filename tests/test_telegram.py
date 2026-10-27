@@ -1106,8 +1106,8 @@ def test_book_endpoint_downloads_then_serves_pages(env):
         assert r.status == 200 and r.content_type == "image/jpeg" and await r.read() == b"\xff\xd8003.jpg"
         assert (await c.get("/api/tg/tg/book/777/1001/3")).status == 404
         assert (await c.get("/api/tg/tg/book/777/999")).status == 404     # 영상은 웹툰으로 안 연다
-        # 첫 쪽이 카드 그림으로 (뒤에서)
-        for _ in range(50):
+        # 첫 쪽이 카드 그림으로 (뒤에서 - 테스트를 한꺼번에 돌리면 느릴 수 있어 5초까지)
+        for _ in range(250):
             items = (await (await c.get("/api/tg/tg/videos?channel=777&limit=5")).json())["items"]
             if items[0]["has_thumb"]:
                 break
