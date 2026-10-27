@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 88,
+        "version": "1.1.51",
+        "date": "2026-10-27",
+        "title": "재생 현황 API /api/activity 추가 (지금 재생 중인 스트림 수만, MP_ACTIVITY_TOKEN으로 이 경로만 열림)"
+    },
+    {
         "pr": 87,
         "version": "1.1.50",
         "date": "2026-10-26",

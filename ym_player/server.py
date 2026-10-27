@@ -29,6 +29,7 @@ import base64
 import binascii
 import collections
 import hashlib
+import hmac
 import html
 import json
 import logging
@@ -43,7 +44,7 @@ from urllib.parse import quote, urlencode
 from aiohttp import ClientSession, ClientTimeout, web
 from yarl import URL
 
-from . import __version__, auth, config_store, discord_feed, iptv, mcp, media_cache, plex_to_tg, prefs, radio, subtitles, telegram_src, tmdb, transcode, updates
+from . import __version__, activity, auth, config_store, discord_feed, iptv, mcp, media_cache, plex_to_tg, prefs, radio, subtitles, telegram_src, tmdb, transcode, updates
 
 log = logging.getLogger("ym_player")
 
@@ -94,6 +95,7 @@ UPDATES = web.AppKey("updates", updates.UpdateChecker)
 UPDATE_TASK = web.AppKey("update_task", asyncio.Task)
 DISCORD = web.AppKey("discord", discord_feed.Feed)   # 디스코드 채널 새 글 -> 아래쪽 흐르는 글
 DISCORD_TASK = web.AppKey("discord_task", asyncio.Task)
+ACTIVITY = web.AppKey("activity", activity.Activity)   # 지금 재생 중인 스트림 수 (/api/activity)
 MIRROR = web.AppKey("mirror", plex_to_tg.Mirror)   # Plex 새 동영상 -> 텔레그램 채널 자동 올리기
 MIRROR_TASK = web.AppKey("mirror_task", asyncio.Task)
 PROBES = web.AppKey("probes", dict)  # (소스id, 채널, 메시지) -> 돌고 있는 ffprobe (같은 영상을 겹쳐 보지 않게)  # 소스 id -> telegram_src.TelegramSource (연결을 계속 유지)
@@ -120,12 +122,22 @@ async def auth_middleware(request, handler):
     if user:
         request["user"] = auth.public_user(user)
         return await handler(request)
+    # 재생 현황(/api/activity)은 이 경로만 MP_ACTIVITY_TOKEN으로도 (다른 API는 이 토큰으로 안 열린다)
+    if request.path == "/api/activity" and _activity_token_ok(request):
+        request["activity_token"] = True
+        return await handler(request)
     # /mcp는 쿠키가 아니라 MCP 토큰으로 (mcp_endpoint가 확인)
     if request.path in _PUBLIC_PATHS or request.path.startswith(("/static/", "/s/", "/internal/tg/", "/mcp/")) or request.path == "/mcp":
         return await handler(request)
     if request.path.startswith("/api/"):
         return web.json_response({"success": False, "error": "로그인이 필요합니다.", "login": True}, status=401)
     raise web.HTTPFound("/login")
+
+
+def _activity_token_ok(request):
+    want = os.environ.get("MP_ACTIVITY_TOKEN", "")
+    got = request.headers.get("X-Activity-Token", "")
+    return bool(want) and hmac.compare_digest(got.encode("utf-8"), want.encode("utf-8"))
 
 
 def is_admin(request):
@@ -2363,6 +2375,15 @@ async def admin_mirror_test(request):
     return web.json_response({"success": True, "title": title})
 
 
+# ---- 재생 현황 (부하 조절 봇용 - 숫자만) --------------------------------------------
+async def activity_get(request):
+    """GET /api/activity -> {"success", "playing", "by": {"plex", "telegram", "live"}}
+    X-Activity-Token(= MP_ACTIVITY_TOKEN)으로, 또는 관리자 로그인으로"""
+    if not (request.get("activity_token") or _activity_token_ok(request) or is_admin(request)):
+        return _json_error(403, "관리자만 볼 수 있습니다.")
+    return web.json_response({"success": True, **request.app[ACTIVITY].snapshot()})
+
+
 # ---- 공통 설정 (모든 사용자에게 적용) ------------------------------------------------
 def _apply_general(app, raw):
     st = config_store.clean_general(raw)
@@ -2731,7 +2752,11 @@ async def _on_cleanup(app):
 
 def create_app(require_auth=True):
     """require_auth=False는 테스트용 (모든 요청을 관리자로 본다)."""
-    app = web.Application(middlewares=[auth_middleware], client_max_size=8 * 1024 * 1024)
+    tracker = activity.Activity()
+    # 재생 현황은 로그인한 다음에 센다 (누가 = 사용자 이름, 로그인을 안 쓰면 접속 주소)
+    app = web.Application(middlewares=[auth_middleware, activity.middleware(tracker, lambda r: username(r) or (r.remote or ""))],
+                          client_max_size=8 * 1024 * 1024)
+    app[ACTIVITY] = tracker
     root = logging.getLogger()
     if RECENT not in root.handlers:
         root.addHandler(RECENT)
@@ -2782,6 +2807,7 @@ def create_app(require_auth=True):
     app.router.add_get("/api/admin/cache", admin_cache_get)
     app.router.add_get("/api/ticker", ticker_get)
     app.router.add_get("/api/admin/general", admin_general_get)
+    app.router.add_get("/api/activity", activity_get)
     app.router.add_get("/api/admin/plex-tg", admin_mirror_get)
     app.router.add_put("/api/admin/plex-tg", admin_mirror_put)
     app.router.add_get("/api/admin/plex-tg/options", admin_mirror_options)

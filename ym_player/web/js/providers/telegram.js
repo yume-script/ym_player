@@ -520,7 +520,7 @@ export class TelegramProvider {
         const v = this._seen.get(String(id)) || {};
         openDocReader({
             id: `${this.id}:${id}`,
-            url: `${this.base}/stream/${channel}/${msg}`,
+            url: `${this.base}/stream/${channel}/${msg}?doc=1`,   // doc=1: 재생 현황(/api/activity)에서 빼게
             format: docFormat(v),
             title: cleanBookTitle(v.title || ''),
             sub: this.channelTitle(channel),
