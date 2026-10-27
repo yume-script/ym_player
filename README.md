@@ -48,7 +48,7 @@ sudo systemctl enable --now ym_player
 - **관리자**: 사이드바 맨 아래 ⚙️ **설정**에서 탭으로 관리합니다 — **소스** / **사용자**(추가·삭제, 권한, 비밀번호, 볼 수 있는 범위) /
   **상태**(소스마다 실제 연결 점검, 서버 정보, 최근 경고) / **캐시** / **화면**(왼쪽 위 이름과 아이콘 - 로그인 화면과 브라우저 탭에도 쓰임, 아이콘의 버전 배지 켜기/끄기, 모든 사용자의 **기본 테마**) /
   **백업**(설정·사용자·즐겨찾기·아이콘을 JSON으로 받기, 그 파일로 복원) / **Thanks to**(참고한 저장소, 쓰는 오픈소스, 변경 이력).
-- **버전**: `ym_player/__init__.py`의 `__version__` 한 곳에서 정합니다. 왼쪽 위 아이콘 배지(예: 1.1.50), 설정 > 상태,
+- **버전**: `ym_player/__init__.py`의 `__version__` 한 곳에서 정합니다. 왼쪽 위 아이콘 배지(예: 1.1.51), 설정 > 상태,
   시작 로그에 그대로 나오므로 버전을 올릴 때 아이콘 그림을 다시 만들 필요가 없습니다(배지는 화면에서 글자로 얹음).
   업데이트(PR)마다 셋째 자리를 하나씩 올리고, `web/js/credits.js` CHANGELOG 맨 위 줄에 같은 `version`을 적습니다.
 - **새 버전 알림**: 아이콘 옆에 **[NEW]**가 뜨면 아직 안 본 새 버전입니다. 누르면 그 뒤로 새로워진 점이 나오고, 본 버전은 사람마다
@@ -134,6 +134,7 @@ ym_player/                       저장소 루트
     ├── config_store.py          data/config.json 읽기/쓰기, 토큰 숨기기
     ├── discord_feed.py          디스코드 채널 새 글 받아 오기 (화면 아래쪽 흐르는 글 - web/js/ticker.js)
     ├── plex_to_tg.py            Plex 새 동영상 -> 텔레그램 채널 자동 올리기 (설정 > 자동 올리기)
+    ├── activity.py              재생 현황 (/api/activity - 지금 재생 중인 스트림 수만)
     ├── mcp.py                   MCP 서버: AI 앱용 토큰 저장소와 JSON-RPC (도구가 하는 일은 server.py)
     ├── auth.py                  사용자(users.json)·비밀번호 해시·로그인 쿠키·실패 제한·볼 수 있는 범위
     ├── prefs.py                 사용자별 작은 설정(prefs.json) - IPTV 즐겨찾기
@@ -178,6 +179,7 @@ ym_player/                       저장소 루트
 | `GET /api/tg/{id}/stream/{c}/{m}` · `thumb/{c}/{m}` · `POST progress` | Range 스트림, 썸네일, 재생 위치 저장 (설정에서 고른 채널만) |
 | `GET /api/tg/{id}/video/{c}/{m}?probe=1` · `GET /api/tg/{id}/transcode/{c}/{m}?start=초&mode=` | 재생 방법 판단(ffprobe), ffmpeg 서버 변환 스트림 (조각난 MP4) |
 | `GET/PUT /api/admin/plex-tg` · `GET .../options` · `POST .../check` · `POST .../test` | Plex → 텔레그램 자동 올리기 설정·상태 / 고를 라이브러리·소스 / 지금 확인 / 규칙 시험 (관리자만) |
+| `GET /api/activity` | 지금 재생 중인 스트림 수 `{"playing", "by": {"plex", "telegram", "live"}}` (숫자만). 헤더 `X-Activity-Token`(= `MP_ACTIVITY_TOKEN`) 또는 관리자 로그인 |
 | `GET/PUT /api/admin/general` | 공통 설정 (웹툰 BL·GL 숨기기 `hide_bl_gl`, 관리자만) |
 | `GET /api/ticker?after=&boot=` · `GET/PUT /api/admin/discord`, `POST /api/admin/discord/test` | 아래쪽에 흘릴 디스코드 새 글 / 디스코드 설정·상태·시험 글 (관리자만) |
 | `POST /mcp` (Bearer 토큰) · `POST /mcp/{토큰}` · `GET/POST /api/admin/mcp`, `DELETE /api/admin/mcp/{id}` | MCP 서버 (JSON-RPC) / 토큰 목록·만들기·지우기 (관리자만) |
@@ -368,6 +370,19 @@ YMPlayer에 로그인해 둔 텔레그램 계정으로 그 채널에 **파일을
 - 실패하면 다음 확인 때 다시(3번까지), 텔레그램이 기다리라고 하면(FloodWait) 그만큼 쉬었다가 이어서. 올린 것은 `data/plex_to_tg.json`에 기억해서
   서버를 다시 켜도 두 번 올리지 않습니다. 최근 기록 50개가 상태 칸에 남습니다.
 - 그 채널에 글을 쓸 수 있어야 합니다(채널 관리자). 공개 채널에 올리면 누구나 받을 수 있으니 저작권에 주의하세요.
+
+## 재생 현황 API (부하 조절 봇용)
+
+`GET /api/activity` → `{"success": true, "playing": 2, "by": {"plex": 1, "telegram": 1, "live": 0}}`. 숫자만 내보내고 제목·사용자 이름·채널명은 넣지 않습니다.
+
+- 인증: 환경변수 `MP_ACTIVITY_TOKEN`을 정하고 요청 헤더 `X-Activity-Token`에 같은 값을 넣으면 **이 경로만** 로그인 없이 열립니다
+  (`hmac.compare_digest`로 비교, 이 토큰으로 다른 API는 열리지 않음). 관리자로 로그인해도 볼 수 있습니다.
+  예: `curl -H "X-Activity-Token: $MP_ACTIVITY_TOKEN" http://서버:8899/api/activity`
+- 재생으로 세는 요청: live `/api/stream`(IPTV·라디오 중계), telegram `/api/tg/{id}/stream/…`·`/transcode/…`·`/api/tg-hls/…`,
+  plex `/api/plex/{id}/…/library/parts/…`·`/video/:/transcode/…`. 썸네일(`photo/:/transcode` 포함)·목록·편성표, 책 보기(PDF/EPUB)의 파일 받기,
+  Plex 변환 멈춤 알림은 세지 않습니다.
+- 스트림 하나 = (종류, 사용자, 영상) - 같은 영상의 Range·HLS 조각 요청은 하나로 셉니다(라이브는 사용자마다 하나).
+  끝나지 않는 긴 연결(mpegts 등)은 열려 있는 동안, 조각으로 받는 재생(HLS·조각 받기)은 마지막 요청 뒤 45초 동안 재생 중으로 봅니다.
 
 ## 디스코드 새 글 흘리기
 
