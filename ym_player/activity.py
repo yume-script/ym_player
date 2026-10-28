@@ -9,8 +9,13 @@
     - 연결이 끝나지 않은 긴 스트림(mpegts 등)은 연결이 열려 있는 동안
     - 조각으로 받는 재생(HLS, 조각 받기)은 마지막 요청이 끝난 뒤 WINDOW(45초) 동안
       (WINDOW보다 오래 열려 있던 연결이 끝나면 긴 스트림이 끝난 것으로 보고 바로 뺀다)
+버벅임 (재생기가 POST /api/activity/report로 알린다 - 서버는 버벅임을 볼 수 없어서):
+    stall   재생 중에 버퍼가 바닥나 멈춘 횟수 (처음 불러오기·탐색 직후는 빼고)
+    retry   끊겨서 다시 연결한 횟수 (자동 재연결, 서버 중계로 바꾸기, 변환 다시 시작, 미디어 오류 복구)
+최근 EVENT_WINDOW(5분) 동안의 횟수를 종류별로 내보낸다.
 제목·사용자 이름·채널명은 내보내지 않는다 (숫자만).
 """
+import collections
 import re
 import time
 
@@ -18,6 +23,9 @@ from aiohttp import web
 
 WINDOW = 45
 KINDS = ("plex", "telegram", "live")
+EVENTS = ("stall", "retry")
+EVENT_WINDOW = 300
+REPORT_LIMIT = 30      # 사용자 한 명이 1분에 알릴 수 있는 횟수 (잘못된 화면이 숫자를 부풀리지 않게)
 
 _TG_RE = re.compile(r"^/api/tg/[^/]+/(stream|transcode)/(-?\d+)/(\d+)$")
 _TG_HLS_RE = re.compile(r"^/api/tg-hls/([^/]+)/")
@@ -49,6 +57,8 @@ def classify(path, query):
 class Activity:
     def __init__(self):
         self.streams = {}   # (종류, 누가, 무엇을) -> {"open": 열린 연결 수, "last": 조각 요청이 끝난 시각}
+        self.events = {(e, k): collections.deque() for e in EVENTS for k in KINDS}   # 버벅임 시각들
+        self.reports = {}   # 누가 -> 최근 1분 알림 시각들
 
     def begin(self, key):
         e = self.streams.setdefault(key, {"open": 0, "last": 0.0})
@@ -64,6 +74,29 @@ class Activity:
         # 짧은 요청(조각)이면 WINDOW 동안 재생 중으로, 오래 열려 있던 연결이 끝났거나 실패했으면 바로 끝
         e["last"] = now if ok and now - started < WINDOW else 0.0
 
+    def report(self, who, event, kind):
+        """재생기가 알린 버벅임 하나. 받아들였으면 True (모르는 종류이거나 너무 잦으면 False)"""
+        if event not in EVENTS or kind not in KINDS:
+            return False
+        now = time.monotonic()
+        mine = self.reports.setdefault(who, collections.deque())
+        while mine and now - mine[0] > 60:
+            mine.popleft()
+        if len(mine) >= REPORT_LIMIT:
+            return False
+        mine.append(now)
+        self.events[(event, kind)].append(now)
+        return True
+
+    def _counts(self, event, now):
+        out = {}
+        for k in KINDS:
+            q = self.events[(event, k)]
+            while q and now - q[0] > EVENT_WINDOW:
+                q.popleft()
+            out[k] = len(q)
+        return out
+
     def snapshot(self):
         now = time.monotonic()
         by = dict.fromkeys(KINDS, 0)
@@ -72,7 +105,10 @@ class Activity:
                 by[key[0]] += 1
             else:
                 del self.streams[key]
-        return {"playing": sum(by.values()), "by": by}
+        for who in [w for w, q in self.reports.items() if not q or now - q[-1] > 60]:
+            del self.reports[who]
+        return {"playing": sum(by.values()), "by": by, "stalls": self._counts("stall", now),
+                "retries": self._counts("retry", now), "window": EVENT_WINDOW}
 
 
 def middleware(activity, who):
