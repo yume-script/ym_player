@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 89,
+        "version": "1.1.52",
+        "date": "2026-10-28",
+        "title": "/api/activity에 버벅임(끊김·재시도 횟수, 최근 5분) 추가 - 재생기가 알림"
+    },
+    {
         "pr": 88,
         "version": "1.1.51",
         "date": "2026-10-27",

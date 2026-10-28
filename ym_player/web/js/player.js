@@ -30,6 +30,8 @@ const RESUME_KEY = 'yp_resume_after_reload';
 const RESUME_MAX_MS = 10 * 60 * 1000;
 // 화면 속 화면 창 오른쪽 위에 보일 소스 이름 (Document PiP 창에서만 - 기본 PiP 창에는 영상 말고는 못 넣는다)
 const SOURCE_LABEL = { plex: 'PLEX', telegram: 'TELEGRAM', iptv: 'IPTV', radio: 'RADIO' };
+// 버벅임 알리기 (/api/activity/report -> 부하 조절 봇이 /api/activity에서 본다). 소스 종류 -> 알릴 종류
+const ACTIVITY_KIND = { plex: 'plex', telegram: 'telegram', iptv: 'live', radio: 'live' };
 
 // DASH(.mpd) 엔진은 크고(약 800KB) 쓰는 채널이 드물어서, 처음 필요할 때만 불러온다
 const DASHJS_URL = 'https://cdn.jsdelivr.net/npm/dashjs@4.7.4/dist/dash.all.min.js';
@@ -250,6 +252,13 @@ class Player {
         v.addEventListener('volumechange', () => this._syncVolume());
         v.addEventListener('waiting', () => { if (this.pb && !this.msgEl.classList.contains('error')) this._spinner(true); });
         v.addEventListener('playing', () => this._spinner(false));
+        // 버벅임: 한 번 재생이 시작된 뒤 버퍼가 바닥나 멈춘 것만 (처음 불러오기·탐색 직후는 빼고, 한 번 멈춤에 한 번)
+        v.addEventListener('playing', () => { this._played = true; this._stalled = false; });
+        v.addEventListener('waiting', () => {
+            if (!this.pb || !this._played || this._stalled || v.seeking || this.msgEl.classList.contains('error')) return;
+            this._stalled = true;
+            this._report('stall');
+        });
         v.addEventListener('enterpictureinpicture', () => {
             // 라디오를 브라우저 쪽 방법(도구막대 미디어 조작, 오른쪽 클릭 PIP, 탭 전환 자동 PIP, 아이패드 홈 버튼)으로
             // 띄워도 영상이 없어 검게 나온다 -> 그림 창으로 바로 바꾼다 (이미 PiP 중이면 다시 누르지 않아도 바꿀 수 있음)
@@ -314,7 +323,17 @@ class Player {
      * opts.auto       끊겨서 자동으로 다시 붙는 중 (자동 재시도 횟수를 이어서 센다)
      * opts.forceProxy 직접 연결은 건너뛰고 서버 중계로 바로
      */
+    /** 버벅임 알리기 (event: 'stall' | 'retry'). 숫자만 모이고, 실패해도 재생에는 상관없다 */
+    _report(event) {
+        const provider = this.ref && registry.byId(this.ref.pid);
+        const kind = provider && ACTIVITY_KIND[provider.kind];
+        if (!kind) return;
+        fetch('/api/activity/report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+            body: JSON.stringify({ event, kind }) }).catch(() => {});
+    }
+
     async start(pb, playlist = null, { auto = false, forceProxy = false } = {}) {
+        this._played = false;   // 새로 불러오는 동안의 기다림은 버벅임으로 세지 않는다
         if (!auto) this.recoverCount = 0;
         if (this.pb && this.pb !== pb) this._finishCurrent();
         if (playlist) pb.playlist = playlist;
@@ -669,6 +688,7 @@ class Player {
                     if (!data.fatal) return;
                     if (data.type === Hls.ErrorTypes.MEDIA_ERROR && !recovered && settled) {
                         recovered = true;
+                        this._report('retry');
                         hls.recoverMediaError();
                         return;
                     }
@@ -716,6 +736,7 @@ class Player {
             // 서버 변환 스트림: 보던 위치부터 새로 받는다 (몇 번까지)
             if (this.recoverCount >= AUTO_RECOVER_MAX) { this._showMsg('재생이 끊겼습니다. 서버 변환이 멈췄습니다.', { error: true }); return; }
             this.recoverCount += 1;
+            this._report('retry');
             const at = this._pos();
             setTimeout(() => { if (this.pb === pb) this._reloadAt(pb, at); }, 800 * this.recoverCount);
             return;
@@ -724,6 +745,7 @@ class Player {
 
         const token = this.token;
         const again = (opts, delayMs, msg) => {
+            this._report('retry');
             this._showMsg(msg, { spinner: true });
             setTimeout(() => { if (this.pb === pb && this.token === token) this.start(pb, null, { auto: true, ...opts }); }, delayMs);
         };

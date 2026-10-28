@@ -2384,6 +2384,13 @@ async def activity_get(request):
     return web.json_response({"success": True, **request.app[ACTIVITY].snapshot()})
 
 
+async def activity_report(request):
+    """POST /api/activity/report {event: stall|retry, kind: plex|telegram|live} - 재생기가 버벅임을 알린다 (로그인한 사용자)"""
+    body = await _json_body(request)
+    ok = request.app[ACTIVITY].report(username(request) or (request.remote or ""), str(body.get("event") or ""), str(body.get("kind") or ""))
+    return web.json_response({"success": ok})
+
+
 # ---- 공통 설정 (모든 사용자에게 적용) ------------------------------------------------
 def _apply_general(app, raw):
     st = config_store.clean_general(raw)
@@ -2808,6 +2815,7 @@ def create_app(require_auth=True):
     app.router.add_get("/api/ticker", ticker_get)
     app.router.add_get("/api/admin/general", admin_general_get)
     app.router.add_get("/api/activity", activity_get)
+    app.router.add_post("/api/activity/report", activity_report)
     app.router.add_get("/api/admin/plex-tg", admin_mirror_get)
     app.router.add_put("/api/admin/plex-tg", admin_mirror_put)
     app.router.add_get("/api/admin/plex-tg/options", admin_mirror_options)

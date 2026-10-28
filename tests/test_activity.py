@@ -25,6 +25,10 @@ def test_classify():
     assert c("/api/plex/px/video/:/transcode/universal/stop", {"session": "S2"}) is None
 
 
+def pb(d):
+    return {k: d[k] for k in ("playing", "by")}
+
+
 def test_window(monkeypatch):
     now = [100.0]
     monkeypatch.setattr(activity.time, "monotonic", lambda: now[0])
@@ -34,11 +38,11 @@ def test_window(monkeypatch):
     a.end(seg, a.begin(seg))                     # 같은 스트림의 다음 조각 -> 하나로
     live = ("live", "u", "")
     started = a.begin(live)                      # mpegts: 연결이 열려 있음
-    assert a.snapshot() == {"playing": 2, "by": {"plex": 0, "telegram": 1, "live": 1}}
+    assert pb(a.snapshot()) == {"playing": 2, "by": {"plex": 0, "telegram": 1, "live": 1}}
     now[0] += 44
     assert a.snapshot()["by"]["telegram"] == 1   # 마지막 조각 뒤 45초 안
     now[0] += 2
-    assert a.snapshot() == {"playing": 1, "by": {"plex": 0, "telegram": 0, "live": 1}}
+    assert pb(a.snapshot()) == {"playing": 1, "by": {"plex": 0, "telegram": 0, "live": 1}}
     a.end(live, started)                         # 46초 열려 있던 긴 연결이 끝남 -> 바로 빠짐
     assert a.snapshot()["playing"] == 0
     bad = ("plex", "u", "part/1")
@@ -90,7 +94,7 @@ def test_activity_api(data, monkeypatch):
         await c.start_server()
         try:
             r = await c.get("/api/activity", headers=tok)
-            assert r.status == 200 and await r.json() == {"success": True, "playing": 0, "by": {"plex": 0, "telegram": 0, "live": 0}}
+            assert r.status == 200 and await r.json() == {"success": True, "playing": 0, "by": {"plex": 0, "telegram": 0, "live": 0}, "stalls": {"plex": 0, "telegram": 0, "live": 0}, "retries": {"plex": 0, "telegram": 0, "live": 0}, "window": 300}
             assert (await c.get("/api/activity", headers={"X-Activity-Token": "wrong"})).status == 401
             assert (await c.get("/api/activity")).status == 401
             assert (await c.get("/api/config", headers=tok)).status == 401          # 토큰으로 다른 API는 안 열림
@@ -105,10 +109,16 @@ def test_activity_api(data, monkeypatch):
             assert (await c.get("/api/tg-hls/job1/seg1.ts")).status == 200
             assert (await c.get("/api/tg-hls/job1/seg2.ts")).status == 200
             await c.get("/api/plex/px/photo/:/transcode?url=/t")                   # 썸네일은 안 셈
+            # 재생기가 버벅임을 알린다 (로그인한 사용자만, 토큰으로는 못 함)
+            assert (await (await c.post("/api/activity/report", json={"event": "stall", "kind": "telegram"})).json())["success"]
+            assert (await (await c.post("/api/activity/report", json={"event": "retry", "kind": "live"})).json())["success"]
+            assert not (await (await c.post("/api/activity/report", json={"event": "boom", "kind": "live"})).json())["success"]
             d = await (await c.get("/api/activity", headers=tok)).json()
-            assert d == {"success": True, "playing": 2, "by": {"plex": 0, "telegram": 1, "live": 1}}
+            assert pb(d) == {"playing": 2, "by": {"plex": 0, "telegram": 1, "live": 1}}
+            assert d["stalls"] == {"plex": 0, "telegram": 1, "live": 0} and d["retries"] == {"plex": 0, "telegram": 0, "live": 1}
             assert "kid" not in str(d) and "job1" not in str(d)
             await c.post("/api/auth/logout")
+            assert (await c.post("/api/activity/report", headers=tok, json={"event": "stall", "kind": "live"})).status == 401
             await c.post("/api/auth/login", json={"username": "boss", "password": "secret1"})
             assert (await (await c.get("/api/activity")).json())["playing"] == 2      # 관리자는 로그인으로도
             release.set()
@@ -117,3 +127,23 @@ def test_activity_api(data, monkeypatch):
         finally:
             await c.close()
     asyncio.run(main())
+
+
+def test_reports_window_and_limit(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(activity.time, "monotonic", lambda: now[0])
+    a = activity.Activity()
+    for _ in range(3):
+        assert a.report("kid", "stall", "telegram")
+    assert a.report("kid", "retry", "live")
+    assert not a.report("kid", "stall", "radio") and not a.report("kid", "lag", "live")
+    d = a.snapshot()
+    assert d["stalls"]["telegram"] == 3 and d["retries"]["live"] == 1 and d["window"] == 300
+    # 한 사람이 1분에 30번까지만 (화면 하나가 숫자를 부풀리지 않게)
+    assert sum(a.report("kid", "stall", "plex") for _ in range(40)) == 26
+    assert a.report("other", "stall", "plex")
+    now[0] += 61
+    assert a.report("kid", "stall", "plex")
+    now[0] += 300
+    d = a.snapshot()                                 # 5분 지난 것은 빠진다
+    assert d["stalls"] == {"plex": 1, "telegram": 0, "live": 0} and d["retries"]["live"] == 0
