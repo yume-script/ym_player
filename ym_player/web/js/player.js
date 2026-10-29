@@ -29,9 +29,9 @@ const PROXY_FIRST_KEY = 'yp_proxy_first';
 const RESUME_KEY = 'yp_resume_after_reload';
 const RESUME_MAX_MS = 10 * 60 * 1000;
 // 화면 속 화면 창 오른쪽 위에 보일 소스 이름 (Document PiP 창에서만 - 기본 PiP 창에는 영상 말고는 못 넣는다)
-const SOURCE_LABEL = { plex: 'PLEX', telegram: 'TELEGRAM', iptv: 'IPTV', radio: 'RADIO', podcast: 'PODCAST' };
+const SOURCE_LABEL = { plex: 'PLEX', telegram: 'TELEGRAM', iptv: 'IPTV', radio: 'RADIO', podcast: 'PODCAST', cctv: 'CCTV' };
 // 버벅임 알리기 (/api/activity/report -> 부하 조절 봇이 /api/activity에서 본다). 소스 종류 -> 알릴 종류
-const ACTIVITY_KIND = { plex: 'plex', telegram: 'telegram', iptv: 'live', radio: 'live', podcast: 'podcast' };
+const ACTIVITY_KIND = { plex: 'plex', telegram: 'telegram', iptv: 'live', radio: 'live', podcast: 'podcast', cctv: 'live' };
 
 // DASH(.mpd) 엔진은 크고(약 800KB) 쓰는 채널이 드물어서, 처음 필요할 때만 불러온다
 const DASHJS_URL = 'https://cdn.jsdelivr.net/npm/dashjs@4.7.4/dist/dash.all.min.js';
