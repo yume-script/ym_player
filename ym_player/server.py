@@ -41,7 +41,7 @@ import shutil
 import time
 from urllib.parse import quote, urlencode
 
-from aiohttp import ClientSession, ClientTimeout, web
+from aiohttp import ClientError, ClientSession, ClientTimeout, web
 from yarl import URL
 
 from . import __version__, activity, auth, config_store, discord_feed, iptv, mcp, media_cache, plex_to_tg, podcast, prefs, radio, subtitles, telegram_src, tmdb, transcode, updates
@@ -539,6 +539,44 @@ def _podcast_feed_or_404(request, src, fid):
     raise web.HTTPNotFound(text="프로그램을 찾을 수 없습니다.")
 
 
+PODCAST_UA = f"YMPlayer/{__version__} (podcast; +https://github.com/yume-script/ym_player)"
+_PODCAST_TRY_AGAIN = (401, 403, 404, 406, 410, 429)   # 브라우저처럼 물으면 거절하는 곳이 있어서 팟캐스트 앱처럼 한 번 더
+
+
+async def _podcast_get(session, url):
+    """피드 bytes. 브라우저 UA로 물어 거절(403·404 등)되면 팟캐스트 앱 UA로, http 주소면 https로도 한 번 더.
+    끝내 안 되면 podcast.FeedHTTPError (상태 코드별로 알아보기 쉬운 말)"""
+    tries = [(url, {"User-Agent": DEFAULT_UA, "Accept": "application/rss+xml, application/xml;q=0.9, text/xml;q=0.9, */*;q=0.5"}),
+             (url, {"User-Agent": PODCAST_UA, "Accept": "*/*"})]
+    if url.startswith("http://"):
+        tries.append(("https://" + url[7:], {"User-Agent": PODCAST_UA, "Accept": "*/*"}))
+    first = None
+    for i, (target, headers) in enumerate(tries):
+        try:
+            async with session.get(target, headers={**headers, "Accept-Encoding": "gzip, deflate"},
+                                   timeout=ClientTimeout(total=25)) as resp:
+                if resp.status >= 400:
+                    first = first or resp.status
+                    if resp.status in _PODCAST_TRY_AGAIN and i + 1 < len(tries):
+                        continue
+                    raise podcast.FeedHTTPError(first)
+                buf = bytearray()
+                async for chunk in resp.content.iter_chunked(64 * 1024):
+                    buf.extend(chunk)
+                    if len(buf) > podcast.FEED_MAX_BYTES:
+                        raise web.HTTPRequestEntityTooLarge(max_size=podcast.FEED_MAX_BYTES, actual_size=len(buf))
+                if i:
+                    log.info("팟캐스트 피드 %s: HTTP %s라서 다른 방법(%d번째)으로 받음", _short_url(url), first, i + 1)
+                return bytes(buf)
+        except (ClientError, asyncio.TimeoutError):
+            if i + 1 < len(tries) and first:   # https로 바꿔 본 것이 안 닿으면 처음 오류로
+                continue
+            if first:
+                raise podcast.FeedHTTPError(first) from None
+            raise
+    raise podcast.FeedHTTPError(first or 0)
+
+
 async def _podcast_fetch(app, url):
     """피드를 받아 캐시에 넣는다 (실패하면 예전 것을 그대로 두고 오류만 기록)"""
     cache = app[PODCAST]
@@ -548,11 +586,10 @@ async def _podcast_fetch(app, url):
             return cache.get(url)
     async with lock:
         try:
-            data = await _fetch_bytes(app[HTTP], url, timeout=25, max_bytes=podcast.FEED_MAX_BYTES,
-                                      headers={"Accept": "application/rss+xml, application/xml;q=0.9, text/xml;q=0.9, */*;q=0.5"})
+            data = await _podcast_get(app[HTTP], url)
             cache.put(url, await asyncio.to_thread(podcast.parse_feed, data))
         except Exception as e:  # 네트워크·형식 오류 종류가 많아서 넓게
-            msg = str(e) if isinstance(e, ValueError) else _fetch_error(e)
+            msg = str(e) if isinstance(e, (ValueError, podcast.FeedHTTPError)) else _fetch_error(e)
             if isinstance(e, web.HTTPRequestEntityTooLarge):
                 msg = "피드가 너무 큽니다 (15MB 넘음)"
             log.info("팟캐스트 피드 %s 받기 실패: %s", _short_url(url), msg)

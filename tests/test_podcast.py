@@ -119,6 +119,14 @@ def test_podcast_api(data):
         hits["feed"] += 1
         return web.Response(text=RSS.replace("{base}", f"http://127.0.0.1:{request.url.port}"), content_type="application/rss+xml")
 
+    async def picky_feed(request):           # 브라우저 UA는 404로 거절하고 팟캐스트 앱 UA만 받아 주는 곳
+        if "YMPlayer" not in request.headers.get("User-Agent", ""):
+            return web.Response(status=404, text="not found")
+        return await feed(request)
+
+    async def gone_feed(request):
+        return web.Response(status=404, text="not found")
+
     async def bad_feed(request):
         return web.Response(text="<html>nope</html>", content_type="text/html")
 
@@ -135,6 +143,8 @@ def test_podcast_api(data):
         up = web.Application()
         up.router.add_get("/feed.xml", feed)
         up.router.add_get("/bad.xml", bad_feed)
+        up.router.add_get("/picky.xml", picky_feed)
+        up.router.add_get("/gone.xml", gone_feed)
         up.router.add_get("/{name}.mp3", mp3)
         upstream = TestServer(up)
         await upstream.start_server()
@@ -189,6 +199,10 @@ def test_podcast_api(data):
             assert r["title"] == "테스트 라디오쇼" and r["count"] == 2 and r["id"] == fid
             assert (await c.post("/api/admin/podcast/probe", json={"url": bad})).status == 400
             assert (await c.post("/api/admin/podcast/probe", json={"url": "file:///etc/passwd"})).status == 400
+            r = await (await c.post("/api/admin/podcast/probe", json={"url": f"{base}/picky.xml"})).json()
+            assert r["title"] == "테스트 라디오쇼"                              # 거절하면 팟캐스트 앱처럼 한 번 더
+            r = await c.post("/api/admin/podcast/probe", json={"url": f"{base}/gone.xml"})
+            assert r.status == 400 and "RSS 주소에서 HTTP 404" in (await r.json())["error"]   # 없는 주소는 알아보기 쉬운 말로
 
             # 일반 사용자: 들은 위치는 따로, 허락된 프로그램만
             await c.post("/api/auth/logout")

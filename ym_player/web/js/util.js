@@ -127,6 +127,11 @@ export function describeHttpError(status, body = '', sentBytes = 0) {
     if (/Server got itself in trouble/i.test(text)) {
         return `YMPlayer 서버 오류 (HTTP ${status}). 서버 로그(journalctl -u ym_player)에 원인이 남습니다.`;
     }
+    if (status === 404 && /^404: Not Found/.test(text.trim())) {
+        // aiohttp가 그 주소를 모른다 -> 화면(정적 파일)은 새 버전인데 서버 프로그램은 아직 옛 버전 (git pull 뒤 재시작 안 됨)
+        return 'YMPlayer 서버에 이 기능이 없습니다 (HTTP 404). 업데이트한 뒤 서버를 다시 켜지 않은 것 같습니다 - '
+            + 'sudo systemctl restart ym_player 후 화면을 새로고침해 주세요.';
+    }
     if (status === 413) {
         return `보낸 내용이 너무 큽니다 (HTTP 413)${kb}. 중간 프록시의 요청 크기 제한(nginx: client_max_body_size)을 늘려 주세요.`;
     }
