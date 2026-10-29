@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 92,
+        "version": "1.1.55",
+        "date": "2026-10-29",
+        "title": "팟캐스트 소스: RSS·iTunes 검색·OPML로 프로그램 추가, 에피소드 이어 듣기(사용자별), 재생 속도, 다 들으면 다음 회"
+    },
+    {
         "pr": 91,
         "version": "1.1.54",
         "date": "2026-10-29",

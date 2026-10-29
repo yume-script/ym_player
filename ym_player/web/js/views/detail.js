@@ -72,10 +72,13 @@ export async function renderDetail(main, [pid, id], _query, ctx) {
     clear(main);
 
     const actions = h('div', { class: 'detail-actions' });
+    // 소리만 듣는 것(팟캐스트)은 "보기" 대신 "듣기"
+    const W = d.listen ? { resume: '이어 듣기', play: '듣기', done: '들었음', undone: '안 들음으로', doneTip: '들은 것으로 표시', undoneTip: '안 들은 것으로 표시' }
+        : { resume: '이어보기', play: '재생', done: '봤음', undone: '안 봄으로', doneTip: '본 것으로 표시', undoneTip: '안 본 것으로 표시' };
     if (d.playable) {
         const resume = d.viewOffset > 30000 && d.viewOffset < d.duration * 0.95;
         actions.appendChild(h('button', { class: 'btn btn-accent btn-lg', on: { click: () => player.playItem(p, d.id) } },
-            icon('play'), resume ? ` 이어보기 (${fmtClock(d.viewOffset / 1000)})` : ' 재생'));
+            icon('play'), resume ? ` ${W.resume} (${fmtClock(d.viewOffset / 1000)})` : ` ${W.play}`));
         if (resume) {
             actions.appendChild(h('button', { class: 'btn', on: { click: () => player.playItem(p, d.id, { fromStart: true }) } },
                 icon('backward-fast'), ' 처음부터'));
@@ -90,13 +93,13 @@ export async function renderDetail(main, [pid, id], _query, ctx) {
     if (p.setWatched && (d.playable || d.type === 'show' || d.type === 'season')) {
         const isWatched = d.playable ? d.watched : d.unwatched === 0;
         actions.appendChild(h('button', {
-            class: 'btn', title: isWatched ? '안 본 것으로 표시' : '본 것으로 표시',
+            class: 'btn', title: isWatched ? W.undoneTip : W.doneTip,
             on: { click: async () => {
                 await p.setWatched(d.id, !isWatched);
-                toast(isWatched ? '안 본 것으로 표시했습니다.' : '본 것으로 표시했습니다.');
+                toast(`${isWatched ? W.undoneTip : W.doneTip}했습니다.`);
                 ctx.rerender();
             } },
-        }, icon(isWatched ? 'eye-slash' : 'check'), isWatched ? ' 안 봄으로' : ' 봤음'));
+        }, icon(isWatched ? 'eye-slash' : 'check'), ` ${isWatched ? W.undone : W.done}`));
     }
 
     // 소스가 더 붙이는 버튼 (텔레그램: [정보 고치기])

@@ -44,7 +44,7 @@ from urllib.parse import quote, urlencode
 from aiohttp import ClientSession, ClientTimeout, web
 from yarl import URL
 
-from . import __version__, activity, auth, config_store, discord_feed, iptv, mcp, media_cache, plex_to_tg, prefs, radio, subtitles, telegram_src, tmdb, transcode, updates
+from . import __version__, activity, auth, config_store, discord_feed, iptv, mcp, media_cache, plex_to_tg, podcast, prefs, radio, subtitles, telegram_src, tmdb, transcode, updates
 
 log = logging.getLogger("ym_player")
 
@@ -202,7 +202,7 @@ async def _pipe_response(request, upstream):
 # 설정
 # ---------------------------------------------------------------------------
 # 관리자가 아닌 사용자에게는 서버 주소/M3U 주소(키가 들어 있기도 함)/API ID 등을 안 보여준다
-_USER_VISIBLE = ("id", "type", "name", "enabled", "channels", "hidden_libraries", "stations")
+_USER_VISIBLE = ("id", "type", "name", "enabled", "channels", "hidden_libraries", "stations", "feeds")
 
 
 async def get_config(request):
@@ -221,6 +221,8 @@ async def get_config(request):
                 item["channels"] = [c for c in item.get("channels") or [] if str(c["id"]) in allowed]
             if s["type"] == "radio" and allowed is not None:  # 라디오는 방송국 id
                 item["stations"] = [st for st in item.get("stations") or [] if st["id"] in allowed]
+            if s["type"] == "podcast" and allowed is not None:  # 팟캐스트는 프로그램(피드) id
+                item["feeds"] = [f for f in item.get("feeds") or [] if f["id"] in allowed]
             out.append(item)
         pub["sources"] = out
     return web.json_response(pub)
@@ -249,7 +251,12 @@ async def put_config(request):
 async def _save_config(request, cfg):
     old_ids = {s["id"] for s in config_store.load().get("sources", []) if s.get("type") == "telegram"}
     old_plex = {s["id"] for s in config_store.load().get("sources", []) if s.get("type") == "plex"}
+    old_pod = {s["id"] for s in config_store.load().get("sources", []) if s.get("type") == "podcast"}
     config_store.save(cfg)
+    # 지운 팟캐스트 소스의 들은 위치와 빠진 피드의 캐시는 지운다
+    for sid in old_pod - {s["id"] for s in cfg["sources"] if s.get("type") == "podcast"}:
+        await asyncio.to_thread(podcast.forget_source, sid)
+    request.app[PODCAST].forget_except([f["url"] for s in cfg["sources"] if s.get("type") == "podcast" for f in s.get("feeds") or []])
     request.app[CHANNEL_CACHE].clear()
     request.app[EPG_CACHE].clear()
     # 지운 Plex 소스의 동영상 캐시는 지운다
@@ -508,6 +515,246 @@ async def stream_proxy(request):
         return resp
     finally:
         upstream.release()
+
+
+# ---------------------------------------------------------------------------
+# 팟캐스트 (podcast.py) - RSS 피드, 들은 위치, 오디오 중계
+# ---------------------------------------------------------------------------
+PODCAST = web.AppKey("podcast", podcast.FeedCache)
+PODCAST_LOCKS = web.AppKey("podcast_locks", dict)   # 피드 주소 -> asyncio.Lock (같은 피드를 겹쳐 받지 않게)
+PODCAST_HOME_DAYS = 45   # 홈 "새 에피소드" 줄에 넣을 기간
+
+
+def _podcast_feeds(request, src):
+    """이 사용자가 볼 수 있는 피드 (사용자별 범위는 피드 id)"""
+    feeds = src.get("feeds") or []
+    allowed = auth.allowed_libraries(request.get("user"), src["id"])
+    return feeds if allowed is None else [f for f in feeds if f["id"] in allowed]
+
+
+def _podcast_feed_or_404(request, src, fid):
+    for f in _podcast_feeds(request, src):
+        if f["id"] == fid:
+            return f
+    raise web.HTTPNotFound(text="프로그램을 찾을 수 없습니다.")
+
+
+async def _podcast_fetch(app, url):
+    """피드를 받아 캐시에 넣는다 (실패하면 예전 것을 그대로 두고 오류만 기록)"""
+    cache = app[PODCAST]
+    lock = app[PODCAST_LOCKS].setdefault(url, asyncio.Lock())
+    if lock.locked():   # 누가 받는 중이면 그것을 기다린다
+        async with lock:
+            return cache.get(url)
+    async with lock:
+        try:
+            data = await _fetch_bytes(app[HTTP], url, timeout=25, max_bytes=podcast.FEED_MAX_BYTES,
+                                      headers={"Accept": "application/rss+xml, application/xml;q=0.9, text/xml;q=0.9, */*;q=0.5"})
+            cache.put(url, await asyncio.to_thread(podcast.parse_feed, data))
+        except Exception as e:  # 네트워크·형식 오류 종류가 많아서 넓게
+            msg = str(e) if isinstance(e, ValueError) else _fetch_error(e)
+            if isinstance(e, web.HTTPRequestEntityTooLarge):
+                msg = "피드가 너무 큽니다 (15MB 넘음)"
+            log.info("팟캐스트 피드 %s 받기 실패: %s", _short_url(url), msg)
+            cache.fail(url, msg)
+    return cache.get(url)
+
+
+async def _podcast_feed(app, url, force=False):
+    """캐시에 있으면 바로 (오래됐으면 뒤에서 다시 받음), 없으면 받아서. {"at", "feed", "error"}"""
+    cache = app[PODCAST]
+    hit = cache.get(url)
+    if force or not hit:
+        return await _podcast_fetch(app, url) or {"feed": None, "error": "피드를 받지 못했습니다"}
+    if not cache.fresh(url) and not app[PODCAST_LOCKS].get(url, asyncio.Lock()).locked():
+        asyncio.ensure_future(_podcast_fetch(app, url))
+    return hit
+
+
+async def _podcast_all(request, src):
+    feeds = _podcast_feeds(request, src)
+    got = await asyncio.gather(*(_podcast_feed(request.app, f["url"]) for f in feeds))
+    return list(zip(feeds, got))
+
+
+async def podcast_shows(request):
+    """GET /api/podcast/{sid}/shows -> 프로그램 목록 (안 들은 에피소드 수와 함께)"""
+    src = _source_or_404(request.match_info["sid"], "podcast", request)
+    pairs = await _podcast_all(request, src)
+    prog = await asyncio.to_thread(podcast.progress_of, username(request), src["id"])
+    return web.json_response({"success": True, "shows": [podcast.public_show(f, e["feed"], prog, e["error"]) for f, e in pairs]})
+
+
+async def podcast_show(request):
+    """GET /api/podcast/{sid}/show/{fid}[?refresh=1] -> 프로그램 정보 + 에피소드 (최신부터)"""
+    src = _source_or_404(request.match_info["sid"], "podcast", request)
+    f = _podcast_feed_or_404(request, src, request.match_info["fid"])
+    e = await _podcast_feed(request.app, f["url"], force=request.query.get("refresh") == "1")
+    prog = await asyncio.to_thread(podcast.progress_of, username(request), src["id"], [f["id"]])
+    feed = e["feed"] or {}
+    return web.json_response({"success": True, "show": podcast.public_show(f, e["feed"], prog, e["error"]),
+                              "episodes": [podcast.public_episode(f["id"], ep, prog) for ep in feed.get("episodes") or []]})
+
+
+def _podcast_find(feed, eid):
+    eps = (feed or {}).get("episodes") or []
+    for i, ep in enumerate(eps):
+        if ep["id"] == eid:
+            return i, ep, eps
+    raise web.HTTPNotFound(text="에피소드를 찾을 수 없습니다 (피드에서 내려갔을 수 있습니다).")
+
+
+async def podcast_episode(request):
+    """GET /api/podcast/{sid}/episode/{fid}/{eid} -> 에피소드 하나 + 앞뒤 에피소드 (newer: 다음에 나온 것, older: 그 전 것)"""
+    src = _source_or_404(request.match_info["sid"], "podcast", request)
+    f = _podcast_feed_or_404(request, src, request.match_info["fid"])
+    e = await _podcast_feed(request.app, f["url"])
+    i, ep, eps = _podcast_find(e["feed"], request.match_info["eid"])
+    prog = await asyncio.to_thread(podcast.progress_of, username(request), src["id"], [f["id"]])
+    show = podcast.public_show(f, e["feed"], prog, e["error"])
+    side = lambda x: {"id": x["id"], "title": x["title"]} if x else None
+    return web.json_response({"success": True, "show": show, "episode": podcast.public_episode(f["id"], ep, prog, show),
+                              "newer": side(eps[i - 1] if i > 0 else None), "older": side(eps[i + 1] if i + 1 < len(eps) else None)})
+
+
+async def podcast_home(request):
+    """GET /api/podcast/{sid}/home -> 이어 듣기 + 새 에피소드 (프로그램을 합쳐 최신순) + 프로그램 목록"""
+    src = _source_or_404(request.match_info["sid"], "podcast", request)
+    pairs = await _podcast_all(request, src)
+    prog = await asyncio.to_thread(podcast.progress_of, username(request), src["id"])
+    by_feed = {f["id"]: (f, e["feed"]) for f, e in pairs if e["feed"]}
+    cont = []
+    for (fid, eid), p in sorted(prog.items(), key=lambda kv: kv[1]["updated"], reverse=True):
+        if p["watched"] or p["position"] < 10 or fid not in by_feed:
+            continue
+        f, feed = by_feed[fid]
+        ep = next((x for x in feed["episodes"] if x["id"] == eid), None)
+        if ep:
+            cont.append(podcast.public_episode(fid, ep, prog, feed))
+        if len(cont) >= 20:
+            break
+    since = time.time() - PODCAST_HOME_DAYS * 86400
+    recent = [podcast.public_episode(f["id"], ep, prog, feed) for f, feed in by_feed.values()
+              for ep in feed["episodes"][:10] if ep["date"] >= since]
+    recent.sort(key=lambda x: x["date"], reverse=True)
+    return web.json_response({"success": True, "continue": cont, "recent": recent[:30],
+                              "shows": [podcast.public_show(f, e["feed"], prog, e["error"]) for f, e in pairs]})
+
+
+async def podcast_progress(request):
+    """POST /api/podcast/{sid}/progress {feed, ep, position, duration, watched?}"""
+    src = _source_or_404(request.match_info["sid"], "podcast", request)
+    try:
+        body = await request.json()
+        f = _podcast_feed_or_404(request, src, str(body.get("feed") or ""))
+        ep = str(body.get("ep") or "")
+        if not re.fullmatch(r"[0-9a-f]{12}", ep):
+            raise ValueError("에피소드 id가 아닙니다.")
+        watched = body.get("watched")
+        await asyncio.to_thread(podcast.save_progress, username(request), src["id"], f["id"], ep,
+                                float(body.get("position") or 0), float(body.get("duration") or 0),
+                                None if watched is None else bool(watched))
+    except (ValueError, TypeError, AttributeError) as e:
+        return _json_error(400, str(e) or "형식이 맞지 않습니다.")
+    return web.json_response({"success": True})
+
+
+async def podcast_watched(request):
+    """POST /api/podcast/{sid}/watched {feed, eps: [...] (없으면 그 프로그램 전부), watched}"""
+    src = _source_or_404(request.match_info["sid"], "podcast", request)
+    try:
+        body = await request.json()
+        f = _podcast_feed_or_404(request, src, str(body.get("feed") or ""))
+    except (ValueError, AttributeError):
+        return _json_error(400, "형식이 맞지 않습니다.")
+    eps = body.get("eps")
+    if not isinstance(eps, list):
+        e = await _podcast_feed(request.app, f["url"])
+        eps = [x["id"] for x in (e["feed"] or {}).get("episodes") or []]
+    eps = [str(x) for x in eps if re.fullmatch(r"[0-9a-f]{12}", str(x))][:podcast.MAX_EPISODES]
+    await asyncio.to_thread(podcast.set_watched_many, username(request), src["id"], f["id"], eps, bool(body.get("watched")))
+    return web.json_response({"success": True, "count": len(eps)})
+
+
+async def podcast_audio(request):
+    """GET /api/podcast/{sid}/audio/{fid}/{eid} -> 에피소드 오디오(영상) 중계 (Range 그대로, 피드에 적힌 주소만)"""
+    src = _source_or_404(request.match_info["sid"], "podcast", request)
+    f = _podcast_feed_or_404(request, src, request.match_info["fid"])
+    e = await _podcast_feed(request.app, f["url"])
+    _i, ep, _eps = _podcast_find(e["feed"], request.match_info["eid"])
+    headers = {"User-Agent": DEFAULT_UA}
+    if "Range" in request.headers:
+        headers["Range"] = request.headers["Range"]
+    try:
+        upstream = await request.app[HTTP].get(ep["url"], headers=headers, allow_redirects=True,
+                                               timeout=ClientTimeout(total=None, sock_connect=15, sock_read=60))
+    except Exception as ex:
+        return _json_error(502, f"오디오 연결 실패: {type(ex).__name__}: {ex}")
+    try:
+        if upstream.status >= 400:
+            return _json_error(502, f"오디오 서버 응답 HTTP {upstream.status}")
+        resp_headers = _resp_headers(upstream)
+        ctype = resp_headers.get("Content-Type", "")
+        if ep.get("mime") and (not ctype or ctype.startswith(("application/octet-stream", "binary/", "text/"))):
+            resp_headers["Content-Type"] = ep["mime"]   # 일부 호스트는 octet-stream으로 줘서 Safari가 못 연다
+        resp_headers["Cache-Control"] = "private, max-age=3600"
+        resp = web.StreamResponse(status=upstream.status, headers=resp_headers)
+        await resp.prepare(request)
+        try:
+            async for chunk in upstream.content.iter_chunked(64 * 1024):
+                await resp.write(chunk)
+        except (ConnectionError, asyncio.CancelledError):
+            pass   # 탐색하거나 멈추면 브라우저가 끊는다
+        return resp
+    finally:
+        upstream.release()
+
+
+@admin_only
+async def admin_podcast_search(request):
+    """GET /api/admin/podcast/search?q= -> iTunes 팟캐스트 검색 (RSS 주소가 있는 것만)"""
+    q = request.query.get("q", "").strip()[:100]
+    if not q:
+        return web.json_response({"success": True, "results": []})
+    params = {"media": "podcast", "entity": "podcast", "term": q, "limit": "25", "country": request.query.get("country", "KR")[:2]}
+    try:
+        async with request.app[HTTP].get("https://itunes.apple.com/search", params=params, timeout=ClientTimeout(total=10)) as resp:
+            if resp.status >= 400:
+                return _json_error(502, f"iTunes 검색 응답 HTTP {resp.status}")
+            results = (await resp.json(content_type=None)).get("results")
+    except Exception as e:
+        return _json_error(502, f"iTunes 검색 실패: {type(e).__name__}: {e}")
+    return web.json_response({"success": True, "results": podcast.pick_search(results)})
+
+
+@admin_only
+async def admin_podcast_probe(request):
+    """POST /api/admin/podcast/probe {url} -> 피드를 받아 보고 이름·에피소드 수 (추가하기 전에 확인)"""
+    try:
+        url = str((await request.json()).get("url") or "").strip()
+    except (ValueError, AttributeError):
+        url = ""
+    if not url.startswith(("http://", "https://")):
+        return _json_error(400, "http(s)로 시작하는 RSS 주소를 넣어 주세요.")
+    e = await _podcast_feed(request.app, url, force=True)
+    if not e["feed"]:
+        return _json_error(400, e["error"] or "피드를 받지 못했습니다.")
+    feed = e["feed"]
+    return web.json_response({"success": True, "url": url, "id": podcast.feed_id(url), "title": feed["title"],
+                              "author": feed["author"], "image": feed["image"], "count": len(feed["episodes"])})
+
+
+async def _check_podcast(request, src):
+    feeds = src.get("feeds") or []
+    if not feeds:
+        return False, "프로그램이 없습니다 (설정 > 소스 > 팟캐스트에서 추가)"
+    got = await asyncio.gather(*(_podcast_feed(request.app, f["url"], force=True) for f in feeds))
+    bad = [(f.get("title") or _short_url(f["url"]), e["error"]) for f, e in zip(feeds, got) if e["error"] or not e["feed"]]
+    eps = sum(len((e["feed"] or {}).get("episodes") or []) for e in got)
+    note = f"프로그램 {len(feeds)}개 · 에피소드 {eps}개"
+    if bad:
+        note += f" · 받기 실패 {len(bad)}개 (" + "; ".join(f"{t}: {err}" for t, err in bad[:3]) + ")"
+    return len(bad) < len(feeds), note
 
 
 # ---------------------------------------------------------------------------
@@ -2233,6 +2480,8 @@ async def admin_status(request):
             coro = _check_iptv(request, src)
         elif src["type"] == "radio":
             coro = _check_radio(request, src)
+        elif src["type"] == "podcast":
+            coro = _check_podcast(request, src)
         else:
             coro = _check_telegram(request, src)
         ok, detail, ms = await _timed(coro)
@@ -2808,6 +3057,8 @@ def create_app(require_auth=True):
     app[MIRROR] = _make_mirror(app)
     app[RADIO_NOW] = {}
     app[RADIO_ART] = {}
+    app[PODCAST] = podcast.FeedCache()
+    app[PODCAST_LOCKS] = {}
     app[PLEX_FILES] = {}
     app[STATIC_TOKEN] = static_token()
     app.on_response_prepare.append(_static_no_cache)
@@ -2867,6 +3118,15 @@ def create_app(require_auth=True):
     app.router.add_get("/api/iptv/{sid}/epg", iptv_epg)
     app.router.add_get("/api/stream", stream_proxy)
     app.router.add_get("/api/radio/{sid}/now", radio_now)
+    app.router.add_get("/api/podcast/{sid}/shows", podcast_shows)
+    app.router.add_get("/api/podcast/{sid}/home", podcast_home)
+    app.router.add_get(r"/api/podcast/{sid}/show/{fid:[0-9a-f]{10}}", podcast_show)
+    app.router.add_get(r"/api/podcast/{sid}/episode/{fid:[0-9a-f]{10}}/{eid:[0-9a-f]{12}}", podcast_episode)
+    app.router.add_get(r"/api/podcast/{sid}/audio/{fid:[0-9a-f]{10}}/{eid:[0-9a-f]{12}}", podcast_audio)
+    app.router.add_post("/api/podcast/{sid}/progress", podcast_progress)
+    app.router.add_post("/api/podcast/{sid}/watched", podcast_watched)
+    app.router.add_get("/api/admin/podcast/search", admin_podcast_search)
+    app.router.add_post("/api/admin/podcast/probe", admin_podcast_probe)
     app.router.add_post("/api/plex-auth/pin", plex_pin_create)
     app.router.add_get("/api/plex-auth/pin/{pin_id}", plex_pin_check)
     app.router.add_get("/api/plex-sub/{sid}", plex_subtitle)

@@ -6,6 +6,8 @@
      "hidden_libraries": ["3"]}       <- 가져오지 않을 Plex 라이브러리(섹션 key). 새 라이브러리는 기본으로 보임
     {"id": "tg1", "type": "telegram", "name": "텔레그램", "enabled": true, "api_id": "123456",
      "api_hash": "...", "phone": "+8210...", "channels": [{"id": 1234567890, "title": "영화 채널", "kind": "video"}]}
+    {"id": "pod1", "type": "podcast", "name": "팟캐스트", "enabled": true,
+     "feeds": [{"id": "주소에서 만든 id", "url": "https://.../rss", "title": "프로그램 이름"}]}
     {"id": "def456", "type": "iptv", "name": "개인", "enabled": true,
      "m3u": "http://.../playlist.m3u", "epg": "http://.../epg.xml.gz"}
         m3u/epg에는 주소를 한 줄에 하나씩 여러 개 넣을 수 있다 (합쳐서 한 채널 목록/편성표로 보여 줌)
@@ -22,7 +24,7 @@ import uuid
 DATA_DIR = os.environ.get("MP_DATA_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
 
-SOURCE_TYPES = ("plex", "iptv", "telegram", "radio")
+SOURCE_TYPES = ("plex", "iptv", "telegram", "radio", "podcast")
 _SECRET_FIELDS = ("token", "api_hash", "tmdb_key")
 _lock = threading.Lock()
 
@@ -86,7 +88,7 @@ def _clean_source(raw, old):
     src = {
         "id": str(raw.get("id") or secrets.token_hex(4)),
         "type": stype,
-        "name": str(raw.get("name") or {"plex": "Plex", "iptv": "IPTV", "telegram": "Telegram", "radio": "라디오"}[stype]).strip(),
+        "name": str(raw.get("name") or {"plex": "Plex", "iptv": "IPTV", "telegram": "Telegram", "radio": "라디오", "podcast": "팟캐스트"}[stype]).strip(),
         "enabled": bool(raw.get("enabled", True)),
     }
     if stype == "plex":
@@ -124,6 +126,9 @@ def _clean_source(raw, old):
         src["stations"] = clean_stations(stations if stations else DEFAULT_STATIONS)
         if not src["stations"]:
             raise ValueError(f"[{src['name']}] 방송국이 하나도 없습니다.")
+    elif stype == "podcast":
+        from .podcast import clean_feeds   # (podcast가 config_store를 가져다 쓴다)
+        src["feeds"] = clean_feeds(raw.get("feeds"))
     else:
         src["m3u"] = "\n".join(url_list(raw.get("m3u")))
         src["epg"] = "\n".join(url_list(raw.get("epg")))

@@ -4,6 +4,7 @@
     live      /api/stream                                   (IPTV·라디오 중계)
     telegram  /api/tg/{sid}/stream/…, /api/tg/{sid}/transcode/…, /api/tg-hls/… (책 보기의 ?doc=1 받기는 빼고)
     plex      /api/plex/{sid}/…/library/parts/…, /api/plex/{sid}/video|music/:/transcode/… (photo/:/transcode 썸네일은 빼고)
+    podcast   /api/podcast/{sid}/audio/…                    (팟캐스트 에피소드 중계)
 스트림 하나 = (종류, 누가, 무엇을). 같은 영상의 Range 조각·HLS 조각 요청은 한 스트림으로 묶인다.
 재생 중으로 보는 기준:
     - 연결이 끝나지 않은 긴 스트림(mpegts 등)은 연결이 열려 있는 동안
@@ -22,7 +23,7 @@ import time
 from aiohttp import web
 
 WINDOW = 45
-KINDS = ("plex", "telegram", "live")
+KINDS = ("plex", "telegram", "live", "podcast")
 EVENTS = ("stall", "retry")
 EVENT_WINDOW = 300
 REPORT_LIMIT = 30      # 사용자 한 명이 1분에 알릴 수 있는 횟수 (잘못된 화면이 숫자를 부풀리지 않게)
@@ -32,6 +33,7 @@ _TG_HLS_RE = re.compile(r"^/api/tg-hls/([^/]+)/")
 _PLEX_PART_RE = re.compile(r"^/api/plex/[^/]+/(?:.*/)?library/parts/(\d+)")
 _PLEX_TRANSCODE_RE = re.compile(r"^/api/plex/[^/]+/(?:video|music|audio)/:/transcode/")   # (photo/:/transcode는 썸네일)
 _PLEX_SESSION_RE = re.compile(r"/session/([^/]+)/")
+_PODCAST_RE = re.compile(r"^/api/podcast/[^/]+/audio/([0-9a-f]+)/([0-9a-f]+)$")
 
 
 def classify(path, query):
@@ -44,6 +46,9 @@ def classify(path, query):
     m = _TG_HLS_RE.match(path)
     if m:
         return "telegram", f"hls/{m.group(1)}"
+    m = _PODCAST_RE.match(path)
+    if m:
+        return "podcast", f"{m.group(1)}/{m.group(2)}"
     if path.startswith("/api/plex/"):
         m = _PLEX_PART_RE.match(path)
         if m:
