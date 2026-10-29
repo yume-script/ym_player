@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 95,
+        "version": "1.1.58",
+        "date": "2026-10-29",
+        "title": "팟캐스트: itunes 네임스페이스를 다르게 적은 피드(MBC 등)의 표지·길이·진행자·설명이 비던 문제"
+    },
+    {
         "pr": 94,
         "version": "1.1.57",
         "date": "2026-10-29",
