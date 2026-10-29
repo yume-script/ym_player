@@ -2383,6 +2383,16 @@ async def admin_mirror_item(request):
 
 
 @admin_only
+async def admin_mirror_shot(request):
+    """자막 기다리는 항목의 10분 지점 장면 GET /api/admin/plex-tg/shot?rule=&key= (JPEG)"""
+    try:
+        path = await request.app[MIRROR].screenshot(request.query.get("rule", ""), request.query.get("key", ""))
+    except ValueError as e:
+        return _json_error(404, str(e))
+    return web.FileResponse(path, headers={"Cache-Control": "private, max-age=3600", "Content-Type": "image/jpeg"})
+
+
+@admin_only
 async def admin_mirror_test(request):
     body = await _json_body(request)
     try:
@@ -2839,6 +2849,7 @@ def create_app(require_auth=True):
     app.router.add_post("/api/admin/plex-tg/check", admin_mirror_check)
     app.router.add_post("/api/admin/plex-tg/test", admin_mirror_test)
     app.router.add_post("/api/admin/plex-tg/item", admin_mirror_item)
+    app.router.add_get("/api/admin/plex-tg/shot", admin_mirror_shot)
     app.router.add_put("/api/admin/general", admin_general_put)
     app.router.add_get("/api/admin/discord", admin_discord_get)
     app.router.add_put("/api/admin/discord", admin_discord_put)

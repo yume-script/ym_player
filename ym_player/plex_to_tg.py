@@ -98,6 +98,21 @@ def sidecar_subs(video_path):
     return out
 
 
+SHOT_AT = 600      # 자막을 사람이 판단할 장면: 10분 지점 (더 짧은 영상은 가운데)
+
+
+def _shot_path(rule_id, key):
+    safe = re.sub(r"[^A-Za-z0-9_-]", "_", f"{rule_id}_{key}")[:80]
+    return os.path.join(config_store.DATA_DIR, "plex_to_tg_shots", f"{safe}.jpg")
+
+
+def drop_shot(rule_id, key):
+    try:
+        os.remove(_shot_path(rule_id, key))
+    except OSError:
+        pass
+
+
 class Waiting(Exception):
     """자막이 아직 없음 - 나중에 다시"""
 _lock = threading.Lock()
@@ -299,6 +314,7 @@ class Mirror:
         self.last_check = 0
         self.error = ""
         self._wake = asyncio.Event()
+        self._shot_lock = asyncio.Semaphore(2)
 
     def wake(self):
         self._wake.set()
@@ -389,6 +405,42 @@ class Mirror:
         self.wake()
         return item_fields(m)["name"]
 
+    async def screenshot(self, rule_id, key):
+        """자막을 기다리는 항목의 10분 지점 장면(JPEG 경로) - 자막을 영상에 입힌 하드섭인지 사람이 보고 판단하게.
+        처음 한 번 ffmpeg로 뽑아 data/plex_to_tg_shots/에 두고, 항목이 대기에서 빠지면 지운다"""
+        path = _shot_path(rule_id, key)
+        if os.path.exists(path):
+            return path
+        rule = next((r for r in load_settings()["rules"] if r["id"] == rule_id), None)
+        if not rule or not transcode.ffmpeg_path():
+            raise ValueError("장면을 뽑을 수 없습니다 (규칙이 없거나 서버에 ffmpeg가 없음).")
+        cfg, src = self.plex_src(rule["plex"])
+        if not src:
+            raise ValueError("Plex 소스를 찾을 수 없습니다.")
+        data = await self.plex_json(cfg, src, f"/library/metadata/{key}")
+        m = ((data.get("MediaContainer") or {}).get("Metadata") or [None])[0]
+        if not m:
+            raise ValueError("Plex에서 항목을 찾지 못했습니다.")
+        media = (m.get("Media") or [{}])[0]
+        part = (media.get("Part") or [{}])[0]
+        duration = (m.get("duration") or media.get("duration") or 0) / 1000
+        at = SHOT_AT if not duration or duration > SHOT_AT + 5 else duration / 2
+        local = str(part.get("file") or "")
+        args = ["-ss", f"{at:.0f}"]
+        if local and os.path.isfile(local) and os.access(local, os.R_OK):
+            args += ["-i", local]
+        elif part.get("key"):   # Plex가 다른 컴퓨터면 Plex 주소로 (그 지점 근처만 Range로 받는다)
+            args += ["-headers", f"X-Plex-Token: {src.get('token', '')}\r\n", "-i", f"{src['url']}{part['key']}"]
+        else:
+            raise ValueError("Plex 항목에 파일 정보가 없습니다.")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        async with self._shot_lock:   # 한꺼번에 여러 장을 보더라도 ffmpeg는 둘까지
+            ok, err = await self._ffmpeg(*args, "-frames:v", "1", "-vf", "scale='min(960,iw)':-2", "-q:v", "4", path + ".tmp.jpg")
+        if not ok or not os.path.exists(path + ".tmp.jpg"):
+            raise ValueError(f"장면을 뽑지 못했습니다: {err.strip()[-200:]}")
+        os.replace(path + ".tmp.jpg", path)
+        return path
+
     def force_item(self, rule_id, key):
         """자막 기다리는 항목을 기다리지 않고 지금 올린다 (자막을 영상에 입힌 하드섭처럼 자동으로 알 수 없는 경우)"""
         state = load_state()
@@ -396,6 +448,7 @@ class Mirror:
         if w is None:
             raise ValueError("자막을 기다리는 항목이 아닙니다.")
         save_state(state)
+        drop_shot(rule_id, key)
         job = next((j for j in self.queue if j["rule"] == rule_id and j["key"] == key), None)
         if job:
             job["force"] = True
@@ -412,6 +465,7 @@ class Mirror:
         if w is None:
             raise ValueError("자막을 기다리는 항목이 아닙니다.")
         rs.setdefault("fails", {})[key] = MAX_TRIES
+        drop_shot(rule_id, key)
         state["history"] = [{"title": w.get("title", key), "ok": False, "note": "건너뜀: 직접 뺌", "at": int(time.time()), "key": key,
                              "subs": "", "channel": ""}, *state["history"]][:KEEP_HISTORY]
         save_state(state)
@@ -448,7 +502,8 @@ class Mirror:
                 rs.setdefault("waiting", {}).setdefault(job["key"], {"title": job["title"], "since": int(time.time())})
                 save_state(state)
                 continue
-            (rs.get("waiting") or {}).pop(job["key"], None)
+            if (rs.get("waiting") or {}).pop(job["key"], None) is not None:
+                drop_shot(job["rule"], job["key"])   # 대기에서 빠졌으면 판단용 장면도
             fails = rs.setdefault("fails", {})
             if ok and note.startswith("건너뜀"):   # 너무 큰 파일 - 다시 시도하지 않는다
                 ok = False

@@ -465,3 +465,38 @@ def test_wait_hours_force_and_drop(data, tmp_path, monkeypatch):
         await mirror.run_queue(st)
         assert len(tg.sent) == 2 and plex_to_tg.load_state()["rules"]["r"]["waiting"] == {}
     asyncio.run(main())
+
+
+def test_screenshot_for_waiting_item(data, tmp_path, monkeypatch):
+    """자막 기다리는 항목의 10분 지점 장면 (짧은 영상은 가운데) - 처음 한 번 뽑아 두고, 대기에서 빠지면 지움"""
+    import shutil as _sh
+    import subprocess
+    if not _sh.which("ffmpeg"):
+        pytest.skip("ffmpeg 없음")
+    video = tmp_path / "Hard.S01E02.mp4"
+    _video(video, 4)
+    m = {"ratingKey": "8", "type": "episode", "title": "", "grandparentTitle": "하드", "parentIndex": 1, "index": 2, "duration": 4000,
+         "Media": [{"Part": [{"key": "/p/8", "file": str(video), "size": video.stat().st_size, "Stream": []}]}]}
+    calls = []
+
+    async def plex_json(c, s, path, params=None):
+        calls.append(path)
+        return {"MediaContainer": {"Metadata": [m]}}
+    config_store.save({"client_id": "c", "sources": [], "plex_to_tg": {"rules": [{"id": "r", "plex": "px", "section": "1", "tg": "tg", "channel": "-1"}]}})
+
+    async def main():
+        mirror = plex_to_tg.Mirror(plex_json, lambda sid: ({"client_id": "c"}, {"id": "px", "url": "http://x"}), lambda sid: None, lambda: None)
+        path = await mirror.screenshot("r", "8")
+        assert open(path, "rb").read(2) == b"\xff\xd8"
+        w = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width", "-of", "csv=p=0", path], capture_output=True, text=True).stdout
+        assert int(w) == 320                                       # 원본보다 키우지 않는다 (큰 영상만 960으로 줄임)
+        n = len(calls)
+        assert await mirror.screenshot("r", "8") == path and len(calls) == n   # 두 번째는 저장해 둔 것
+        with pytest.raises(ValueError):
+            await mirror.screenshot("없는규칙", "8")
+        state = plex_to_tg.load_state()
+        state["rules"]["r"] = {"done": [], "fails": {}, "waiting": {"8": {"title": "하드 S01E02", "since": 1}}}
+        plex_to_tg.save_state(state)
+        mirror.drop_item("r", "8")
+        assert not __import__("os").path.exists(path)
+    asyncio.run(main())

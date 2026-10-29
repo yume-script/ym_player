@@ -1127,3 +1127,9 @@ body.docpip { margin: 0; background: #000; overflow: hidden; }
 .mirror-actions { display: inline-flex; gap: 0.3rem; margin-left: 0.5rem; vertical-align: middle; }
 .mirror-actions .btn { padding: 0.1rem 0.5rem; font-size: 0.75rem; }
 .mirror-note:has(.mirror-actions) { overflow: visible; white-space: normal; }
+
+/* 자막 기다림 줄의 10분 지점 장면 (하드섭인지 사람이 판단) */
+.mirror-title-shot { display: flex; align-items: center; gap: 0.6rem; min-width: 0; }
+.mirror-shot { flex-shrink: 0; width: 112px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 4px; background: var(--bg-elev2); cursor: zoom-in; }
+.mirror-shot.failed { visibility: hidden; }
+.mirror-shot-big { display: block; width: 100%; max-height: 75vh; object-fit: contain; border-radius: 6px; background: #000; }

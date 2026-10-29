@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 91,
+        "version": "1.1.54",
+        "date": "2026-10-29",
+        "title": "자동 올리기: 자막 기다림 줄에 10분 지점 장면을 보여 줘서 하드섭인지 사람이 판단"
+    },
+    {
         "pr": 90,
         "version": "1.1.53",
         "date": "2026-10-29",
