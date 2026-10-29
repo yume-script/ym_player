@@ -1101,6 +1101,12 @@ async function renderMirror(pane) {
         for (const [k, w] of waitKeys) {
             if (shown.has(k)) continue;
             const r = row(w.title, chip('wait', '자막 기다림'), '없음', `${when(w.since)}부터`);
+            // 하드섭인지 사람이 보고 판단하게: 10분 지점 장면 (누르면 크게)
+            const shotUrl = `/api/admin/plex-tg/shot?${new URLSearchParams({ rule: w.rule, key: w.key })}`;
+            const shot = h('img', { class: 'mirror-shot', src: shotUrl, alt: '', loading: 'lazy', title: '10분 지점 장면 (누르면 크게)',
+                on: { error: (e) => e.target.classList.add('failed'),
+                    click: () => modal(`${w.title} - 10분 지점`, h('img', { class: 'mirror-shot-big', src: shotUrl, alt: '' })) } });
+            r.firstChild.replaceWith(h('span', { class: 'mirror-title-shot' }, shot, h('span', { class: 'mirror-title', title: w.title, text: w.title })));
             r.lastChild.append(h('span', { class: 'mirror-actions' }, act(w, 'upload', '지금 올리기'),
                 act(w, 'drop', '빼기', `"${w.title}"을(를) 올리지 않고 뺄까요?`)));
             live.push(r);
