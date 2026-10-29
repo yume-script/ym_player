@@ -2366,6 +2366,23 @@ async def admin_mirror_check(request):
 
 
 @admin_only
+async def admin_mirror_item(request):
+    """자막 기다리는 항목 하나: {rule, key, action: "upload"(기다리지 않고 지금 올리기) | "drop"(빼기)}"""
+    body = await _json_body(request)
+    mirror, rule, key = request.app[MIRROR], str(body.get("rule") or ""), str(body.get("key") or "")
+    try:
+        if body.get("action") == "upload":
+            title = mirror.force_item(rule, key)
+        elif body.get("action") == "drop":
+            title = mirror.drop_item(rule, key)
+        else:
+            return _json_error(400, "action은 upload 또는 drop입니다.")
+    except ValueError as e:
+        return _json_error(400, str(e))
+    return web.json_response({"success": True, "title": title})
+
+
+@admin_only
 async def admin_mirror_test(request):
     body = await _json_body(request)
     try:
@@ -2821,6 +2838,7 @@ def create_app(require_auth=True):
     app.router.add_get("/api/admin/plex-tg/options", admin_mirror_options)
     app.router.add_post("/api/admin/plex-tg/check", admin_mirror_check)
     app.router.add_post("/api/admin/plex-tg/test", admin_mirror_test)
+    app.router.add_post("/api/admin/plex-tg/item", admin_mirror_item)
     app.router.add_put("/api/admin/general", admin_general_put)
     app.router.add_get("/api/admin/discord", admin_discord_get)
     app.router.add_put("/api/admin/discord", admin_discord_put)

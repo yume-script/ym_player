@@ -1007,7 +1007,7 @@ async function renderMirror(pane) {
         const chSel = h('select', { class: 'select' }, r.channel ? opt(r.channel, r.channel_title || r.channel, true) : opt('', '채널 고르기', true));
         const waitIn = h('input', { type: 'checkbox', checked: r.wait_subs !== false });
         const burnIn = h('input', { type: 'checkbox', checked: r.burn_subs !== false });
-        const daysIn = h('input', { class: 'input input-sm mirror-days', type: 'number', min: '0', max: '365', value: String(r.wait_days || 0) });
+        const hoursIn = h('input', { class: 'input input-sm mirror-days', type: 'number', min: '0', max: '8760', value: String(r.wait_hours ?? 12) });
         const capIn = h('textarea', { class: 'input', rows: '3', placeholder: '{name}\n\n{summary}' });
         capIn.value = r.caption || '{name}\n\n{summary}';
         const fillChannels = async () => {
@@ -1030,7 +1030,7 @@ async function renderMirror(pane) {
             h('label', { class: 'check' }, enabledIn, ' 켜기'),
             h('div', { class: 'row-2 mirror-pick' }, field('Plex 라이브러리', plexSel), field('올릴 텔레그램', h('div', { class: 'toolbar' }, tgSel, chSel))),
             h('div', { class: 'mirror-wait' }, h('label', { class: 'check' }, waitIn, ' 자막이 생길 때까지 기다렸다가 올리기'),
-                h('span', { class: 'muted', text: ' 최대' }), daysIn, h('span', { class: 'muted', text: '일 (0이면 계속 기다림)' })),
+                h('span', { class: 'muted', text: ' 최대' }), hoursIn, h('span', { class: 'muted', text: '시간 (0이면 계속 기다림, 하드섭은 상태 표에서 [지금 올리기])' })),
             h('label', { class: 'check', title: '영상 안에 자막이 없고 외부 자막만 있을 때. 다시 인코딩하느라 시간이 걸립니다.' }, burnIn,
                 ' 영상 안에 자막이 없으면 외부 자막을 화면에 입혀 다시 인코딩 (텔레그램 앱에서도 자막이 보임)'),
             field('캡션', capIn, '{name} 제목(영화 "제목 (연도)", 에피소드 "작품 S01E02 - 제목") · {summary} 줄거리 · {title} {year} {show} {season} {episode} {code} {genres} {tags}(#장르) {library} {filename}'),
@@ -1039,7 +1039,7 @@ async function renderMirror(pane) {
             const [plex, section] = plexSel.value.split('|');
             return { id: row.id, enabled: enabledIn.checked, plex, section, section_title: ((plexSel.selectedOptions[0] || {}).dataset || {}).name || '',
                 tg: tgSel.value, channel: chSel.value, channel_title: ((chSel.selectedOptions[0] || {}).dataset || {}).name || '', caption: capIn.value,
-                wait_subs: waitIn.checked, wait_days: Number(daysIn.value) || 0, burn_subs: burnIn.checked };
+                wait_subs: waitIn.checked, wait_hours: Number(hoursIn.value) || 0, burn_subs: burnIn.checked };
         } };
         rows.push(row);
         rulesBox.appendChild(card);
@@ -1088,9 +1088,22 @@ async function renderMirror(pane) {
             shown.add(k);
             live.push(row(q.title, chip('queue', '올릴 차례'), '확인 전', ''));
         }
+        // 자막 기다림: 자막을 영상에 입힌 하드섭은 자동으로 알 수 없으니 직접 [지금 올리기] / [빼기]
+        const act = (w, action, label, ask) => h('button', { class: 'btn btn-sm', on: { click: async (e) => {
+            if (ask && !confirm(ask)) return;
+            e.currentTarget.disabled = true;
+            try {
+                await api('/api/admin/plex-tg/item', { method: 'POST', json: { rule: w.rule, key: w.key, action } });
+                toast(action === 'upload' ? `"${w.title}"을(를) 지금 올립니다.` : `"${w.title}"을(를) 뺐습니다.`);
+            } catch (err) { toast(err.message, 'error'); }
+            paintStatus();
+        } } }, label);
         for (const [k, w] of waitKeys) {
             if (shown.has(k)) continue;
-            live.push(row(w.title, chip('wait', '자막 기다림'), '없음', `${when(w.since)}부터`));
+            const r = row(w.title, chip('wait', '자막 기다림'), '없음', `${when(w.since)}부터`);
+            r.lastChild.append(h('span', { class: 'mirror-actions' }, act(w, 'upload', '지금 올리기'),
+                act(w, 'drop', '빼기', `"${w.title}"을(를) 올리지 않고 뺄까요?`)));
+            live.push(r);
         }
         const hist = s.history.map((x) => row(x.title,
             x.ok ? chip('ok', '완료') : String(x.note || '').startsWith('건너뜀') ? chip('skip', '건너뜀') : chip('fail', '실패'),
