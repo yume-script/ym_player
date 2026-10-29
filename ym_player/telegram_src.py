@@ -66,6 +66,24 @@ class TgError(Exception):
     """화면에 그대로 보여줄 수 있는 오류."""
 
 
+class ChannelLost(TgError):
+    """더 이상 들어갈 수 없는 채널 (나갔음, 비공개로 바뀜, 쫓겨남/차단) - 목록에서 뺀다"""
+
+    def __init__(self, channel, reason=""):
+        self.channel = int(channel)
+        self.reason = reason
+        super().__init__("이 채널에 더 이상 들어갈 수 없습니다 (채널에서 나갔거나, 비공개로 바뀌었거나, 차단됨). 채널 목록에서 뺐습니다.")
+
+
+# 텔레그램이 "이 채널은 볼 수 없다"고 할 때의 오류 이름 (Telethon errors.*)
+_LOST_ERRORS = {"ChannelPrivateError", "ChannelInvalidError", "ChannelPublicGroupNaError", "ChatForbiddenError",
+                "ChannelBannedError", "ChatIdInvalidError", "PeerIdInvalidError"}
+
+
+def is_access_lost(e):
+    return isinstance(e, ChannelLost) or type(e).__name__ in _LOST_ERRORS
+
+
 # ---------------------------------------------------------------------------
 # 순수 함수 (테스트 대상)
 # ---------------------------------------------------------------------------
@@ -1650,6 +1668,8 @@ class TelegramSource:
         self.api_id = str(src.get("api_id") or "").strip()
         self.api_hash = str(src.get("api_hash") or "").strip()
         self.phone = str(src.get("phone") or "").strip()
+        self.on_lost = None         # 들어갈 수 없게 된 채널을 알리는 곳 (서버가 설정에서 뺀다): on_lost(sid, channel, reason)
+        self.lost = {}              # 채널 -> (사유, 시각) - 다시 시도하지 않게 (설정에서 다시 체크하면 풀린다)
         self.set_channels(src)
         self.client = None
         self._connect_lock = asyncio.Lock()
@@ -1670,6 +1690,11 @@ class TelegramSource:
         """설정에서 고른 채널과 채널마다 정한 종류 (영상만 "video" / 사진만 "image" / 웹툰 "webtoon" / 책 "doc" / 영상+사진 "")"""
         chans = src.get("channels") or []
         self.channels = [int(c["id"]) for c in chans]
+        # 빠졌던 채널을 다시 넣었으면(다시 들어감) 풀어 준다 (방금 뺀 직후의 옛 설정으로 불린 것은 빼고)
+        for c in self.channels:
+            if c in self.lost and time.time() - self.lost[c][1] > 60:
+                del self.lost[c]
+        self.channels = [c for c in self.channels if c not in self.lost]
         self.kinds = {int(c["id"]): c.get("kind", "") for c in chans if c.get("kind") in CHANNEL_KINDS}
 
     def matches(self, src):
@@ -1797,8 +1822,38 @@ class TelegramSource:
             with db() as conn:
                 row = conn.execute("SELECT access_hash FROM peers WHERE source=? AND channel=?", (self.sid, channel)).fetchone()
         if not row:
-            raise TgError("이 채널을 찾을 수 없습니다 (채널에서 나갔거나 접근할 수 없음).")
+            raise self._lost(channel, "대화 목록에 없음")
         return InputPeerChannel(int(channel), int(row["access_hash"]))
+
+    def _lost(self, channel, reason):
+        """채널을 이번 실행에서 빼고 서버에 알린다. 돌려준 ChannelLost를 raise하면 된다"""
+        channel = int(channel)
+        first = channel not in self.lost
+        self.lost[channel] = (reason, time.time())
+        if channel in self.channels:
+            self.channels = [c for c in self.channels if c != channel]
+        if first:
+            log.warning("텔레그램 소스 %s: 채널 %s에 들어갈 수 없어 목록에서 뺍니다 (%s)", self.sid, channel, reason)
+            if self.on_lost:
+                try:
+                    self.on_lost(self.sid, channel, reason)
+                except Exception:
+                    log.exception("텔레그램 채널 빼기 실패")
+        return ChannelLost(channel, reason)
+
+    async def _guard(self, channel, coro):
+        """채널을 읽는 요청 - 들어갈 수 없다는 오류면 ChannelLost로 바꾸고 채널을 뺀다"""
+        if int(channel) in self.lost:
+            coro.close()
+            raise ChannelLost(channel, self.lost[int(channel)][0])
+        try:
+            return await coro
+        except ChannelLost:
+            raise
+        except Exception as e:
+            if is_access_lost(e):
+                raise self._lost(channel, type(e).__name__) from None
+            raise
 
     # ----- 뒤에서 돌리기 -----
     def background(self, key, make_coro):
@@ -1810,6 +1865,8 @@ class TelegramSource:
         async def runner():
             try:
                 await make_coro()
+            except ChannelLost:
+                pass   # (_lost가 이미 경고를 한 번 남겼다)
             except Exception as e:
                 log.warning("telegram 뒤 작업 %s 실패: %s", key, e)
 
@@ -1822,14 +1879,16 @@ class TelegramSource:
 
     async def _scan(self, channel, **kwargs):
         client = await self.authorized_client()
-        peer = await self.peer(channel)
         items, ids = [], []
-        async for msg in client.iter_messages(peer, **kwargs):
-            ids.append(int(msg.id))
-            item = message_to_media(msg)
-            if item:
-                items.append(item)
-                self._remember(channel, msg)
+
+        async def read():
+            async for msg in client.iter_messages(await self.peer(channel), **kwargs):
+                ids.append(int(msg.id))
+                item = message_to_media(msg)
+                if item:
+                    items.append(item)
+                    self._remember(channel, msg)
+        await self._guard(channel, read())
         upsert_videos(self.sid, channel, items)
         if items:
             link_posters(self.sid, channel)
@@ -1919,7 +1978,10 @@ class TelegramSource:
             self._msgs.move_to_end(key)
             return self._msgs[key]
         client = await self.authorized_client()
-        m = await client.get_messages(await self.peer(channel), ids=int(msg))
+
+        async def get():
+            return await client.get_messages(await self.peer(channel), ids=int(msg))
+        m = await self._guard(channel, get())
         if not m:
             raise TgError("텔레그램에서 이 메시지를 찾을 수 없습니다 (지워졌을 수 있음).")
         self._remember(channel, m)
