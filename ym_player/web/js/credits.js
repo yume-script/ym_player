@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 94,
+        "version": "1.1.57",
+        "date": "2026-10-29",
+        "title": "팟캐스트: RSS가 404이거나 웹 페이지 주소를 넣으면 페이지에서 RSS 링크를 찾아 넣기, 오류에 시도한 주소 표시"
+    },
+    {
         "pr": 93,
         "version": "1.1.56",
         "date": "2026-10-29",

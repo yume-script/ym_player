@@ -73,6 +73,16 @@ def test_helpers():
     assert src["name"] == "팟캐스트" and src["feeds"][0]["url"] == "https://a.example/rss"
 
 
+def test_discover():
+    page = (b'<html><head><link type="application/rss+xml" rel="alternate" href="/rss/9.xml"></head>'
+            b'<body><a href="https://feeds.example/x/feed">RSS</a><a href="/about">about</a><a href="javascript:rss()">x</a></body></html>')
+    assert podcast.discover_feeds(page, "https://site.example/show/9") == ["https://site.example/rss/9.xml", "https://feeds.example/x/feed"]
+    assert podcast.discover_feeds(b"<html>nothing</html>", "https://a.example/") == []
+    assert podcast.page_candidates("http://www.podbbang.com/ch/rss?id=1771386") == [
+        "http://www.podbbang.com/ch/rss?id=1771386", "https://www.podbbang.com/channels/1771386"]
+    assert podcast.page_candidates("https://feeds.example/rss") == ["https://feeds.example/rss"]
+
+
 def test_progress(tmp_path, monkeypatch):
     monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
     podcast.save_progress("u", "s", "f", "e1", 100, 600)
@@ -124,6 +134,10 @@ def test_podcast_api(data):
             return web.Response(status=404, text="not found")
         return await feed(request)
 
+    async def show_page(request):            # 프로그램 웹 페이지 (RSS 링크가 있는)
+        return web.Response(text='<html><head><link rel="alternate" type="application/rss+xml" href="/feed.xml"></head></html>',
+                            content_type="text/html")
+
     async def gone_feed(request):
         return web.Response(status=404, text="not found")
 
@@ -145,6 +159,7 @@ def test_podcast_api(data):
         up.router.add_get("/bad.xml", bad_feed)
         up.router.add_get("/picky.xml", picky_feed)
         up.router.add_get("/gone.xml", gone_feed)
+        up.router.add_get("/show", show_page)
         up.router.add_get("/{name}.mp3", mp3)
         upstream = TestServer(up)
         await upstream.start_server()
@@ -202,7 +217,10 @@ def test_podcast_api(data):
             r = await (await c.post("/api/admin/podcast/probe", json={"url": f"{base}/picky.xml"})).json()
             assert r["title"] == "테스트 라디오쇼"                              # 거절하면 팟캐스트 앱처럼 한 번 더
             r = await c.post("/api/admin/podcast/probe", json={"url": f"{base}/gone.xml"})
-            assert r.status == 400 and "RSS 주소에서 HTTP 404" in (await r.json())["error"]   # 없는 주소는 알아보기 쉬운 말로
+            err = (await r.json())["error"]
+            assert r.status == 400 and "RSS 주소에서 HTTP 404" in err and "gone.xml" in err   # 없는 주소는 알아보기 쉬운 말로, 시도한 주소와 함께
+            r = await (await c.post("/api/admin/podcast/probe", json={"url": f"{base}/show"})).json()
+            assert r["url"] == url and r["id"] == fid and r["count"] == 2     # 웹 페이지 주소 -> 그 페이지의 RSS 링크로
 
             # 일반 사용자: 들은 위치는 따로, 허락된 프로그램만
             await c.post("/api/auth/logout")

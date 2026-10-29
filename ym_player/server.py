@@ -764,6 +764,28 @@ async def admin_podcast_search(request):
     return web.json_response({"success": True, "results": podcast.pick_search(results)})
 
 
+async def _podcast_discover(app, url):
+    """RSS를 못 받은 주소 -> 웹 페이지에서 찾은 RSS 주소와 그 피드 (url, 캐시 항목), 못 찾으면 None"""
+    for page_url in podcast.page_candidates(url):
+        try:
+            async with app[HTTP].get(page_url, headers={"User-Agent": DEFAULT_UA, "Accept": "text/html,*/*"},
+                                     timeout=ClientTimeout(total=15)) as resp:
+                if resp.status >= 400 or "html" not in resp.headers.get("Content-Type", "").lower():
+                    continue
+                page = await resp.content.read(2 * 1024 * 1024)
+                base = str(resp.url)
+        except (ClientError, asyncio.TimeoutError):
+            continue
+        for cand in podcast.discover_feeds(page, base):
+            if cand == url:
+                continue
+            e = await _podcast_feed(app, cand, force=True)
+            if e["feed"]:
+                log.info("팟캐스트 RSS 주소 찾음: %s -> %s", _short_url(url), _short_url(cand))
+                return cand, e
+    return None
+
+
 @admin_only
 async def admin_podcast_probe(request):
     """POST /api/admin/podcast/probe {url} -> 피드를 받아 보고 이름·에피소드 수 (추가하기 전에 확인)"""
@@ -775,7 +797,12 @@ async def admin_podcast_probe(request):
         return _json_error(400, "http(s)로 시작하는 RSS 주소를 넣어 주세요.")
     e = await _podcast_feed(request.app, url, force=True)
     if not e["feed"]:
-        return _json_error(400, e["error"] or "피드를 받지 못했습니다.")
+        # 웹 페이지 주소를 넣었거나 RSS 주소가 옮겨졌으면(404) 그 페이지·프로그램 페이지에서 RSS 링크를 찾아 본다
+        found = await _podcast_discover(request.app, url)
+        if found:
+            url, e = found
+        else:
+            return _json_error(400, f"{e['error'] or '피드를 받지 못했습니다.'} (주소: {url[:200]})")
     feed = e["feed"]
     return web.json_response({"success": True, "url": url, "id": podcast.feed_id(url), "title": feed["title"],
                               "author": feed["author"], "image": feed["image"], "count": len(feed["episodes"])})

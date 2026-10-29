@@ -1145,3 +1145,4 @@ body.docpip { margin: 0; background: #000; overflow: hidden; }
 /* 팟캐스트 에피소드 줄: 표지가 정사각형이라 작게 */
 .ep-row.ep-square .ep-thumb { flex-basis: 120px; aspect-ratio: 1; }
 @media (max-width: 900px) { .ep-row.ep-square { flex-direction: row; } .ep-row.ep-square .ep-thumb { width: 96px; flex-basis: 96px; } }
+.feed-name .feed-url { opacity: 0.7; font-size: 0.75rem; }
