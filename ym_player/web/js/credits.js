@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 96,
+        "version": "1.1.59",
+        "date": "2026-10-29",
+        "title": "도로 CCTV 소스: 국가교통정보센터 오픈 API로 고속도로·국도 CCTV를 지역별로, 도로별로 골라 보기·즐겨찾기"
+    },
+    {
         "pr": 95,
         "version": "1.1.58",
         "date": "2026-10-29",

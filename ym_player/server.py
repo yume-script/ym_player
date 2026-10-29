@@ -44,7 +44,7 @@ from urllib.parse import quote, urlencode
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
 from yarl import URL
 
-from . import __version__, activity, auth, config_store, discord_feed, iptv, mcp, media_cache, plex_to_tg, podcast, prefs, radio, subtitles, telegram_src, tmdb, transcode, updates
+from . import __version__, activity, auth, cctv, config_store, discord_feed, iptv, mcp, media_cache, plex_to_tg, podcast, prefs, radio, subtitles, telegram_src, tmdb, transcode, updates
 
 log = logging.getLogger("ym_player")
 
@@ -819,6 +819,102 @@ async def _check_podcast(request, src):
     if bad:
         note += f" · 받기 실패 {len(bad)}개 (" + "; ".join(f"{t}: {err}" for t, err in bad[:3]) + ")"
     return len(bad) < len(feeds), note
+
+
+# ---------------------------------------------------------------------------
+# 도로 CCTV (cctv.py) - 국가교통정보센터 오픈 API
+# ---------------------------------------------------------------------------
+CCTV_CACHE = web.AppKey("cctv_cache", dict)   # 소스 id -> {"at", "key", "cams", "error"}
+CCTV_LOCKS = web.AppKey("cctv_locks", dict)
+CCTV_TTL = 5 * 60        # 영상 주소에 만료되는 값이 붙는 곳이 있어서 짧게
+CCTV_STALE_MAX = 60 * 60  # 새로 받기에 실패하면 이만큼 지난 목록까지는 그대로 쓴다
+
+
+async def _cctv_fetch(app, src):
+    """설정한 도로 종류마다 API를 불러 합친 목록. (cams, error)"""
+    if not src.get("api_key"):
+        return [], "인증키가 없습니다 (설정 > 소스 > 도로 CCTV에서 넣어 주세요)"
+    cams, errors = [], []
+    for road in src.get("roads") or ["ex", "its"]:
+        try:
+            async with app[HTTP].get(cctv.API, params=cctv.request_params(src, road), headers={"User-Agent": DEFAULT_UA},
+                                     timeout=ClientTimeout(total=30)) as resp:
+                body = await resp.read()
+                if resp.status >= 400:
+                    errors.append(f"{cctv.ROADS[road]}: HTTP {resp.status}")
+                    continue
+            try:
+                data = json.loads(body.decode("utf-8", "replace"))
+            except ValueError:
+                text = body.decode("utf-8", "replace")
+                msg = re.search(r"<(?:resultMsg|message|returnAuthMsg|errMsg)>([^<]{1,200})<", text)
+                errors.append(f"{cctv.ROADS[road]}: {msg.group(1) if msg else 'JSON이 아닌 응답 (인증키를 확인해 주세요)'}")
+                continue
+            got = cctv.parse_cams(data, road)
+            if not got and cctv.api_error(data):
+                errors.append(f"{cctv.ROADS[road]}: {cctv.api_error(data)}")
+            cams += got
+        except (ClientError, asyncio.TimeoutError) as e:
+            errors.append(f"{cctv.ROADS[road]}: 연결 실패 ({type(e).__name__})")
+    seen, out = set(), []
+    for c in cams:
+        if c["id"] not in seen:
+            seen.add(c["id"])
+            out.append(c)
+    out.sort(key=lambda c: (c["road"] != "ex", c["group"], c["name"]))
+    return out, " / ".join(errors)
+
+
+async def _cctv_cams(app, src, force=False):
+    """캐시한 목록 {"cams", "error", "at"} (오래됐으면 새로 받는다)"""
+    key = (src.get("api_key"), tuple(src.get("roads") or ()), src.get("region"), src.get("box"), src.get("cctv_type"))
+    hit = app[CCTV_CACHE].get(src["id"])
+    if hit and hit["key"] == key and not force and time.time() - hit["at"] < CCTV_TTL:
+        return hit
+    lock = app[CCTV_LOCKS].setdefault(src["id"], asyncio.Lock())
+    async with lock:
+        hit = app[CCTV_CACHE].get(src["id"])
+        if hit and hit["key"] == key and not force and time.time() - hit["at"] < CCTV_TTL:
+            return hit
+        cams, error = await _cctv_fetch(app, src)
+        if not cams and hit and hit["key"] == key and hit["cams"] and time.time() - hit["at"] < CCTV_STALE_MAX:
+            hit = app[CCTV_CACHE][src["id"]] = {**hit, "error": error or hit["error"]}   # 잠깐 실패 - 예전 목록으로 (다음 요청 때 다시)
+            return hit
+        entry = {"at": time.time(), "key": key, "cams": cams, "error": error}
+        app[CCTV_CACHE][src["id"]] = entry
+        if error:
+            log.info("도로 CCTV %s: %s", src["name"], error)
+        return entry
+
+
+async def cctv_cams(request):
+    """GET /api/cctv/{sid}/cams[?refresh=1] -> CCTV 목록 (영상 주소·인증키는 빼고)"""
+    src = _source_or_404(request.match_info["sid"], "cctv", request)
+    e = await _cctv_cams(request.app, src, force=request.query.get("refresh") == "1" and is_admin(request))
+    return web.json_response({"success": True, "cams": [cctv.public_cam(c) for c in e["cams"]], "error": e["error"]})
+
+
+async def cctv_live(request):
+    """GET /api/cctv/{sid}/live/{cid} -> 지금 쓸 수 있는 영상 주소의 서버 중계(/api/stream)로 넘긴다"""
+    src = _source_or_404(request.match_info["sid"], "cctv", request)
+    cid = request.match_info["cid"]
+    e = await _cctv_cams(request.app, src)
+    cam = next((c for c in e["cams"] if c["id"] == cid), None)
+    if cam is None and time.time() - e["at"] > 30:   # 목록이 바뀌었을 수 있다 - 한 번 새로
+        e = await _cctv_cams(request.app, src, force=True)
+        cam = next((c for c in e["cams"] if c["id"] == cid), None)
+    if cam is None:
+        return _json_error(404, "이 CCTV를 찾을 수 없습니다 (목록에서 빠졌을 수 있습니다).")
+    raise web.HTTPFound(iptv.stream_proxy_url(cam["url"], "", ""), headers={"Cache-Control": "no-store"})
+
+
+async def _check_cctv(request, src):
+    e = await _cctv_cams(request.app, src, force=True)
+    if not e["cams"]:
+        return False, e["error"] or "CCTV가 0개입니다 (지역·도로 종류를 확인해 주세요)"
+    roads = collections.Counter(c["road"] for c in e["cams"])
+    note = f"CCTV {len(e['cams'])}개 (" + ", ".join(f"{cctv.ROADS[r]} {n}" for r, n in roads.items()) + ")"
+    return True, note + (f" · 일부 실패: {e['error']}" if e["error"] else "")
 
 
 # ---------------------------------------------------------------------------
@@ -2546,6 +2642,8 @@ async def admin_status(request):
             coro = _check_radio(request, src)
         elif src["type"] == "podcast":
             coro = _check_podcast(request, src)
+        elif src["type"] == "cctv":
+            coro = _check_cctv(request, src)
         else:
             coro = _check_telegram(request, src)
         ok, detail, ms = await _timed(coro)
@@ -3123,6 +3221,8 @@ def create_app(require_auth=True):
     app[RADIO_ART] = {}
     app[PODCAST] = podcast.FeedCache()
     app[PODCAST_LOCKS] = {}
+    app[CCTV_CACHE] = {}
+    app[CCTV_LOCKS] = {}
     app[PLEX_FILES] = {}
     app[STATIC_TOKEN] = static_token()
     app.on_response_prepare.append(_static_no_cache)
@@ -3183,6 +3283,8 @@ def create_app(require_auth=True):
     app.router.add_get("/api/stream", stream_proxy)
     app.router.add_get("/api/radio/{sid}/now", radio_now)
     app.router.add_get("/api/podcast/{sid}/shows", podcast_shows)
+    app.router.add_get("/api/cctv/{sid}/cams", cctv_cams)
+    app.router.add_get(r"/api/cctv/{sid}/live/{cid:[0-9a-f]{10}}", cctv_live)
     app.router.add_get("/api/podcast/{sid}/home", podcast_home)
     app.router.add_get(r"/api/podcast/{sid}/show/{fid:[0-9a-f]{10}}", podcast_show)
     app.router.add_get(r"/api/podcast/{sid}/episode/{fid:[0-9a-f]{10}}/{eid:[0-9a-f]{12}}", podcast_episode)

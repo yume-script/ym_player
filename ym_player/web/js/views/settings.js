@@ -48,6 +48,10 @@ export async function renderSettings(main, _params, query, ctx) {
             h('button', { class: 'btn', on: { click: () => add({ type: 'podcast', name: '팟캐스트', feeds: [], enabled: true }) } },
                 icon('podcast'), ' 팟캐스트 추가')],
         'RSS 피드는 서버가 30분마다 새로 받습니다. 에피소드 오디오도 서버를 거쳐 재생되고, 들은 위치는 사용자마다 따로 기억합니다.'],
+        ['cctv', 'video', 'CCTV', () => [
+            h('button', { class: 'btn', on: { click: () => add({ type: 'cctv', name: '도로 CCTV', roads: ['ex', 'its'], region: 'all', cctv_type: '1', enabled: true }) } },
+                icon('video'), ' 도로 CCTV 추가')],
+        '국가교통정보센터(ITS) 오픈 API의 고속도로·국도 CCTV. 영상은 서버를 거쳐 재생됩니다.'],
     ];
     let srcType = storeGet('yp_settings_srctype', '');
     if (!SRC_TYPES.some(([t]) => t === srcType)) srcType = (drafts[0] && drafts[0].type) || 'plex';
@@ -434,6 +438,39 @@ export async function renderSettings(main, _params, query, ctx) {
                 h('span', { class: 'field-hint', text: '다른 팟캐스트 앱의 구독 목록(OPML)을 한꺼번에 넣거나 꺼냅니다.' })));
     }
 
+    /** 도로 CCTV: 국가교통정보센터 인증키 + 도로 종류 + 지역 + 영상 주소 종류 */
+    function cctvEditor(src) {
+        src.roads = src.roads || ['ex', 'its'];
+        const roadChk = (road, label) => {
+            const c = h('input', { type: 'checkbox', checked: src.roads.includes(road) });
+            c.addEventListener('change', () => {
+                src.roads = ['ex', 'its'].filter((r) => (r === road ? c.checked : src.roads.includes(r)));
+                touch();
+            });
+            return h('label', { class: 'check' }, c, ` ${label}`);
+        };
+        const regions = [['all', '전국'], ['seoul', '서울'], ['gyeonggi', '경기·인천'], ['gangwon', '강원'], ['chungcheong', '충청·대전·세종'],
+            ['jeolla', '전라·광주'], ['gyeongsang', '경상·부산·대구·울산'], ['jeju', '제주'], ['custom', '직접 지정 (경도·위도 범위)']];
+        const regionSel = h('select', { class: 'select' }, regions.map(([v, label]) => h('option', { value: v, text: label, selected: (src.region || 'all') === v })));
+        const boxIn = h('input', { class: 'input', value: src.box || '', placeholder: '최소경도, 최대경도, 최소위도, 최대위도 (예: 126.9, 127.1, 37.4, 37.6)' });
+        const boxRow = h('div', { class: regionSel.value === 'custom' ? '' : 'hidden' }, boxIn);
+        regionSel.addEventListener('change', () => { src.region = regionSel.value; boxRow.classList.toggle('hidden', regionSel.value !== 'custom'); touch(); });
+        boxIn.addEventListener('input', () => { src.box = boxIn.value; touch(); });
+        const typeSel = h('select', { class: 'select' }, [['1', '실시간 스트리밍 (HLS)'], ['4', '실시간 스트리밍 (HLS, https 주소)']]
+            .map(([v, label]) => h('option', { value: v, text: label, selected: String(src.cctv_type || '1') === v })));
+        typeSel.addEventListener('change', () => { src.cctv_type = typeSel.value; touch(); });
+        return h('div', {},
+            field('인증키 (국가교통정보센터 오픈데이터)', bindInput(src, 'api_key', h('input', {
+                class: 'input', type: 'password', value: '', autocomplete: 'off',
+                placeholder: src.has_api_key ? '저장된 키 사용 중 (바꿀 때만 입력)' : 'its.go.kr에서 발급받은 인증키',
+            })), 'its.go.kr 회원가입 → 오픈데이터 → CCTV 정보에서 무료로 신청합니다. 키는 이 서버에만 저장되고 브라우저로 내려오지 않습니다.'),
+            h('div', { class: 'field' }, h('span', { class: 'field-label', text: '도로' }),
+                h('div', { class: 'row-inline' }, roadChk('ex', '고속도로'), roadChk('its', '국도'))),
+            field('지역', regionSel, '고른 지역 안의 CCTV만 가져옵니다. 전국은 수천 개라 목록이 깁니다 (도로별로 골라 볼 수 있음).'),
+            boxRow,
+            field('영상 종류', typeSel, '영상이 안 나오면 https 주소 쪽으로 바꿔 보세요. 영상 주소는 몇 분마다 새로 받습니다.'));
+    }
+
     function bindInput(src, key, input, kind = 'value') {
         input.addEventListener(kind === 'checked' ? 'change' : 'input', () => { src[key] = input[kind]; touch(); });
         return input;
@@ -615,7 +652,8 @@ export async function renderSettings(main, _params, query, ctx) {
             const isTg = src.type === 'telegram';
             const isRadio = src.type === 'radio';
             const isPod = src.type === 'podcast';
-            const fields = isPod ? [feedEditor(src)] : isRadio ? [stationEditor(src)] : isTg ? [
+            const isCctv = src.type === 'cctv';
+            const fields = isCctv ? [cctvEditor(src)] : isPod ? [feedEditor(src)] : isRadio ? [stationEditor(src)] : isTg ? [
                 h('div', { class: 'row-2' },
                     field('API ID', bindInput(src, 'api_id', h('input', { class: 'input', value: src.api_id || '', placeholder: '숫자', inputmode: 'numeric' }))),
                     field('API Hash', bindInput(src, 'api_hash', h('input', {
@@ -658,8 +696,8 @@ export async function renderSettings(main, _params, query, ctx) {
             list.appendChild(h('div', { class: `src-card${src.enabled ? '' : ' disabled'}` },
                 h('div', { class: 'src-head' },
                     h('span', { class: `src-type ${src.type}` },
-                        icon(isPod ? 'podcast' : isRadio ? 'radio' : isTg ? 'paper-plane' : isPlex ? 'server' : 'tower-broadcast'),
-                        isPod ? ' 팟캐스트' : isRadio ? ' 라디오' : isTg ? ' 텔레그램' : isPlex ? ' Plex' : ' IPTV'),
+                        icon(isCctv ? 'video' : isPod ? 'podcast' : isRadio ? 'radio' : isTg ? 'paper-plane' : isPlex ? 'server' : 'tower-broadcast'),
+                        isCctv ? ' CCTV' : isPod ? ' 팟캐스트' : isRadio ? ' 라디오' : isTg ? ' 텔레그램' : isPlex ? ' Plex' : ' IPTV'),
                     bindInput(src, 'name', h('input', { class: 'input src-name', value: src.name || '', placeholder: '이름' })),
                     h('label', { class: 'check' }, bindInput(src, 'enabled', h('input', { type: 'checkbox', checked: !!src.enabled }), 'checked'), ' 사용'),
                     h('button', { class: 'icon-btn', title: '위로', on: { click: () => move(-1) } }, icon('arrow-up')),
@@ -738,7 +776,7 @@ export async function renderSettings(main, _params, query, ctx) {
     showTab((query && query.get('tab')) || storeGet('yp_settings_tab', 'sources'));
 }
 
-const TYPE_ICON = { plex: 'server', iptv: 'tower-broadcast', telegram: 'paper-plane', radio: 'radio', podcast: 'podcast' };
+const TYPE_ICON = { plex: 'server', iptv: 'tower-broadcast', telegram: 'paper-plane', radio: 'radio', podcast: 'podcast', cctv: 'video' };
 
 function fmtUptime(sec) {
     const d = Math.floor(sec / 86400), hh = Math.floor((sec % 86400) / 3600), mm = Math.floor((sec % 3600) / 60);

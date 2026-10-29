@@ -15,6 +15,8 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
     const libs = await p.getLibraries().catch(() => []);
     if (!ctx.alive()) return;
     const lib = libs.find((l) => l.id === libId) || { title: '라이브러리', type: 'movie' };
+    if (p.prepareLibrary) await p.prepareLibrary(libId);   // (도로 CCTV: 분류 목록을 알려면 먼저 받아야 함)
+    if (!ctx.alive()) return;
     // 추천 탭은 섹션 허브가 있는 소스(Plex)만
     const tab = p.getLibraryHubs ? (query.get('tab') || 'library') : 'library';
 
@@ -59,15 +61,16 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
         class: 'btn', title: '이 라이브러리에서 아무거나 골라 계속 재생',
         on: { click: () => player.playRandom((exclude) => p.randomPick(libId, { unwatched: unwatchedChk.checked, exclude }), lib.title) },
     }, icon('shuffle'), ' 랜덤 재생') : null;
-    const gridClass = `grid${lib.type === 'artist' || String(lib.type).startsWith('podcast') ? ' grid-square' : ''}${lib.type === 'telegram' ? ' grid-wide' : ''}${lib.type === 'radio' ? ' grid-channels' : ''}`;
+    const gridClass = `grid${lib.type === 'artist' || String(lib.type).startsWith('podcast') ? ' grid-square' : ''}${lib.type === 'telegram' ? ' grid-wide' : ''}${lib.type === 'radio' || lib.type === 'cctv' ? ' grid-channels' : ''}`;
     const grid = h('div', { class: gridClass });
     const sentinel = h('div', { class: 'sentinel' });
     // 보기 방식 (위쪽 [보기] 메뉴): 그리드 / 세부 / 테이블 (라디오 방송국도 - 테이블은 분류·LIVE 칸)
     let loaded = [];
     let mode = 'grid';
     const tableHead = () => h('div', { class: 'table-row table-head', role: 'row' },
-        h('span'), h('span', { text: lib.type === 'radio' ? '방송국' : '제목' }), h('span', { class: 'table-cell', text: lib.type === 'radio' ? '분류' : '연도·날짜' }),
-        h('span', { class: 'table-cell', text: lib.type === 'radio' ? '' : '길이' }), h('span', { text: '상태' }));
+        h('span'), h('span', { text: { radio: '방송국', cctv: 'CCTV' }[lib.type] || '제목' }),
+        h('span', { class: 'table-cell', text: lib.type === 'radio' || lib.type === 'cctv' ? '분류' : '연도·날짜' }),
+        h('span', { class: 'table-cell', text: lib.type === 'radio' || lib.type === 'cctv' ? '' : '길이' }), h('span', { text: '상태' }));
     const setMode = () => {
         mode = getViewMode();
         grid.className = mode === 'grid' ? gridClass : (mode === 'detail' ? 'item-list' : 'item-table');

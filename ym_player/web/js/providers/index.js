@@ -6,8 +6,9 @@ import { IptvProvider } from './iptv.js';
 import { TelegramProvider } from './telegram.js';
 import { RadioProvider } from './radio.js';
 import { PodcastProvider } from './podcast.js';
+import { CctvProvider } from './cctv.js';
 
-const TYPES = { plex: PlexProvider, iptv: IptvProvider, telegram: TelegramProvider, radio: RadioProvider, podcast: PodcastProvider };
+const TYPES = { plex: PlexProvider, iptv: IptvProvider, telegram: TelegramProvider, radio: RadioProvider, podcast: PodcastProvider, cctv: CctvProvider };
 
 /**
  * 여러 소스를 합친 랜덤 고르기 (홈의 [랜덤 재생]). 소스를 무작위 순서로 돌며 처음 나오는 영상.

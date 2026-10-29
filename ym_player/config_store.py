@@ -24,8 +24,8 @@ import uuid
 DATA_DIR = os.environ.get("MP_DATA_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
 
-SOURCE_TYPES = ("plex", "iptv", "telegram", "radio", "podcast")
-_SECRET_FIELDS = ("token", "api_hash", "tmdb_key")
+SOURCE_TYPES = ("plex", "iptv", "telegram", "radio", "podcast", "cctv")
+_SECRET_FIELDS = ("token", "api_hash", "tmdb_key", "api_key")
 _lock = threading.Lock()
 
 
@@ -77,6 +77,7 @@ def public_config(cfg):
         pub["has_token"] = bool(s.get("token"))
         pub["has_api_hash"] = bool(s.get("api_hash"))
         pub["has_tmdb_key"] = bool(s.get("tmdb_key"))
+        pub["has_api_key"] = bool(s.get("api_key"))
         out.append(pub)
     return {"client_id": cfg.get("client_id"), "sources": out}
 
@@ -88,7 +89,7 @@ def _clean_source(raw, old):
     src = {
         "id": str(raw.get("id") or secrets.token_hex(4)),
         "type": stype,
-        "name": str(raw.get("name") or {"plex": "Plex", "iptv": "IPTV", "telegram": "Telegram", "radio": "라디오", "podcast": "팟캐스트"}[stype]).strip(),
+        "name": str(raw.get("name") or {"plex": "Plex", "iptv": "IPTV", "telegram": "Telegram", "radio": "라디오", "podcast": "팟캐스트", "cctv": "도로 CCTV"}[stype]).strip(),
         "enabled": bool(raw.get("enabled", True)),
     }
     if stype == "plex":
@@ -126,6 +127,9 @@ def _clean_source(raw, old):
         src["stations"] = clean_stations(stations if stations else DEFAULT_STATIONS)
         if not src["stations"]:
             raise ValueError(f"[{src['name']}] 방송국이 하나도 없습니다.")
+    elif stype == "cctv":
+        from .cctv import clean_settings
+        src.update(clean_settings(raw, old))
     elif stype == "podcast":
         from .podcast import clean_feeds   # (podcast가 config_store를 가져다 쓴다)
         src["feeds"] = clean_feeds(raw.get("feeds"))
