@@ -358,7 +358,7 @@ export async function renderSettings(main, _params, query, ctx) {
         };
 
         // RSS 주소로 넣기
-        const urlIn = h('input', { class: 'input', placeholder: 'https://…/rss (팟캐스트 RSS 주소)', spellcheck: false });
+        const urlIn = h('input', { class: 'input', placeholder: 'https://…/rss (RSS 주소 또는 프로그램 웹 페이지 주소)', spellcheck: false });
         const urlBtn = h('button', { class: 'btn btn-sm', type: 'button' }, icon('plus'), ' 넣기');
         const byUrl = async () => { if (await addFeed(urlIn.value, urlBtn)) urlIn.value = ''; };
         urlBtn.addEventListener('click', byUrl);
@@ -380,10 +380,11 @@ export async function renderSettings(main, _params, query, ctx) {
                 r.results.forEach((x) => {
                     const b = h('button', { class: 'btn btn-sm', type: 'button', disabled: have(x.url) }, have(x.url) ? '들어 있음' : '넣기');
                     b.addEventListener('click', async () => { if (await addFeed(x.url, b)) { b.textContent = '들어 있음'; b.disabled = true; } });
-                    results.appendChild(h('div', { class: 'feed-row' },
+                    results.appendChild(h('div', { class: 'feed-row', title: `RSS: ${x.url}` },
                         x.image ? h('img', { class: 'feed-art', src: x.image, alt: '', loading: 'lazy' }) : icon('podcast'),
                         h('div', { class: 'feed-name' }, h('b', { text: x.title }),
-                            h('small', { class: 'muted', text: [x.author, x.genre, x.count ? `에피소드 ${x.count}개` : ''].filter(Boolean).join(' · ') })),
+                            h('small', { class: 'muted', text: [x.author, x.genre, x.count ? `에피소드 ${x.count}개` : ''].filter(Boolean).join(' · ') }),
+                            h('small', { class: 'muted feed-url', text: x.url })),
                         b));
                 });
             } catch (e) {
@@ -424,7 +425,8 @@ export async function renderSettings(main, _params, query, ctx) {
             h('div', { class: 'field' }, h('span', { class: 'field-label', text: '찾아서 넣기' }),
                 h('div', { class: 'row-inline' }, qIn, qBtn), results,
                 h('span', { class: 'field-hint', text: 'Apple 팟캐스트 목록(iTunes 검색)에서 찾습니다. 팟빵·스포티파이 전용 프로그램은 RSS 주소를 직접 넣어 주세요.' })),
-            h('div', { class: 'field' }, h('span', { class: 'field-label', text: 'RSS 주소로 넣기' }), h('div', { class: 'row-inline' }, urlIn, urlBtn)),
+            h('div', { class: 'field' }, h('span', { class: 'field-label', text: 'RSS 주소로 넣기' }), h('div', { class: 'row-inline' }, urlIn, urlBtn),
+                h('span', { class: 'field-hint', text: '프로그램 웹 페이지(팟빵 채널 페이지 등) 주소를 넣어도 그 페이지에 있는 RSS 링크를 찾아 봅니다. 찾은 결과의 RSS가 없는 주소(404)여도 그 프로그램 페이지에서 새 RSS를 찾아 봅니다.' })),
             h('div', { class: 'toolbar' },
                 h('button', { class: 'btn btn-sm', type: 'button', on: { click: () => opmlIn.click() } }, icon('file-import'), ' OPML 가져오기'),
                 h('button', { class: 'btn btn-sm', type: 'button', disabled: !src.feeds.length, on: { click: exportOpml } }, icon('file-export'), ' OPML 내보내기'),

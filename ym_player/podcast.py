@@ -200,6 +200,47 @@ class FeedHTTPError(Exception):
 
 
 # ---------------------------------------------------------------------------
+# RSS 주소 찾기 (웹 페이지 주소를 넣었거나, RSS 주소가 옮겨져 404일 때)
+# ---------------------------------------------------------------------------
+_LINK_RE = re.compile(r"<link\b[^>]*>", re.I)
+_A_RE = re.compile(r"<a\b[^>]*\bhref\s*=\s*[\"']([^\"']+)[\"'][^>]*>", re.I)
+_ATTR_RE = re.compile(r"([a-zA-Z_:-]+)\s*=\s*(?:\"([^\"]*)\"|'([^']*)')")
+
+
+def discover_feeds(page, base_url):
+    """웹 페이지 HTML -> RSS 주소 후보 (먼저 <link rel=alternate type=application/rss+xml>, 다음 rss·feed가 든 링크)"""
+    from urllib.parse import urljoin
+    text = page.decode("utf-8", "replace") if isinstance(page, bytes) else str(page or "")
+    out = []
+
+    def add(href):
+        href = html.unescape(href or "").strip()
+        if not href or href.startswith(("javascript:", "mailto:", "#")):
+            return
+        url = urljoin(base_url, href)
+        if url.startswith(("http://", "https://")) and url not in out and url != base_url:
+            out.append(url)
+    for tag in _LINK_RE.findall(text):
+        attrs = {m.group(1).lower(): (m.group(2) if m.group(2) is not None else m.group(3)) for m in _ATTR_RE.finditer(tag)}
+        if "alternate" in (attrs.get("rel") or "").lower() and re.search(r"(rss|atom)\+xml", attrs.get("type") or "", re.I):
+            add(attrs.get("href"))
+    for href in _A_RE.findall(text):
+        if re.search(r"(^|[/._?=-])(rss|feed)([/._?=-]|$)", href, re.I):
+            add(href)
+    return out[:5]
+
+
+def page_candidates(url):
+    """RSS를 못 받았을 때 RSS 링크를 찾아볼 웹 페이지들: 그 주소 자체, 팟빵이면 채널 페이지"""
+    out = [url]
+    if "podbbang.com" in url:
+        m = re.search(r"(?:[?&](?:id|channel)=|/(?:ch|channels|channel)/(?:rss/)?)(\d{3,})", url)
+        if m:
+            out.append(f"https://www.podbbang.com/channels/{m.group(1)}")
+    return out
+
+
+# ---------------------------------------------------------------------------
 # 피드 캐시 (메모리 + 파일)
 # ---------------------------------------------------------------------------
 def _cache_dir():
