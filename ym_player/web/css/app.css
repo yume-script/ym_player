@@ -1124,3 +1124,6 @@ body.docpip { margin: 0; background: #000; overflow: hidden; }
     .mirror-head > :nth-child(3), .mirror-head > :nth-child(4) { display: none; }
     .mirror-row:not(.mirror-head) > .mirror-subs:not(:empty)::before { content: '자막 '; color: var(--muted); }
 }
+.mirror-actions { display: inline-flex; gap: 0.3rem; margin-left: 0.5rem; vertical-align: middle; }
+.mirror-actions .btn { padding: 0.1rem 0.5rem; font-size: 0.75rem; }
+.mirror-note:has(.mirror-actions) { overflow: visible; white-space: normal; }

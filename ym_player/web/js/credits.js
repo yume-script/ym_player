@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 90,
+        "version": "1.1.53",
+        "date": "2026-10-29",
+        "title": "자동 올리기: 자막 기다림에 [지금 올리기]·[빼기] 버튼 (하드섭용), 자막 기다리기를 시간 단위로"
+    },
+    {
         "pr": 89,
         "version": "1.1.52",
         "date": "2026-10-28",

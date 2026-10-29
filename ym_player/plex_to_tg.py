@@ -18,7 +18,8 @@
   (telegram_src.plex_meta_put) YMPlayer의 텔레그램 화면이 TMDB 없이도 Plex처럼 보인다.
 
 설정은 config.json의 "plex_to_tg": {interval, max_gb, rules: [{id, enabled, plex, section, section_title, tg, channel,
-channel_title, caption, wait_subs, wait_days, burn_subs}]}
+channel_title, caption, wait_subs, wait_hours, burn_subs}]}
+(예전 wait_days는 읽을 때 wait_hours = wait_days x 24로 바꾼다)
 """
 import asyncio
 import hashlib
@@ -45,6 +46,7 @@ KEEP_DONE = 5000
 KEEP_HISTORY = 50
 SCAN_SIZE = 50
 DEFAULT_CAPTION = "{name}\n\n{summary}"
+DEFAULT_WAIT_HOURS = 12   # 새 규칙의 자막 기다리기 기본값 (자막을 영상에 입힌 하드섭은 자동으로 알 수 없어서 끝없이 기다리지 않게)
 STREAMABLE = {".mp4", ".m4v", ".mov"}   # 텔레그램 앱에서 받기 전에 바로 재생되는 형식
 SUB_EXT = {"srt": "srt", "subrip": "srt", "ass": "ass", "ssa": "ass", "smi": "smi", "sami": "smi", "vtt": "vtt", "webvtt": "vtt"}
 MAX_PARTS = 10
@@ -121,7 +123,10 @@ def clean_settings(raw):
                 "section_title": str(r.get("section_title") or "")[:100], "tg": str(r.get("tg") or ""),
                 "channel": str(r.get("channel") or "").strip(), "channel_title": str(r.get("channel_title") or "")[:100],
                 "caption": str(r.get("caption") or DEFAULT_CAPTION)[:1000],
-                "wait_subs": bool(r.get("wait_subs", True)), "wait_days": num(r.get("wait_days"), 0, 365, 0),
+                "wait_subs": bool(r.get("wait_subs", True)),
+                # 자막을 몇 시간까지 기다릴지 (0이면 계속). 예전 설정의 일 단위(wait_days)는 시간으로 바꿔 읽는다
+                "wait_hours": num(r["wait_hours"] if "wait_hours" in r else
+                                  (int(r.get("wait_days") or 0) * 24 if "wait_days" in r else DEFAULT_WAIT_HOURS), 0, 8760, DEFAULT_WAIT_HOURS),
                 "burn_subs": bool(r.get("burn_subs", True))}
         if not (rule["plex"] and rule["section"] and rule["tg"] and re.fullmatch(r"-?\d+", rule["channel"])):
             raise ValueError("규칙마다 Plex 라이브러리와 텔레그램 채널을 골라 주세요.")
@@ -384,6 +389,36 @@ class Mirror:
         self.wake()
         return item_fields(m)["name"]
 
+    def force_item(self, rule_id, key):
+        """자막 기다리는 항목을 기다리지 않고 지금 올린다 (자막을 영상에 입힌 하드섭처럼 자동으로 알 수 없는 경우)"""
+        state = load_state()
+        w = (state["rules"].get(rule_id, {}).get("waiting") or {}).pop(key, None)
+        if w is None:
+            raise ValueError("자막을 기다리는 항목이 아닙니다.")
+        save_state(state)
+        job = next((j for j in self.queue if j["rule"] == rule_id and j["key"] == key), None)
+        if job:
+            job["force"] = True
+        else:
+            self.queue.append({"rule": rule_id, "key": key, "title": w.get("title", key), "force": True})
+        self.wake()
+        return w.get("title", key)
+
+    def drop_item(self, rule_id, key):
+        """자막 기다리는 항목을 올리지 않고 뺀다 (다시 들어오지 않게)"""
+        state = load_state()
+        rs = state["rules"].get(rule_id, {})
+        w = (rs.get("waiting") or {}).pop(key, None)
+        if w is None:
+            raise ValueError("자막을 기다리는 항목이 아닙니다.")
+        rs.setdefault("fails", {})[key] = MAX_TRIES
+        state["history"] = [{"title": w.get("title", key), "ok": False, "note": "건너뜀: 직접 뺌", "at": int(time.time()), "key": key,
+                             "subs": "", "channel": ""}, *state["history"]][:KEEP_HISTORY]
+        save_state(state)
+        running = self.queue[0] if self.current_job and self.queue else None   # 지금 올리는 중인 것은 건드리지 않는다
+        self.queue = [j for j in self.queue if j is running or not (j["rule"] == rule_id and j["key"] == key)]
+        return w.get("title", key)
+
     async def run_queue(self, st):
         rules = {r["id"]: r for r in st["rules"]}
         while self.queue:
@@ -393,7 +428,7 @@ class Mirror:
             self.current_job, self.subs_label = {"rule": job["rule"], "key": job["key"]}, ""
             if rule:
                 try:
-                    note = await self.upload(rule, job["key"], st["max_gb"], test=job.get("test"))
+                    note = await self.upload(rule, job["key"], st["max_gb"], test=job.get("test") or job.get("force"))
                     ok = True
                 except Waiting:
                     waiting = True
@@ -450,7 +485,7 @@ class Mirror:
             soft = [x for x in subs if not x.get("key")]
         if rule["wait_subs"] and not subs and not side and not soft and not test:
             w = (load_state()["rules"].get(rule["id"], {}).get("waiting") or {}).get(key)
-            if not rule["wait_days"] or not w or time.time() - w.get("since", time.time()) < rule["wait_days"] * 86400:
+            if not rule["wait_hours"] or not w or time.time() - w.get("since", time.time()) < rule["wait_hours"] * 3600:
                 raise Waiting()
         size = int(part.get("size") or 0)
         limit = int(max_gb * PART_LIMIT * 0.97)

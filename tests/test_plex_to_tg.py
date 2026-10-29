@@ -214,6 +214,8 @@ def test_admin_api(data, monkeypatch):
             assert (await c.put("/api/admin/plex-tg", json={"rules": [{"plex": "px"}]})).status == 400
             assert (await (await c.get("/api/admin/plex-tg/options")).json())["plex"] == []
             assert (await c.post("/api/admin/plex-tg/test", json={"rule": "zz"})).status == 400
+            assert (await c.post("/api/admin/plex-tg/item", json={"rule": "r", "key": "1", "action": "boom"})).status == 400
+            assert (await c.post("/api/admin/plex-tg/item", json={"rule": "r", "key": "1", "action": "upload"})).status == 400
             await c.post("/api/auth/logout")
             await c.post("/api/auth/login", json={"username": "kid", "password": "secret2"})
             assert (await c.get("/api/admin/plex-tg")).status == 403
@@ -401,4 +403,65 @@ def test_soft_subtitle_inside_file_counts(data, tmp_path, monkeypatch):
         note = await mirror.upload(rule, "soft", 2)
         assert [x["name"] for x in tg.sent] == ["Anime.S01E03.mkv"] and note == "내장 자막" and mirror.subs_label == "소프트 자막"
         assert tg.sent[0]["caption"].startswith("애니 S01E03")
+    asyncio.run(main())
+
+
+def test_wait_hours_force_and_drop(data, tmp_path, monkeypatch):
+    """자막 기다리기는 시간 단위(예전 일 단위는 x24), 하드섭처럼 알 수 없는 것은 [지금 올리기] / [빼기]"""
+    base = {"plex": "px", "section": "1", "tg": "tg", "channel": "-1"}
+    rules = plex_to_tg.clean_settings({"rules": [{**base, "id": "a"}, {**base, "id": "b", "wait_days": 2},
+                                                 {**base, "id": "c", "wait_hours": 3}, {**base, "id": "d", "wait_days": 0}]})["rules"]
+    assert [r["wait_hours"] for r in rules] == [12, 48, 3, 0]
+    import shutil as _sh
+    if not _sh.which("ffmpeg"):
+        pytest.skip("ffmpeg 없음")
+    video = tmp_path / "Hard.S01E01.mp4"
+    _video(video, 2)                                  # 자막이 그림에 들어 있다고 치는 하드섭 (파일에는 자막 트랙 없음)
+    m = {"ratingKey": "5", "type": "episode", "title": "", "grandparentTitle": "하드", "parentIndex": 1, "index": 1, "addedAt": 50,
+         "duration": 2000, "Media": [{"Part": [{"key": "/p/5", "file": str(video), "size": video.stat().st_size, "Stream": []}]}]}
+    tg = FakeTg()
+
+    async def plex_json(c, s, path, params=None):
+        if path == "/library/sections":
+            return {"MediaContainer": {"Directory": [{"key": "1", "title": "애니", "type": "show"}]}}
+        return {"MediaContainer": {"Metadata": [m]}}
+    config_store.save({"client_id": "c", "sources": [], "plex_to_tg": {"rules": [{**base, "id": "r", "wait_hours": 0}]}})
+
+    async def main():
+        mirror = plex_to_tg.Mirror(plex_json, lambda sid: ({"client_id": "c"}, {"id": "px", "url": "http://x"}), lambda sid: tg, lambda: None)
+        monkeypatch.setattr(mirror, "_art", lambda *a: asyncio.sleep(0))
+        monkeypatch.setattr(mirror, "_save_meta", lambda *a: asyncio.sleep(0))
+        st = plex_to_tg.load_settings()
+        state = plex_to_tg.load_state()
+        state["rules"]["r"] = {"baseline": 10, "done": [], "fails": {}}
+        plex_to_tg.save_state(state)
+        await mirror.check_all(st)
+        await mirror.run_queue(st)
+        assert tg.sent == [] and list(plex_to_tg.load_state()["rules"]["r"]["waiting"]) == ["5"]   # 0시간 = 계속 기다림
+        with pytest.raises(ValueError):
+            mirror.force_item("r", "nope")
+        assert mirror.force_item("r", "5") == "하드 S01E01"
+        await mirror.run_queue(st)
+        assert [x["name"] for x in tg.sent] == ["Hard.S01E01.mp4"]
+        state = plex_to_tg.load_state()
+        assert state["rules"]["r"]["waiting"] == {} and "5" in state["rules"]["r"]["done"] and state["history"][0]["ok"]
+        # 빼기: 다시 들어오지 않는다
+        m["ratingKey"], m["addedAt"] = "6", 60
+        await mirror.check_all(st)
+        await mirror.run_queue(st)
+        assert list(plex_to_tg.load_state()["rules"]["r"]["waiting"]) == ["6"]
+        assert mirror.drop_item("r", "6") == "하드 S01E01"
+        await mirror.check_all(st)
+        assert mirror.queue == [] and plex_to_tg.load_state()["history"][0]["note"] == "건너뜀: 직접 뺌"
+        # 시간이 지나면 자막 없이 올림
+        st["rules"][0]["wait_hours"] = 1
+        m["ratingKey"], m["addedAt"] = "7", 70
+        await mirror.check_all(st)
+        await mirror.run_queue(st)
+        state = plex_to_tg.load_state()
+        state["rules"]["r"]["waiting"]["7"]["since"] -= 3601
+        plex_to_tg.save_state(state)
+        await mirror.check_all(st)
+        await mirror.run_queue(st)
+        assert len(tg.sent) == 2 and plex_to_tg.load_state()["rules"]["r"]["waiting"] == {}
     asyncio.run(main())
