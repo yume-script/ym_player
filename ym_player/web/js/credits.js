@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 93,
+        "version": "1.1.56",
+        "date": "2026-10-29",
+        "title": "팟캐스트 [넣기] HTTP 404: 거절하는 RSS 서버는 팟캐스트 앱처럼 다시 받기, 없는 주소·서버 재시작 안 됨을 알아보기 쉽게"
+    },
+    {
         "pr": 92,
         "version": "1.1.55",
         "date": "2026-10-29",

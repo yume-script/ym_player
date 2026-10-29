@@ -182,6 +182,23 @@ def parse_feed(data):
     return show
 
 
+class FeedHTTPError(Exception):
+    """피드 주소가 오류 상태 코드를 돌려줌 - 알아보기 쉬운 말로"""
+
+    def __init__(self, status):
+        self.status = status
+        if status in (404, 410):
+            text = (f"RSS 주소에서 HTTP {status}(없는 페이지)가 왔습니다. 프로그램이 RSS 주소를 옮겼거나 방송을 끝냈을 수 있습니다. "
+                    "프로그램 홈페이지나 팟빵 등에서 지금 쓰는 RSS 주소를 확인해 넣어 주세요.")
+        elif status in (401, 403):
+            text = f"RSS 서버가 거절했습니다 (HTTP {status}). 로그인이 필요한 유료·비공개 피드이거나 서버 접속을 막는 곳입니다."
+        elif status == 429:
+            text = "RSS 서버가 요청이 너무 잦다고 합니다 (HTTP 429). 잠시 뒤 다시 해 주세요."
+        else:
+            text = f"RSS 서버 응답 HTTP {status}"
+        super().__init__(text)
+
+
 # ---------------------------------------------------------------------------
 # 피드 캐시 (메모리 + 파일)
 # ---------------------------------------------------------------------------
