@@ -29,9 +29,9 @@ const PROXY_FIRST_KEY = 'yp_proxy_first';
 const RESUME_KEY = 'yp_resume_after_reload';
 const RESUME_MAX_MS = 10 * 60 * 1000;
 // 화면 속 화면 창 오른쪽 위에 보일 소스 이름 (Document PiP 창에서만 - 기본 PiP 창에는 영상 말고는 못 넣는다)
-const SOURCE_LABEL = { plex: 'PLEX', telegram: 'TELEGRAM', iptv: 'IPTV', radio: 'RADIO' };
+const SOURCE_LABEL = { plex: 'PLEX', telegram: 'TELEGRAM', iptv: 'IPTV', radio: 'RADIO', podcast: 'PODCAST' };
 // 버벅임 알리기 (/api/activity/report -> 부하 조절 봇이 /api/activity에서 본다). 소스 종류 -> 알릴 종류
-const ACTIVITY_KIND = { plex: 'plex', telegram: 'telegram', iptv: 'live', radio: 'live' };
+const ACTIVITY_KIND = { plex: 'plex', telegram: 'telegram', iptv: 'live', radio: 'live', podcast: 'podcast' };
 
 // DASH(.mpd) 엔진은 크고(약 800KB) 쓰는 채널이 드물어서, 처음 필요할 때만 불러온다
 const DASHJS_URL = 'https://cdn.jsdelivr.net/npm/dashjs@4.7.4/dist/dash.all.min.js';
@@ -382,7 +382,7 @@ class Player {
         if (!route && this.viz.isRouted(this.video) && !this.inPip) this.needsRecreate = true;
         if (this.needsRecreate) { this.needsRecreate = false; this._recreateVideo(); }
         this._applyRate();
-        this.rateBtn.classList.toggle('hidden', !!pb.audioOnly);
+        this.rateBtn.classList.toggle('hidden', !!pb.audioOnly && !pb.allowRate);
         this._destroyEngines();
         this.video.removeAttribute('src');
         this.video.load();
@@ -1567,7 +1567,7 @@ class Player {
     }
 
     _applyRate() {
-        const r = this.pb && !this.pb.live && !this.pb.audioOnly ? this.rate : 1;
+        const r = this.pb && !this.pb.live && (!this.pb.audioOnly || this.pb.allowRate) ? this.rate : 1;   // (팟캐스트는 소리만이어도)
         const v = this.video;
         v.defaultPlaybackRate = r;
         if (v.playbackRate !== r) v.playbackRate = r;

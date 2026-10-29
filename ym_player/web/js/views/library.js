@@ -47,7 +47,7 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
     const prefKey = `yp_lib_${pid}_${libId}`;
     const pref = storeGet(prefKey, { sort: 'titleSort', unwatched: false, kind: '' });
     const sortSel = h('select', { class: 'select' },
-        p.librarySorts().map(([v, label]) => h('option', { value: v, text: label, selected: v === pref.sort })));
+        p.librarySorts(libId).map(([v, label]) => h('option', { value: v, text: label, selected: v === pref.sort })));
     const unwatchedChk = h('input', { type: 'checkbox', checked: !!pref.unwatched });
     // 텔레그램: 영상/사진 골라 보기 (관리자가 "영상만/사진만"으로 정한 채널은 없음)
     const kindOpts = p.libraryKinds ? p.libraryKinds(libId) : null;
@@ -59,7 +59,7 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
         class: 'btn', title: '이 라이브러리에서 아무거나 골라 계속 재생',
         on: { click: () => player.playRandom((exclude) => p.randomPick(libId, { unwatched: unwatchedChk.checked, exclude }), lib.title) },
     }, icon('shuffle'), ' 랜덤 재생') : null;
-    const gridClass = `grid${lib.type === 'artist' ? ' grid-square' : ''}${lib.type === 'telegram' ? ' grid-wide' : ''}${lib.type === 'radio' ? ' grid-channels' : ''}`;
+    const gridClass = `grid${lib.type === 'artist' || String(lib.type).startsWith('podcast') ? ' grid-square' : ''}${lib.type === 'telegram' ? ' grid-wide' : ''}${lib.type === 'radio' ? ' grid-channels' : ''}`;
     const grid = h('div', { class: gridClass });
     const sentinel = h('div', { class: 'sentinel' });
     // 보기 방식 (위쪽 [보기] 메뉴): 그리드 / 세부 / 테이블 (라디오 방송국도 - 테이블은 분류·LIVE 칸)
@@ -92,7 +92,7 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
         h('div', { class: 'toolbar' },
             countEl,
             randomBtn,
-            p.kind === 'plex' ? h('label', { class: 'check' }, unwatchedChk, ' 안 본 것만') : null,
+            p.kind === 'plex' || p.kind === 'podcast' ? h('label', { class: 'check' }, unwatchedChk, p.kind === 'podcast' ? ' 안 들은 것만' : ' 안 본 것만') : null,
             kindSel ? h('label', { class: 'muted' }, `${p.libraryKindLabel ? p.libraryKindLabel() : '보기'} `, kindSel) : null,
             h('label', { class: 'muted' }, '정렬 ', sortSel)),
         grid, sentinel);

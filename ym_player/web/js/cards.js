@@ -78,6 +78,7 @@ export function posterCard(item, { wide = false } = {}) {
 
 /** 세부/테이블 보기에 쓸 정보 (Plex 메타데이터 / 텔레그램 색인) */
 export function itemFacts(item) {
+    if (item.facts) return item.facts;   // 소스가 직접 채운 것 (팟캐스트)
     const m = item.raw || {};
     const p = registry.byId(item.pid);
     if (p && p.kind === 'plex') {

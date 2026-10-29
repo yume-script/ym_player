@@ -44,6 +44,10 @@ export async function renderSettings(main, _params, query, ctx) {
             h('button', { class: 'btn', on: { click: () => add({ type: 'radio', name: '라디오', enabled: true }) } },
                 icon('radio'), ' 라디오 추가')],
         ''],
+        ['podcast', 'podcast', '팟캐스트', () => [
+            h('button', { class: 'btn', on: { click: () => add({ type: 'podcast', name: '팟캐스트', feeds: [], enabled: true }) } },
+                icon('podcast'), ' 팟캐스트 추가')],
+        'RSS 피드는 서버가 30분마다 새로 받습니다. 에피소드 오디오도 서버를 거쳐 재생되고, 들은 위치는 사용자마다 따로 기억합니다.'],
     ];
     let srcType = storeGet('yp_settings_srctype', '');
     if (!SRC_TYPES.some(([t]) => t === srcType)) srcType = (drafts[0] && drafts[0].type) || 'plex';
@@ -183,14 +187,14 @@ export async function renderSettings(main, _params, query, ctx) {
             const sub = h('div', { class: 'acc-libs' });
             chk.addEventListener('change', () => { if (chk.checked) chosen.add(src.id); else chosen.delete(src.id); sub.classList.toggle('hidden', !chk.checked); });
             sub.classList.toggle('hidden', !chk.checked);
-            const hasItems = src.type === 'plex' || src.type === 'telegram' || src.type === 'radio';
-            const srcIcon = { plex: 'server', telegram: 'paper-plane', radio: 'radio' }[src.type] || 'tower-broadcast';
+            const hasItems = src.type === 'plex' || src.type === 'telegram' || src.type === 'radio' || src.type === 'podcast';
+            const srcIcon = { plex: 'server', telegram: 'paper-plane', radio: 'radio', podcast: 'podcast' }[src.type] || 'tower-broadcast';
             listBox.appendChild(h('div', { class: 'acc-src' },
                 h('label', { class: 'check' }, chk, icon(srcIcon), ` ${src.name}`),
                 hasItems ? sub : null));
             if (!hasItems) return;
             // 그 소스 안에서 볼 것: Plex는 라이브러리, 텔레그램은 설정에서 고른 채널, 라디오는 방송국
-            const what = { plex: '라이브러리', telegram: '채널', radio: '방송국' }[src.type];
+            const what = { plex: '라이브러리', telegram: '채널', radio: '방송국', podcast: '프로그램' }[src.type];
             const fill = (items) => {
                 clear(sub);
                 if (!items.length) { sub.appendChild(h('span', { class: 'muted', text: `고를 ${what}이 없습니다.` })); return; }
@@ -221,6 +225,10 @@ export async function renderSettings(main, _params, query, ctx) {
                 fill((src.stations || []).map((st) => ({ id: st.id, title: st.name, icon: 'radio' })));
                 return;
             }
+            if (src.type === 'podcast') {
+                fill((src.feeds || []).map((f) => ({ id: f.id, title: f.title || f.url, icon: 'podcast' })));
+                return;
+            }
             sub.appendChild(h('span', { class: 'muted' }, icon('circle-notch', 'fa-spin'), ' 라이브러리 불러오는 중...'));
             new PlexProvider(src, registry.config.client_id).getLibraries({ all: true }).then(fill)
                 .catch((e) => { clear(sub).appendChild(h('span', { class: 'muted error', text: `라이브러리 목록 실패: ${e.message}` })); });
@@ -232,7 +240,7 @@ export async function renderSettings(main, _params, query, ctx) {
             h('label', { class: 'check' }, allIn, ' 전부 (나중에 추가하는 소스도)'),
             h('label', { class: 'check' }, someIn, ' 고른 것만'),
             listBox,
-            h('p', { class: 'field-hint', text: '고르지 않은 소스, Plex 라이브러리, 텔레그램 채널, 라디오 방송국은 이 사용자의 사이드바·홈·검색·이어보기에 안 나오고, 서버도 열어 주지 않습니다.' })),
+            h('p', { class: 'field-hint', text: '고르지 않은 소스, Plex 라이브러리, 텔레그램 채널, 라디오 방송국, 팟캐스트 프로그램은 이 사용자의 사이드바·홈·검색·이어보기에 안 나오고, 서버도 열어 주지 않습니다.' })),
         [saveAcc]);
         saveAcc.addEventListener('click', async () => {
             const access = allIn.checked ? null : {
@@ -298,6 +306,130 @@ export async function renderSettings(main, _params, query, ctx) {
                 + '분류를 적으면 방송국 화면에서 분류(지역)별로 골라 볼 수 있습니다.'),
             h('div', { class: 'toolbar' }, krBtn,
                 h('span', { class: 'field-hint', text: 'KBS·MBC·SBS 지역국, EBS, CBS, TBN, 공동체 라디오 등 194개 (전국 + 9개 지역, radio.bsod.kr 목록)' })));
+    }
+
+    /**
+     * 팟캐스트 프로그램(RSS 피드) 목록: RSS 주소를 넣거나, 이름으로 찾아서(iTunes 검색) 더한다. OPML로 한꺼번에 넣고 뺄 수 있다.
+     * 넣기 전에 서버가 피드를 받아 보고 이름을 채운다 (/api/admin/podcast/probe)
+     */
+    function feedEditor(src) {
+        src.feeds = src.feeds || [];
+        const listBox = h('div', { class: 'feed-list' });
+        const paint = () => {
+            clear(listBox);
+            if (!src.feeds.length) listBox.appendChild(h('span', { class: 'muted', text: '아직 프로그램이 없습니다. 아래에서 찾거나 RSS 주소를 넣으세요.' }));
+            src.feeds.forEach((f, i) => {
+                const swap = (d) => {
+                    const j = i + d;
+                    if (j < 0 || j >= src.feeds.length) return;
+                    [src.feeds[i], src.feeds[j]] = [src.feeds[j], src.feeds[i]];
+                    touch(); paint();
+                };
+                listBox.appendChild(h('div', { class: 'feed-row' },
+                    icon('podcast'),
+                    h('div', { class: 'feed-name' }, h('b', { text: f.title || '(이름 모름)' }), h('small', { class: 'muted', text: f.url })),
+                    h('button', { class: 'icon-btn', type: 'button', title: '위로', on: { click: () => swap(-1) } }, icon('arrow-up')),
+                    h('button', { class: 'icon-btn', type: 'button', title: '아래로', on: { click: () => swap(1) } }, icon('arrow-down')),
+                    h('button', { class: 'icon-btn danger', type: 'button', title: '빼기', on: { click: () => {
+                        if (!confirm(`"${f.title || f.url}" 프로그램을 뺄까요? (저장하면 들은 기록은 남고 목록에서만 빠집니다)`)) return;
+                        src.feeds.splice(i, 1); touch(); paint();
+                    } } }, icon('xmark'))));
+            });
+        };
+        const have = (url) => src.feeds.some((f) => f.url === url);
+        const addFeed = async (url, btn) => {
+            url = (url || '').trim();
+            if (!url) return false;
+            if (have(url)) { toast('이미 들어 있는 프로그램입니다.'); return false; }
+            if (btn) btn.disabled = true;
+            try {
+                const r = await api('/api/admin/podcast/probe', { method: 'POST', json: { url } });
+                if (have(r.url)) { toast('이미 들어 있는 프로그램입니다.'); return false; }
+                src.feeds.push({ url: r.url, title: r.title });
+                touch(); paint();
+                toast(`"${r.title}" (에피소드 ${r.count}개)를 넣었습니다. [저장]을 누르면 적용됩니다.`);
+                return true;
+            } catch (e) {
+                toast(`넣지 못했습니다: ${e.message}`, 'error', 6000);
+                return false;
+            } finally {
+                if (btn) btn.disabled = false;
+            }
+        };
+
+        // RSS 주소로 넣기
+        const urlIn = h('input', { class: 'input', placeholder: 'https://…/rss (팟캐스트 RSS 주소)', spellcheck: false });
+        const urlBtn = h('button', { class: 'btn btn-sm', type: 'button' }, icon('plus'), ' 넣기');
+        const byUrl = async () => { if (await addFeed(urlIn.value, urlBtn)) urlIn.value = ''; };
+        urlBtn.addEventListener('click', byUrl);
+        urlIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); byUrl(); } });
+
+        // 이름으로 찾기 (iTunes 팟캐스트 검색)
+        const qIn = h('input', { class: 'input', type: 'search', placeholder: '프로그램 이름으로 찾기 (예: 김혜리의 필름클럽)' });
+        const qBtn = h('button', { class: 'btn btn-sm', type: 'button' }, icon('magnifying-glass'), ' 찾기');
+        const results = h('div', { class: 'feed-results' });
+        const search = async () => {
+            const q = qIn.value.trim();
+            if (!q) return;
+            qBtn.disabled = true;
+            clear(results).appendChild(h('span', { class: 'muted' }, icon('circle-notch', 'fa-spin'), ' 찾는 중...'));
+            try {
+                const r = await api(`/api/admin/podcast/search?${new URLSearchParams({ q })}`);
+                clear(results);
+                if (!r.results.length) { results.appendChild(h('span', { class: 'muted', text: '찾은 프로그램이 없습니다.' })); return; }
+                r.results.forEach((x) => {
+                    const b = h('button', { class: 'btn btn-sm', type: 'button', disabled: have(x.url) }, have(x.url) ? '들어 있음' : '넣기');
+                    b.addEventListener('click', async () => { if (await addFeed(x.url, b)) { b.textContent = '들어 있음'; b.disabled = true; } });
+                    results.appendChild(h('div', { class: 'feed-row' },
+                        x.image ? h('img', { class: 'feed-art', src: x.image, alt: '', loading: 'lazy' }) : icon('podcast'),
+                        h('div', { class: 'feed-name' }, h('b', { text: x.title }),
+                            h('small', { class: 'muted', text: [x.author, x.genre, x.count ? `에피소드 ${x.count}개` : ''].filter(Boolean).join(' · ') })),
+                        b));
+                });
+            } catch (e) {
+                clear(results).appendChild(h('span', { class: 'muted error', text: `찾기 실패: ${e.message}` }));
+            } finally {
+                qBtn.disabled = false;
+            }
+        };
+        qBtn.addEventListener('click', search);
+        qIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); search(); } });
+
+        // OPML (다른 팟캐스트 앱의 구독 목록) 가져오기·내보내기
+        const opmlIn = h('input', { type: 'file', accept: '.opml,.xml,text/xml,application/xml', class: 'hidden' });
+        opmlIn.addEventListener('change', async () => {
+            const file = opmlIn.files[0];
+            opmlIn.value = '';
+            if (!file) return;
+            const doc = new DOMParser().parseFromString(await file.text(), 'text/xml');
+            const outs = [...doc.querySelectorAll('outline[xmlUrl], outline[xmlurl]')]
+                .map((o) => ({ url: (o.getAttribute('xmlUrl') || o.getAttribute('xmlurl') || '').trim(), title: o.getAttribute('title') || o.getAttribute('text') || '' }))
+                .filter((x) => /^https?:\/\//.test(x.url) && !have(x.url));
+            if (!outs.length) { toast('OPML에서 새로 넣을 프로그램을 찾지 못했습니다.'); return; }
+            src.feeds.push(...outs);
+            touch(); paint();
+            toast(`OPML에서 ${outs.length}개를 넣었습니다. [저장]을 누르면 적용됩니다.`);
+        });
+        const exportOpml = () => {
+            const esc = (v) => String(v).replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
+            const body = src.feeds.map((f) => `    <outline type="rss" text="${esc(f.title || f.url)}" title="${esc(f.title || f.url)}" xmlUrl="${esc(f.url)}"/>`).join('\n');
+            const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<opml version="2.0">\n  <head><title>${esc(src.name || '팟캐스트')}</title></head>\n  <body>\n${body}\n  </body>\n</opml>\n`;
+            const a = h('a', { href: URL.createObjectURL(new Blob([xml], { type: 'text/x-opml' })), download: 'podcasts.opml' });
+            document.body.appendChild(a); a.click(); a.remove();
+        };
+
+        paint();
+        return h('div', {},
+            h('div', { class: 'field' }, h('span', { class: 'field-label', text: '프로그램' }), listBox),
+            h('div', { class: 'field' }, h('span', { class: 'field-label', text: '찾아서 넣기' }),
+                h('div', { class: 'row-inline' }, qIn, qBtn), results,
+                h('span', { class: 'field-hint', text: 'Apple 팟캐스트 목록(iTunes 검색)에서 찾습니다. 팟빵·스포티파이 전용 프로그램은 RSS 주소를 직접 넣어 주세요.' })),
+            h('div', { class: 'field' }, h('span', { class: 'field-label', text: 'RSS 주소로 넣기' }), h('div', { class: 'row-inline' }, urlIn, urlBtn)),
+            h('div', { class: 'toolbar' },
+                h('button', { class: 'btn btn-sm', type: 'button', on: { click: () => opmlIn.click() } }, icon('file-import'), ' OPML 가져오기'),
+                h('button', { class: 'btn btn-sm', type: 'button', disabled: !src.feeds.length, on: { click: exportOpml } }, icon('file-export'), ' OPML 내보내기'),
+                opmlIn,
+                h('span', { class: 'field-hint', text: '다른 팟캐스트 앱의 구독 목록(OPML)을 한꺼번에 넣거나 꺼냅니다.' })));
     }
 
     function bindInput(src, key, input, kind = 'value') {
@@ -480,7 +612,8 @@ export async function renderSettings(main, _params, query, ctx) {
             const isPlex = src.type === 'plex';
             const isTg = src.type === 'telegram';
             const isRadio = src.type === 'radio';
-            const fields = isRadio ? [stationEditor(src)] : isTg ? [
+            const isPod = src.type === 'podcast';
+            const fields = isPod ? [feedEditor(src)] : isRadio ? [stationEditor(src)] : isTg ? [
                 h('div', { class: 'row-2' },
                     field('API ID', bindInput(src, 'api_id', h('input', { class: 'input', value: src.api_id || '', placeholder: '숫자', inputmode: 'numeric' }))),
                     field('API Hash', bindInput(src, 'api_hash', h('input', {
@@ -523,8 +656,8 @@ export async function renderSettings(main, _params, query, ctx) {
             list.appendChild(h('div', { class: `src-card${src.enabled ? '' : ' disabled'}` },
                 h('div', { class: 'src-head' },
                     h('span', { class: `src-type ${src.type}` },
-                        icon(isRadio ? 'radio' : isTg ? 'paper-plane' : isPlex ? 'server' : 'tower-broadcast'),
-                        isRadio ? ' 라디오' : isTg ? ' 텔레그램' : isPlex ? ' Plex' : ' IPTV'),
+                        icon(isPod ? 'podcast' : isRadio ? 'radio' : isTg ? 'paper-plane' : isPlex ? 'server' : 'tower-broadcast'),
+                        isPod ? ' 팟캐스트' : isRadio ? ' 라디오' : isTg ? ' 텔레그램' : isPlex ? ' Plex' : ' IPTV'),
                     bindInput(src, 'name', h('input', { class: 'input src-name', value: src.name || '', placeholder: '이름' })),
                     h('label', { class: 'check' }, bindInput(src, 'enabled', h('input', { type: 'checkbox', checked: !!src.enabled }), 'checked'), ' 사용'),
                     h('button', { class: 'icon-btn', title: '위로', on: { click: () => move(-1) } }, icon('arrow-up')),
@@ -603,7 +736,7 @@ export async function renderSettings(main, _params, query, ctx) {
     showTab((query && query.get('tab')) || storeGet('yp_settings_tab', 'sources'));
 }
 
-const TYPE_ICON = { plex: 'server', iptv: 'tower-broadcast', telegram: 'paper-plane', radio: 'radio' };
+const TYPE_ICON = { plex: 'server', iptv: 'tower-broadcast', telegram: 'paper-plane', radio: 'radio', podcast: 'podcast' };
 
 function fmtUptime(sec) {
     const d = Math.floor(sec / 86400), hh = Math.floor((sec % 86400) / 3600), mm = Math.floor((sec % 3600) / 60);

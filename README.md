@@ -48,7 +48,7 @@ sudo systemctl enable --now ym_player
 - **관리자**: 사이드바 맨 아래 ⚙️ **설정**에서 탭으로 관리합니다 — **소스** / **사용자**(추가·삭제, 권한, 비밀번호, 볼 수 있는 범위) /
   **상태**(소스마다 실제 연결 점검, 서버 정보, 최근 경고) / **캐시** / **화면**(왼쪽 위 이름과 아이콘 - 로그인 화면과 브라우저 탭에도 쓰임, 아이콘의 버전 배지 켜기/끄기, 모든 사용자의 **기본 테마**) /
   **백업**(설정·사용자·즐겨찾기·아이콘을 JSON으로 받기, 그 파일로 복원) / **Thanks to**(참고한 저장소, 쓰는 오픈소스, 변경 이력).
-- **버전**: `ym_player/__init__.py`의 `__version__` 한 곳에서 정합니다. 왼쪽 위 아이콘 배지(예: 1.1.54), 설정 > 상태,
+- **버전**: `ym_player/__init__.py`의 `__version__` 한 곳에서 정합니다. 왼쪽 위 아이콘 배지(예: 1.1.55), 설정 > 상태,
   시작 로그에 그대로 나오므로 버전을 올릴 때 아이콘 그림을 다시 만들 필요가 없습니다(배지는 화면에서 글자로 얹음).
   업데이트(PR)마다 셋째 자리를 하나씩 올리고, `web/js/credits.js` CHANGELOG 맨 위 줄에 같은 `version`을 적습니다.
 - **새 버전 알림**: 아이콘 옆에 **[NEW]**가 뜨면 아직 안 본 새 버전입니다. 누르면 그 뒤로 새로워진 점이 나오고, 본 버전은 사람마다
@@ -88,6 +88,7 @@ sudo systemctl enable --now ym_player
   로그인되면 들어가 있는 채널/그룹 목록이 나오고, 체크한 채널이 사이드바에 라이브러리처럼 붙습니다(체크 후 다시 [저장]).
 - **IPTV 추가**: M3U 주소 + (선택) XMLTV 편성표 주소. `.xml.gz`도 됩니다.
 - **라디오 추가**: 인터넷 라디오 방송국 목록 (아래 "인터넷 라디오").
+- **팟캐스트 추가**: 프로그램(RSS 피드) 목록 (아래 "팟캐스트").
   - **여러 M3U 합치기**: M3U 칸에 주소를 한 줄에 하나씩 넣으면 한 채널 목록으로 합칩니다(`#`로 시작하는 줄은 메모).
     뒤 목록의 채널이 앞 목록에 이미 있으면(같은 tvg-id, 같은 이름, 같은 주소) 한 번만 보이고, 뒤 주소는 **예비 주소**가 되어
     앞 주소가 안 나오면 재생기가 차례로 시도합니다(재생 화면 아래에 "예비 주소 1/2"). 일부 목록을 못 받아도 나머지로 보여 주고,
@@ -142,6 +143,7 @@ ym_player/                       저장소 루트
     ├── telegram_src.py          텔레그램: Telethon 로그인/채널/색인(SQLite)/Range 스트림/썸네일/이어보기
     ├── transcode.py             ffprobe로 보낼 방법 정하기 + ffmpeg 명령 (서버 변환)
     ├── radio.py                 인터넷 라디오: 곡 정보(ICY) 읽기, iTunes 앨범 표지 고르기
+    ├── podcast.py               팟캐스트: RSS 읽기, 피드 캐시(podcast_cache/), 사용자별 들은 위치(podcast.db)
     ├── media_cache.py           동영상 조각 캐시(디스크/메모리) + 앞쪽 미리 받기
     └── web/
         ├── index.html
@@ -188,6 +190,9 @@ ym_player/                       저장소 루트
 | `GET /api/tg/{id}/meta/{c}/{m}` · `meta/{c}?series=` · `meta-search` · `POST meta-fix` | TMDB 작품 정보 (찾기·고치기는 관리자만) |
 | `GET /api/tg/{id}/videos?kind=video\|image` · `GET /api/tg/{id}/image/{c}/{m}` | 영상/사진 골라 목록, 사진 원본 (뷰어) |
 | `GET /api/radio/{id}/now` | 라디오 방송국마다 지금 나오는 곡과 앨범 표지 |
+| `GET /api/podcast/{id}/shows` · `home` · `show/{피드}[?refresh=1]` · `episode/{피드}/{에피소드}` | 팟캐스트 프로그램 목록 / 이어 듣기·새 에피소드 / 프로그램과 에피소드 / 에피소드 하나와 앞뒤 회 |
+| `GET /api/podcast/{id}/audio/{피드}/{에피소드}` · `POST progress` · `POST watched` | 에피소드 오디오 중계(Range, 피드에 적힌 주소만) / 들은 위치 / 다 들음 표시 |
+| `GET /api/admin/podcast/search?q=` · `POST /api/admin/podcast/probe` | 팟캐스트 찾기(iTunes 검색) / RSS 주소를 받아 보고 이름 확인 (관리자) |
 | `POST /api/tg/{id}/hls/{c}/{m}?start=초&mode=` · `GET /api/tg-hls/{변환id}/{파일}` | Safari용 서버 변환 (HLS 재생목록·조각, 시작한 사람만) |
 | `GET /api/plex-sub/{id}?path=/library/streams/N&codec=` | Plex 외부 자막 파일을 받아 WebVTT로 바꿔 줌 (자막 스트림 경로만 허용) |
 | `* /api/plex/{id}/...` | Plex API·이미지·스트림 중계. **토큰은 서버가 붙임** (브라우저에 안 보임). 라이브러리 제한이 있는 사용자는 정해 둔 경로만, 허락된 섹션 항목만 |
@@ -230,6 +235,27 @@ Jazz24)가 들어갑니다. 방송국은 한 줄에 하나 `이름 | 스트림 �
   영상은 10초 뒤로/30초 앞으로)을 거기서 조작합니다 (Media Session, 라디오·IPTV·Plex·텔레그램 모두).
 - **LP 잡음**: [LP 잡음] 버튼으로 켜고 끕니다. 켜면 강도(0~100%, 기본 30%) 칸이 잠깐 나타납니다. 브라우저에서 만든 히스와
   탁탁 튀는 소리를 20초 분량 반복하며, 재생 중일 때만 들리고 미니 플레이어로 접어도 계속됩니다. 재생기 음량을 따라갑니다.
+
+## 팟캐스트
+
+설정 > 소스 > **[팟캐스트 추가]**. 프로그램은 세 가지로 넣습니다.
+
+- **찾아서 넣기**: 이름으로 찾으면(Apple 팟캐스트 목록, iTunes 검색 API) RSS 주소가 있는 프로그램이 나오고 [넣기]로 더합니다.
+- **RSS 주소로 넣기**: 팟빵 등 다른 곳의 RSS 주소를 직접 넣습니다. 넣기 전에 서버가 피드를 받아 보고 이름과 에피소드 수를 알려 줍니다.
+- **OPML 가져오기/내보내기**: 다른 팟캐스트 앱의 구독 목록을 한꺼번에 넣거나 꺼냅니다.
+
+넣은 뒤 **[저장]**. 사이드바에 **프로그램**·**새 에피소드** 화면, 홈에 **새 에피소드**·**팟캐스트** 줄이 생기고, 듣던 에피소드는
+맨 위 **이어보기** 줄에 다른 소스와 함께 나옵니다.
+
+- 피드는 서버가 받아 `data/podcast_cache/`에 두고 30분마다 새로 받습니다(받는 동안에도 예전 목록을 바로 보여 줌, 프로그램 화면의 [새로 받기]는 지금 바로).
+- 오디오는 서버가 중계합니다(`/api/podcast/…/audio/…`, Range 그대로). 피드에 적힌 주소만 중계하고, 원래 주소는 브라우저로 보내지 않습니다.
+  `http://` 오디오·표지도 https 사이트에서 막히지 않습니다.
+- 들은 위치는 **사용자마다** `data/podcast.db`에 둡니다. 남은 시간이 30초(짧은 에피소드는 길이의 5%) 이하가 되면 다 들은 것으로 칩니다.
+  프로그램 카드의 숫자는 안 들은 에피소드 수, 프로그램 화면의 [들었음]은 그 프로그램 전체를 들은 것으로 표시합니다.
+- 프로그램 화면의 큰 버튼은 다음에 들을 에피소드입니다: 듣던 것 → 안 들은 최신 회(차례대로 듣는 `itunes:type=serial` 프로그램은 안 들은 가장 오래된 회).
+  다 들으면 그다음에 나온 회를 이어서 틉니다.
+- 재생 속도(0.5~3×) 버튼이 소리만 나오는 팟캐스트에도 나옵니다(목소리 높낮이는 그대로). 영상 팟캐스트는 영상으로 나옵니다.
+- 설정 > 사용자의 "볼 수 있는 범위"에서 사용자마다 프로그램을 고를 수 있습니다.
 
 ## 텔레그램 채널
 
@@ -376,11 +402,11 @@ YMPlayer에 로그인해 둔 텔레그램 계정으로 그 채널에 **파일을
 
 ## 재생 현황 API (부하 조절 봇용)
 
-`GET /api/activity` → `{"success": true, "playing": 2, "by": {"plex": 1, "telegram": 1, "live": 0}, "stalls": {"plex": 0, "telegram": 3, "live": 1}, "retries": {"plex": 0, "telegram": 0, "live": 2}, "window": 300}`.
+`GET /api/activity` → `{"success": true, "playing": 2, "by": {"plex": 1, "telegram": 1, "live": 0, "podcast": 0}, "stalls": {"plex": 0, "telegram": 3, "live": 1, "podcast": 0}, "retries": {"plex": 0, "telegram": 0, "live": 2, "podcast": 0}, "window": 300}`.
 숫자만 내보내고 제목·사용자 이름·채널명은 넣지 않습니다.
 
 - **버벅임** (`stalls`·`retries`, 최근 `window`초 = 5분 동안의 횟수): 서버는 버벅임을 볼 수 없어서 브라우저 재생기가 `POST /api/activity/report`
-  (`{"event": "stall"|"retry", "kind": "plex"|"telegram"|"live"}`, 로그인한 사용자, 한 사람이 1분에 30번까지)로 알립니다.
+  (`{"event": "stall"|"retry", "kind": "plex"|"telegram"|"live"|"podcast"}`, 로그인한 사용자, 한 사람이 1분에 30번까지)로 알립니다.
   `stall`은 재생이 시작된 뒤 버퍼가 바닥나 멈춘 횟수(처음 불러오기·탐색 직후는 빼고, 한 번 멈춤에 한 번),
   `retry`는 끊겨서 다시 연결한 횟수(자동 재연결, 서버 중계로 바꾸기, 서버 변환 다시 시작, HLS 미디어 오류 복구)입니다.
 
@@ -388,7 +414,7 @@ YMPlayer에 로그인해 둔 텔레그램 계정으로 그 채널에 **파일을
   (`hmac.compare_digest`로 비교, 이 토큰으로 다른 API는 열리지 않음). 관리자로 로그인해도 볼 수 있습니다.
   예: `curl -H "X-Activity-Token: $MP_ACTIVITY_TOKEN" http://서버:8899/api/activity`
 - 재생으로 세는 요청: live `/api/stream`(IPTV·라디오 중계), telegram `/api/tg/{id}/stream/…`·`/transcode/…`·`/api/tg-hls/…`,
-  plex `/api/plex/{id}/…/library/parts/…`·`/video/:/transcode/…`. 썸네일(`photo/:/transcode` 포함)·목록·편성표, 책 보기(PDF/EPUB)의 파일 받기,
+  plex `/api/plex/{id}/…/library/parts/…`·`/video/:/transcode/…`, podcast `/api/podcast/{id}/audio/…`(팟캐스트 에피소드). 썸네일(`photo/:/transcode` 포함)·목록·편성표, 책 보기(PDF/EPUB)의 파일 받기,
   Plex 변환 멈춤 알림은 세지 않습니다.
 - 스트림 하나 = (종류, 사용자, 영상) - 같은 영상의 Range·HLS 조각 요청은 하나로 셉니다(라이브는 사용자마다 하나).
   끝나지 않는 긴 연결(mpegts 등)은 열려 있는 동안, 조각으로 받는 재생(HLS·조각 받기)은 마지막 요청 뒤 45초 동안 재생 중으로 봅니다.

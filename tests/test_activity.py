@@ -18,8 +18,10 @@ def test_classify():
     assert c("/api/plex/px/library/parts/42/1700/file.mkv") == ("plex", "part/42")
     assert c("/api/plex/px/video/:/transcode/universal/session/S1/base/00001.ts") == ("plex", "transcode/S1")
     assert c("/api/plex/px/video/:/transcode/universal/start.m3u8", {"session": "S2"}) == ("plex", "transcode/S2")
+    assert c("/api/podcast/pd/audio/0123456789/0123456789ab") == ("podcast", "0123456789/0123456789ab")
     for p in ("/api/tg/tg/thumb/1/2", "/api/tg/tg/videos", "/api/iptv/x/epg", "/api/plex/px/photo/:/transcode",
-              "/api/plex/px/library/sections", "/api/tg/tg/image/1/2", "/api/tg/tg/book/1/2/3", "/api/activity"):
+              "/api/plex/px/library/sections", "/api/tg/tg/image/1/2", "/api/tg/tg/book/1/2/3", "/api/activity",
+              "/api/podcast/pd/home", "/api/podcast/pd/show/0123456789"):
         assert c(p) is None, p
     assert c("/api/tg/tg/stream/1/2", {"doc": "1"}) is None                       # 책 보기 (PDF/EPUB)
     assert c("/api/plex/px/video/:/transcode/universal/stop", {"session": "S2"}) is None
@@ -38,11 +40,11 @@ def test_window(monkeypatch):
     a.end(seg, a.begin(seg))                     # 같은 스트림의 다음 조각 -> 하나로
     live = ("live", "u", "")
     started = a.begin(live)                      # mpegts: 연결이 열려 있음
-    assert pb(a.snapshot()) == {"playing": 2, "by": {"plex": 0, "telegram": 1, "live": 1}}
+    assert pb(a.snapshot()) == {"playing": 2, "by": {"plex": 0, "telegram": 1, "live": 1, "podcast": 0}}
     now[0] += 44
     assert a.snapshot()["by"]["telegram"] == 1   # 마지막 조각 뒤 45초 안
     now[0] += 2
-    assert pb(a.snapshot()) == {"playing": 1, "by": {"plex": 0, "telegram": 0, "live": 1}}
+    assert pb(a.snapshot()) == {"playing": 1, "by": {"plex": 0, "telegram": 0, "live": 1, "podcast": 0}}
     a.end(live, started)                         # 46초 열려 있던 긴 연결이 끝남 -> 바로 빠짐
     assert a.snapshot()["playing"] == 0
     bad = ("plex", "u", "part/1")
@@ -94,7 +96,7 @@ def test_activity_api(data, monkeypatch):
         await c.start_server()
         try:
             r = await c.get("/api/activity", headers=tok)
-            assert r.status == 200 and await r.json() == {"success": True, "playing": 0, "by": {"plex": 0, "telegram": 0, "live": 0}, "stalls": {"plex": 0, "telegram": 0, "live": 0}, "retries": {"plex": 0, "telegram": 0, "live": 0}, "window": 300}
+            assert r.status == 200 and await r.json() == {"success": True, "playing": 0, "by": {"plex": 0, "telegram": 0, "live": 0, "podcast": 0}, "stalls": {"plex": 0, "telegram": 0, "live": 0, "podcast": 0}, "retries": {"plex": 0, "telegram": 0, "live": 0, "podcast": 0}, "window": 300}
             assert (await c.get("/api/activity", headers={"X-Activity-Token": "wrong"})).status == 401
             assert (await c.get("/api/activity")).status == 401
             assert (await c.get("/api/config", headers=tok)).status == 401          # 토큰으로 다른 API는 안 열림
@@ -114,8 +116,8 @@ def test_activity_api(data, monkeypatch):
             assert (await (await c.post("/api/activity/report", json={"event": "retry", "kind": "live"})).json())["success"]
             assert not (await (await c.post("/api/activity/report", json={"event": "boom", "kind": "live"})).json())["success"]
             d = await (await c.get("/api/activity", headers=tok)).json()
-            assert pb(d) == {"playing": 2, "by": {"plex": 0, "telegram": 1, "live": 1}}
-            assert d["stalls"] == {"plex": 0, "telegram": 1, "live": 0} and d["retries"] == {"plex": 0, "telegram": 0, "live": 1}
+            assert pb(d) == {"playing": 2, "by": {"plex": 0, "telegram": 1, "live": 1, "podcast": 0}}
+            assert d["stalls"] == {"plex": 0, "telegram": 1, "live": 0, "podcast": 0} and d["retries"] == {"plex": 0, "telegram": 0, "live": 1, "podcast": 0}
             assert "kid" not in str(d) and "job1" not in str(d)
             await c.post("/api/auth/logout")
             assert (await c.post("/api/activity/report", headers=tok, json={"event": "stall", "kind": "live"})).status == 401
@@ -146,4 +148,4 @@ def test_reports_window_and_limit(monkeypatch):
     assert a.report("kid", "stall", "plex")
     now[0] += 300
     d = a.snapshot()                                 # 5분 지난 것은 빠진다
-    assert d["stalls"] == {"plex": 1, "telegram": 0, "live": 0} and d["retries"]["live"] == 0
+    assert d["stalls"] == {"plex": 1, "telegram": 0, "live": 0, "podcast": 0} and d["retries"]["live"] == 0
