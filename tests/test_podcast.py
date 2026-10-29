@@ -63,6 +63,28 @@ def test_parse_feed():
         podcast.parse_feed(b"not xml")
 
 
+def test_namespace_variants(tmp_path, monkeypatch):
+    base = RSS.replace("{base}", "https://cdn.example")
+    for variant in ("http://www.itunes.com/DTDs/Podcast-1.0.dtd", "https://www.itunes.com/dtds/podcast-1.0.dtd/"):
+        show = podcast.parse_feed(base.replace("http://www.itunes.com/dtds/podcast-1.0.dtd", variant).encode())
+        assert show["image"] == "https://img.example/show.jpg" and show["author"] == "진행자"     # 대소문자·https가 달라도
+        assert [e["duration"] for e in show["episodes"]] == [600, 3723]
+    nodecl = base.replace(' xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd"', "")
+    assert podcast.parse_feed(nodecl.encode())["episodes"][1]["duration"] == 3723                   # 선언 없이 itunes: 를 써도
+    gp = base.replace('<itunes:image href="https://img.example/show.jpg"/>',
+                      '<googleplay:image href="https://img.example/gp.jpg"/>').replace(
+        "<rss ", '<rss xmlns:googleplay="http://www.google.com/schemas/play-podcasts/1.0" ')
+    assert podcast.parse_feed(gp.encode())["image"] == "https://img.example/gp.jpg"
+    # 예전 방법으로 읽어 둔 캐시 파일은 버린다
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    (tmp_path / "podcast_cache").mkdir()
+    (tmp_path / "podcast_cache" / f"{podcast.feed_id('https://a.example/rss')}.json").write_text('{"at": 9e12, "feed": {"title": "old"}}')
+    assert podcast.FeedCache().get("https://a.example/rss") is None
+    c = podcast.FeedCache()
+    c.put("https://a.example/rss", {"title": "new", "episodes": []})
+    assert podcast.FeedCache().get("https://a.example/rss")["feed"]["title"] == "new"
+
+
 def test_helpers():
     assert podcast.parse_duration("62:03") == 3723
     assert podcast.parse_duration("1:00:00") == 3600 and podcast.parse_duration("90") == 90 and podcast.parse_duration("x") == 0

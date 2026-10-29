@@ -25,6 +25,7 @@ from . import config_store
 MAX_FEEDS = 300
 MAX_EPISODES = 1000           # 피드 하나에서 기억할 에피소드 수 (최신 것부터)
 FEED_TTL = 30 * 60
+CACHE_VERSION = 2          # 피드 읽는 방법이 바뀌면 올린다 -> 서버에 남은 예전 캐시는 버리고 다시 받는다
 FEED_MAX_BYTES = 15 * 1024 * 1024
 SUMMARY_MAX = 4000
 
@@ -33,7 +34,13 @@ NS = {
     "content": "http://purl.org/rss/1.0/modules/content/",
     "media": "http://search.yahoo.com/mrss/",
     "atom": "http://www.w3.org/2005/Atom",
+    "googleplay": "http://www.google.com/schemas/play-podcasts/1.0",
 }
+# 피드마다 네임스페이스 주소를 조금씩 다르게 적는다 (대소문자·https·끝의 /) -> 읽기 전에 위 주소로 맞춘다
+_NS_FIX = [(re.compile(rb"""(["'])\s*https?://www\.itunes\.com/dtds/podcast-1\.0\.dtd/?\s*(["'])""", re.I), NS["itunes"]),
+           (re.compile(rb"""(["'])\s*https?://purl\.org/rss/1\.0/modules/content/?\s*(["'])""", re.I), NS["content"]),
+           (re.compile(rb"""(["'])\s*https?://search\.yahoo\.com/mrss/?\s*(["'])""", re.I), NS["media"]),
+           (re.compile(rb"""(["'])\s*https?://www\.google\.com/schemas/play-podcasts/1\.0/?\s*(["'])""", re.I), NS["googleplay"])]
 
 
 def feed_id(url):
@@ -119,7 +126,10 @@ def _image(el):
     if url:
         return url
     x = el.find("media:thumbnail", NS)
-    return (x.get("url") or "").strip() if x is not None else ""
+    if x is not None and x.get("url"):
+        return x.get("url").strip()
+    x = el.find("googleplay:image", NS)
+    return (x.get("href") or "").strip() if x is not None else ""
 
 
 def _int(value):
@@ -129,14 +139,29 @@ def _int(value):
         return None
 
 
+def _parse_xml(data):
+    """네임스페이스 주소를 맞추고, 선언 없이 쓴 접두어(itunes: 등)는 선언을 넣어서 읽는다"""
+    for rx, uri in _NS_FIX:
+        data = rx.sub(lambda m: m.group(1) + uri.encode() + m.group(2), data)
+    for _ in range(len(NS) + 1):
+        try:
+            return ET.fromstring(data)
+        except ET.ParseError as e:
+            m = re.search(r"unbound prefix", str(e))
+            missing = [p for p in NS if (f"<{p}:".encode() in data or f"</{p}:".encode() in data)
+                       and f"xmlns:{p}=".encode() not in data]
+            if not m or not missing:
+                raise ValueError(f"RSS 형식이 아닙니다 ({e})") from None
+            decl = f' xmlns:{missing[0]}="{NS[missing[0]]}"'.encode()
+            data = re.sub(rb"<(rss|feed)\b", lambda x: x.group(0) + decl, data, count=1)
+    raise ValueError("RSS 형식이 아닙니다")
+
+
 def parse_feed(data):
     """RSS bytes -> {"title", "author", "summary", "image", "link", "serial", "episodes": [...]}.
     에피소드: {"id", "title", "date", "duration", "url", "mime", "size", "image", "summary", "season", "episode", "link"}
     오디오(enclosure)가 없는 항목은 뺀다. 최신 것부터."""
-    try:
-        root = ET.fromstring(data)
-    except ET.ParseError as e:
-        raise ValueError(f"RSS 형식이 아닙니다 ({e})") from None
+    root = _parse_xml(data)
     ch = root.find("channel")
     if ch is None:
         if root.tag.endswith("html") or b"<html" in data[:2000].lower():
@@ -262,7 +287,7 @@ class FeedCache:
             try:
                 with open(self._path(url), encoding="utf-8") as f:
                     got = json.load(f)
-                if isinstance(got, dict) and isinstance(got.get("feed"), dict):
+                if isinstance(got, dict) and isinstance(got.get("feed"), dict) and got.get("v") == CACHE_VERSION:
                     self.mem[url] = {"at": float(got.get("at") or 0), "feed": got["feed"], "error": ""}
             except (OSError, ValueError):
                 pass
@@ -278,7 +303,7 @@ class FeedCache:
             os.makedirs(_cache_dir(), exist_ok=True)
             tmp = self._path(url) + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
-                json.dump({"at": self.mem[url]["at"], "feed": feed}, f, ensure_ascii=False)
+                json.dump({"v": CACHE_VERSION, "at": self.mem[url]["at"], "feed": feed}, f, ensure_ascii=False)
             os.replace(tmp, self._path(url))
         except OSError:
             pass
