@@ -1658,3 +1658,34 @@ def test_general_settings_api_reads_yaml_genres(env, monkeypatch):
         assert not telegram_src.HIDE_BL
 
     run(flow)
+
+
+def test_private_channel_is_dropped(env, monkeypatch):
+    """나갔거나 비공개로 바뀐 채널: 경고 한 번, 설정에서 빠지고, 다시 묻지 않는다"""
+    from telethon.errors import ChannelPrivateError
+    cfg = config_store.load()
+    cfg["sources"][0]["channels"].append({"id": 888, "title": "수다방"})
+    config_store.save(cfg)
+    env.authorized = True
+    orig = env.iter_messages
+    calls = {"888": 0}
+
+    def iter_messages(peer, **kw):
+        if peer.channel_id == 888:
+            calls["888"] += 1
+            raise ChannelPrivateError(request=None)
+        return orig(peer, **kw)
+    monkeypatch.setattr(env, "iter_messages", iter_messages)
+
+    async def flow(c):
+        await c.get("/api/tg/tg/channels")              # 대화 목록 (access_hash)
+        r = await c.get("/api/tg/tg/videos?channel=888")
+        body = await r.json()
+        assert r.status == 400 and "들어갈 수 없습니다" in body["error"]
+        assert [ch["id"] for ch in config_store.load()["sources"][0]["channels"]] == [777]   # 설정에서 빠짐
+        n = calls["888"]
+        await c.get("/api/tg/tg/videos?channel=888")
+        assert calls["888"] == n                              # 다시 텔레그램에 묻지 않음
+        page = await (await c.get("/api/tg/tg/videos?channel=777&limit=5")).json()
+        assert len(page["items"]) == 5                        # 다른 채널은 그대로
+    run(flow)

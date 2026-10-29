@@ -1322,6 +1322,21 @@ def _telegram(request):
     return _tg_source(request.app, src)
 
 
+def _tg_forget_channel(sid, channel, reason):
+    """들어갈 수 없게 된 텔레그램 채널(나갔음·비공개·차단)을 설정에서 뺀다 -> 사이드바·홈에서 사라지고 뒤 작업도 멈춘다"""
+    cfg = config_store.load()
+    src = config_store.get_source(cfg, sid)
+    if not src or src.get("type") != "telegram":
+        return
+    gone = [c for c in src.get("channels") or [] if int(c["id"]) == int(channel)]
+    if not gone:
+        return
+    src["channels"] = [c for c in src["channels"] if int(c["id"]) != int(channel)]
+    config_store.save(cfg)
+    log.warning("텔레그램 소스 %s: 채널 '%s'(%s)에 더 이상 들어갈 수 없어 설정에서 뺐습니다 (%s). "
+                "다시 들어가면 설정 > 소스 > 텔레그램에서 다시 체크하세요.", src.get("name"), gone[0].get("title"), channel, reason)
+
+
 def _tg_source(app, src):
     pool = app[TELEGRAM]
     tg = pool.get(src["id"])
@@ -1329,6 +1344,7 @@ def _tg_source(app, src):
         if tg is not None:
             asyncio.ensure_future(tg.close())
         tg = pool[src["id"]] = telegram_src.TelegramSource(src)
+        tg.on_lost = _tg_forget_channel
     tg.set_channels(src)
     tg.phone = tg.phone if tg._code_hash else str(src.get("phone") or "").strip()
     return tg
@@ -2614,6 +2630,7 @@ async def _check_telegram(request, src):
     tg = pool.get(src["id"])
     if tg is None or not tg.matches(src):
         tg = pool[src["id"]] = telegram_src.TelegramSource(src)
+        tg.on_lost = _tg_forget_channel
     tg.set_channels(src)
     st = await asyncio.wait_for(tg.status(), 15)
     counts = telegram_src.index_counts(src["id"])

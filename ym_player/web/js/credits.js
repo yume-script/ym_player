@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 97,
+        "version": "1.1.60",
+        "date": "2026-10-29",
+        "title": "텔레그램: 나갔거나 비공개로 바뀐(차단된) 채널은 설정에서 자동으로 빼서 사이드바에서 사라지고 경고도 멈춤"
+    },
+    {
         "pr": 96,
         "version": "1.1.59",
         "date": "2026-10-29",
