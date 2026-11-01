@@ -964,6 +964,7 @@ async def plex_proxy(request):
 
 
 _RE_PLEX_PART_FILE = re.compile(r"^/library/parts/\d+/\d+/[^/]+$")
+PLEX_PROBE_TIMEOUT = 60   # 원본 파일 첫 요청(크기 확인) - 원격 파일을 처음 열 때를 위해 넉넉히
 
 
 def _plex_tail(request, src):
@@ -985,15 +986,18 @@ async def _plex_part_cached(request, cfg, src):
     key = f"plex:{src['id']}:{tail.split('?')[0]}"
     info = request.app[PLEX_FILES].get(key)
     if info is None:
+        # 원격(rclone) 파일을 처음 열면 Plex가 첫 바이트를 주기까지 수십 초 걸릴 수 있다 - 넉넉히 기다리고,
+        # 그래도 안 되면 바로 502를 내지 않고 그냥 중계(None)로 넘긴다 (중계 쪽에서 한 번 더 기다린다)
         try:
             async with http.get(URL(url, encoded=True), headers={**headers, "Range": "bytes=0-0"}, ssl=ssl,
-                                timeout=ClientTimeout(total=20)) as r:
+                                timeout=ClientTimeout(total=PLEX_PROBE_TIMEOUT)) as r:
                 m = re.match(r"bytes \d+-\d+/(\d+)", r.headers.get("Content-Range", ""))
                 if r.status != 206 or not m:
                     return None
                 info = (int(m.group(1)), r.headers.get("Content-Type") or "application/octet-stream")
         except Exception as e:
-            return _json_error(502, f"Plex 서버 연결 실패: {type(e).__name__}: {e}")
+            log.warning("Plex 파일 크기 확인 실패, 그냥 중계로 (%s): %s: %s", tail.rsplit("/", 1)[-1][:60], type(e).__name__, e)
+            return None
         request.app[PLEX_FILES][key] = info
     size, ctype = info
 
