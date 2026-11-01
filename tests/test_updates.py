@@ -2,7 +2,10 @@
 import asyncio
 import os
 
-from test_auth import data, run  # noqa: F401  (pytest fixture)
+import test_auth
+
+data = test_auth.data   # pytest 픽스처를 이 파일에서도 쓰게 (import만 하면 pyflakes가 안 쓰인 import로 본다)
+run = test_auth.run
 
 from ym_player import __version__, updates
 
@@ -73,7 +76,7 @@ def test_checker_finds_newer_version():
     assert not bad["newer"] and "404" in bad["error"]
 
 
-def test_update_api_is_admin_only(data, monkeypatch):  # noqa: F811
+def test_update_api_is_admin_only(data, monkeypatch):
     async def fake_check(self, http):
         self.latest, self.checked_at = "9.9.9", 1
         return self.info()

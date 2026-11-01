@@ -1,5 +1,6 @@
 """MCP 서버 - 토큰, JSON-RPC(initialize / tools/list / tools/call), 사용자 제한, 접속 기록 가리기."""
 import asyncio
+import importlib
 import logging
 
 import pytest
@@ -163,7 +164,7 @@ def test_mcp_protocol_tools_and_limits(data, monkeypatch):
 
 
 def test_access_log_hides_token():
-    from ym_player import server  # noqa: F401 - 필터를 붙인다
+    importlib.import_module("ym_player.server")   # 불러오면 access 로그 필터가 붙는다
     rec = logging.LogRecord("aiohttp.access", logging.INFO, "", 0, '1.2.3.4 "POST /mcp/ymp_abcDEF-12_x HTTP/1.1" 200', None, None)
     for f in logging.getLogger("aiohttp.access").filters:
         f.filter(rec)
