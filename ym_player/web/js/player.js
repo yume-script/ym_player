@@ -12,7 +12,9 @@ import { registry } from './providers/index.js';
 import { MODES, Visualizer } from './visualizer.js';
 import { PipArt, requestPip, watchWebkitPip } from './pipart.js';
 
-const START_TIMEOUT_MS = 20000;
+const START_TIMEOUT_MS = 35000;   // 원격(rclone) 파일을 처음 열거나 서버가 바쁠 때 Plex·중계가 20초를 넘기는 일이 있어서
+const SLOW_START_MS = 12000;      // 이만큼 지나도 안 열리면 '원본 준비 중' 안내로 바꾼다
+const START_RETRY_MS = 2500;      // 처음 시작이 실패하면 이만큼 기다렸다가 한 번 더 (에러는 두 번째도 실패했을 때만)
 const PROGRESS_EVERY_SEC = 10;
 const PREPARE_NEXT_SEC = 90;   // 끝나기 이만큼 전에 다음 회차/조각을 미리 준비
 const UI_HIDE_MS = 3000;
@@ -334,7 +336,7 @@ class Player {
 
     async start(pb, playlist = null, { auto = false, forceProxy = false } = {}) {
         this._played = false;   // 새로 불러오는 동안의 기다림은 버벅임으로 세지 않는다
-        if (!auto) this.recoverCount = 0;
+        if (!auto) { this.recoverCount = 0; pb.startRetried = false; }
         if (this.pb && this.pb !== pb) this._finishCurrent();
         if (playlist) pb.playlist = playlist;
         else if (this.pb && this.pb.playlist && pb.live) pb.playlist = this.pb.playlist;
@@ -374,6 +376,11 @@ class Player {
         this._syncCc();
         this._syncFav();
         this._showMsg(`"${pb.title}" 연결 중...`, { spinner: true });
+        setTimeout(() => {   // 오래 걸리면 고장이 아니라 준비 중이라고 알려 준다
+            if (this.token === token && this.root.classList.contains('connecting') && !this.msgEl.classList.contains('error')) {
+                this._showMsg(`"${pb.title}" 원본을 준비하는 중... (처음 여는 파일·채널은 조금 걸릴 수 있어요)`, { spinner: true });
+            }
+        }, SLOW_START_MS);
         if (pb.live) this.showOsd();
         if (!this.drawer.classList.contains('hidden')) this._renderDrawer();
 
@@ -430,6 +437,7 @@ class Player {
             }
         }
         if (token !== this.token) return;
+        pb.startRetried = false;
         this.engineEl.textContent = pb.engineNote || (pb.altNote ? `${label} · ${pb.altNote}` : label);
         this.playingSince = this.video.currentTime || 0;
         this._hideMsg();
@@ -549,6 +557,17 @@ class Player {
     /** 여러 M3U를 합쳐 같은 채널의 예비 주소가 있으면 그걸로, 없으면 실패 표시 */
     _failedOrAlternate(pb, err, token) {
         const next = !err.final && pb.alternate ? pb.alternate() : null;
+        if (!next && !err.final && !pb.startRetried && token === this.token) {
+            // 처음 시작이 늦거나 순간 끊긴 경우가 대부분이라 바로 에러를 띄우지 않고 한 번 더 시도한다
+            pb.startRetried = true;
+            console.warn('[Player] 시작 실패, 한 번 더 시도:', err && err.message);
+            this._report('retry');
+            this._showMsg(`"${pb.title}" 다시 연결하는 중...`, { spinner: true });
+            this._destroyEngines();
+            this.needsRecreate = true;
+            setTimeout(() => { if (this.pb === pb && this.token === token) this.start(pb, null, { auto: true }); }, START_RETRY_MS);
+            return;
+        }
         if (!next) return this._failed(err);
         console.warn('[Player] 이 주소로 재생 실패, 예비 주소로 다시 시도:', err.message);
         this._showMsg(`다른 주소로 다시 연결하는 중... (${next.altNote})`, { spinner: true });
@@ -691,6 +710,14 @@ class Player {
                         this._report('retry');
                         hls.recoverMediaError();
                         return;
+                    }
+                    const code = data.response && data.response.code;
+                    if (code >= 400 && code < 500) {
+                        // 원본이 거절함 (방송 안 함/주소 만료/차단) - 다시 해도 같으니 이유를 그대로 보여 준다.
+                        // 직접 연결이면 중계(UA·Referer를 붙임)로는 될 수 있어서 final로 하지 않는다
+                        const err = new Error(`원본이 지금 방송하지 않거나 막혀 있습니다 (HTTP ${code})`);
+                        err.final = this.viaProxy || !(this.pb && this.pb.proxyUrl);
+                        return fail(err);
                     }
                     fail(new Error(data.details || 'HLS 오류'));
                 });

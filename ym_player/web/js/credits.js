@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 98,
+        "version": "1.1.61",
+        "date": "2026-11-01",
+        "title": "재생 시작이 늦을 때 바로 에러 대신 '원본 준비 중' 안내 + 한 번 자동 재시도(35초까지 기다림), Plex 원격 파일 첫 연결 60초, 원본이 거절하면(404·403) 그 이유를 표시"
+    },
+    {
         "pr": 97,
         "version": "1.1.60",
         "date": "2026-10-29",

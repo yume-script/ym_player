@@ -1467,7 +1467,6 @@ def test_shrink_image_makes_small_jpeg_and_crops_tall_pages():
     import shutil as _sh
     if not (_sh.which("ffmpeg") or __import__("importlib").util.find_spec("PIL")):
         pytest.skip("ffmpeg/Pillow 없음")
-    import io
     import struct
     import zlib
     # 1000x6000 PNG (긴 웹툰 쪽 흉내) - 줄무늬라 압축이 덜 되게
