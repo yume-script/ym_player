@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 99,
+        "version": "1.1.62",
+        "date": "2026-11-01",
+        "title": "화면 속 화면으로 볼 때 페이지 오른쪽 아래의 작은 플레이어 창을 숨김 (창이 두 개로 보이지 않게)"
+    },
+    {
         "pr": 98,
         "version": "1.1.61",
         "date": "2026-11-01",
