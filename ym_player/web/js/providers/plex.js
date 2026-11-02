@@ -6,7 +6,8 @@
 //              playable, viewOffset, duration, children[], childrenTitle, childrenStyle, parent }
 //   playback = { url, kind, live, startTime, title, subtitle, poster, audioOnly,
 //                onProgress(state, sec), onStop(sec), getNext() }
-import { fmtDuration, uuid, storeGet, storeSet, IS_SAFARI } from '../util.js';
+import { api, fmtDuration, uuid, storeGet, storeSet, IS_SAFARI } from '../util.js';
+import { registry } from './index.js';
 
 const PRODUCT = 'YMPlayer';
 const LIB_ICONS = { movie: 'film', show: 'tv', artist: 'music' };
@@ -342,12 +343,18 @@ export class PlexProvider {
      * opts.audioId    이 음성 트랙으로. 없으면 Plex에 저장된 선택
      * opts.quality    QUALITIES의 id. 없으면 지난번 고른 것
      */
-    async getPlayback(id, { fromStart = false, startAt = null, subtitleId, audioId, quality } = {}) {
+    async getPlayback(id, { fromStart = false, startAt = null, subtitleId, audioId, quality, plexOnly = false } = {}) {
         const mc = await this.req(`/library/metadata/${id}`);
         const m = (mc.Metadata || [])[0];
         const media = m && (m.Media || [])[0];
         const part = media && (media.Part || [])[0];
         if (!part) throw new Error('재생할 파일이 없습니다.');
+        // 텔레그램에 같은 영상이 있으면(자동 올리기로 올린 것) 그쪽으로 - Plex 서버의 부담(변환·업로드 대역)을 덜게.
+        // 음성·화질·자막을 Plex 식으로 바꾸려 할 때(subtitleId/audioId/quality)와 설정 > 공통에서 끈 경우는 Plex로
+        if (!plexOnly && (m.type === 'movie' || m.type === 'episode') && subtitleId === undefined && audioId === undefined && quality === undefined) {
+            const viaTg = await this._viaTelegram(m, { fromStart, startAt });
+            if (viaTg) return viaTg;
+        }
 
         const audioOnly = m.type === 'track';
         let subs = audioOnly ? [] : subtitleStreams(part);
@@ -462,6 +469,57 @@ export class PlexProvider {
             },
             getNext: (m.type === 'episode' || m.type === 'track') ? () => this.nextSibling(m) : null,
         };
+    }
+
+    /** 이 Plex 항목의 텔레그램 사본으로 재생 (없거나 못 쓰면 null -> Plex로). Plex의 본 위치·다 봄도 같이 맞춘다 */
+    async _viaTelegram(m, { fromStart, startAt }) {
+        let hit;
+        try {
+            const q = new URLSearchParams({ type: m.type, title: m.title || '', year: m.year || '', show: m.grandparentTitle || '',
+                season: m.parentIndex ?? '', ep: m.index ?? '' });
+            hit = await api(`/api/plex-tg/${encodeURIComponent(this.id)}/${encodeURIComponent(m.ratingKey)}?${q}`);
+        } catch (e) {
+            return null;
+        }
+        const tg = hit && hit.found ? registry.byId(hit.tg) : null;
+        if (!tg || tg.kind !== 'telegram') return null;
+        const tid = `${hit.channel}:${hit.msg}`;
+        // 이어보기: 텔레그램 쪽에서 본 위치가 없으면 Plex에서 본 위치부터
+        const vo = m.viewOffset || 0;
+        const plexResume = vo > 30000 && (!m.duration || vo < m.duration * 0.95) ? vo / 1000 : null;
+        let begin = startAt;
+        if (begin == null && !fromStart && plexResume) {
+            try { const v = await tg._video(tid); if (!(v.position > 30)) begin = plexResume; } catch (e) { /* 텔레그램 쪽에서 오류를 보여 줌 */ }
+        }
+        let pb;
+        try {
+            pb = await tg.getPlayback(tid, { fromStart, startAt: begin });
+        } catch (e) {
+            console.warn('[Plex] 텔레그램 사본 재생 준비 실패, Plex로:', e.message);
+            return null;
+        }
+        const duration = (m.duration || 0) / 1000;
+        const plexProgress = (sec) => {
+            if (!duration || !sec) return;
+            if (sec >= duration * 0.9) this.ping('/:/scrobble', { identifier: 'com.plexapp.plugins.library', key: m.ratingKey });
+            else this.ping('/:/progress', { identifier: 'com.plexapp.plugins.library', key: m.ratingKey, time: Math.round(sec * 1000), state: 'stopped' });
+        };
+        let title = m.title, subtitle = m.year ? String(m.year) : '';
+        if (m.type === 'episode') { title = m.grandparentTitle; subtitle = `S${m.parentIndex} · E${m.index}  ${m.title}`; }
+        // 텔레그램 재생(탐색·서버 변환으로 바꿔 다시 불러오기 포함)에 Plex 제목·본 위치 알리기를 씌운다
+        const wrap = (p) => ({
+            ...p,
+            title, subtitle,
+            poster: this.img(m.art || m.grandparentArt, 1280, 720) || p.poster,
+            engineNote: `텔레그램 · ${p.engineNote || '원본'}`,
+            onProgress: (state, sec) => { if (p.onProgress) p.onProgress(state, sec); if (state !== 'playing') plexProgress(sec); },
+            onStop: (sec) => { if (p.onStop) p.onStop(sec); plexProgress(sec); },
+            // 나눠 올린 파일의 다음 조각은 텔레그램에서, 그 밖에는 Plex의 다음 화 (다시 텔레그램 사본이 있으면 그쪽으로)
+            getNext: p.nextIsPart ? p.getNext : (m.type === 'episode' ? () => this.nextSibling(m) : null),
+            reloadAt: p.reloadAt ? async (sec) => wrap(await p.reloadAt(sec)) : undefined,
+            fallback: p.fallback ? async (at) => wrap(await p.fallback(at)) : null,
+        });
+        return wrap(pb);
     }
 
     // 다음 화/다음 곡 - 같은 시즌(앨범) 안에서만 찾는다

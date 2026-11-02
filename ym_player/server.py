@@ -1059,7 +1059,7 @@ _RE_PLEX_PART = re.compile(r"^/library/parts/(\d+)(?:/|$)")
 _RE_PLEX_TRANSCODE = re.compile(r"^/(?:video|audio|music)/:/transcode/universal/")
 _PLEX_FILTER_PATHS = {"/hubs", "/hubs/search", "/hubs/home/continueWatching", "/hubs/continueWatching",
                       "/hubs/home/onDeck", "/hubs/home/recentlyAdded", "/library/onDeck", "/library/recentlyAdded"}
-_PLEX_PINGS = {"/:/timeline", "/:/scrobble", "/:/unscrobble"}
+_PLEX_PINGS = {"/:/timeline", "/:/scrobble", "/:/unscrobble", "/:/progress"}   # (progress: 텔레그램 사본으로 볼 때 본 위치만 남기기)
 
 
 def _remember_sections(cache, sid, data):
@@ -1595,6 +1595,27 @@ async def tg_meta(request, tg):
     episodes = await _tg_seasons(request, tg, meta, seasons) if meta else {}
     return web.json_response({"success": True, "meta": meta, "episodes": episodes,
                               "target": {k: target[k] for k in ("kind", "season", "ep")} if target else None})
+
+
+async def plex_tg_copy(request):
+    """GET /api/plex-tg/{sid}/{key}?type=movie|episode&title=&year=&show=&season=&ep=
+    -> 이 Plex 항목과 같은 영상이 텔레그램에 있으면 {"found": true, "tg", "channel", "msg", "title"} (설정 > 공통에서 끄면 늘 없음)"""
+    src = _source_or_404(request.match_info["sid"], "plex", request)
+    cfg = config_store.load()
+    if not config_store.clean_general(cfg.get("general"))["prefer_tg"]:
+        return web.json_response({"success": True, "found": False})
+    user = request.get("user")
+    allowed = {}
+    for s in cfg.get("sources", []):
+        if s.get("type") != "telegram" or not s.get("enabled", True) or not auth.can_source(user, s["id"]):
+            continue
+        libs = auth.allowed_libraries(user, s["id"])
+        allowed[s["id"]] = {int(c["id"]) for c in s.get("channels") or [] if libs is None or str(c["id"]) in libs}
+    q = request.query
+    hit = await asyncio.to_thread(telegram_src.find_plex_copy, allowed, src["id"], request.match_info["key"],
+                                  q.get("type", ""), q.get("title", ""), q.get("year", ""), q.get("show", ""),
+                                  q.get("season"), q.get("ep"))
+    return web.json_response({"success": True, "found": bool(hit), **(hit or {})})
 
 
 async def tg_plex_art(request):
@@ -3345,6 +3366,7 @@ def create_app(require_auth=True):
     app.router.add_get(r"/api/tg/{sid}/plex-art/{name:[0-9a-f]{16}\.jpg}", tg_plex_art)
     app.router.add_post("/api/tg/{sid}/meta-fix", tg_meta_fix)
     app.router.add_post("/api/tg/{sid}/progress", tg_progress)
+    app.router.add_get(r"/api/plex-tg/{sid}/{key:\d+}", plex_tg_copy)
     app.router.add_route("*", "/api/plex/{sid}/{tail:.*}", plex_proxy)
     app.router.add_get("/s/{token}/{path:.+}", versioned_static)
     app.router.add_static("/static/", WEB_DIR, show_index=False)

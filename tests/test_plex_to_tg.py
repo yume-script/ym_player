@@ -167,6 +167,7 @@ def test_mirror_uploads_new_items(data, tmp_path, monkeypatch):
             # 올린 두 조각 메시지에 Plex 작품 정보
             m, eps = telegram_src.plex_meta_for("tg", -100123, msg=501)
             assert m["title"] == "큰 영화" and m["genres"] == ["드라마"] and m["cast"][0]["thumb"] == "https://img/x.jpg"
+            assert m["plex_key"] and m["plex_src"]                       # Plex에서 재생할 때 이 사본을 찾을 수 있게
             assert m["poster"].startswith("/api/tg/tg/plex-art/") and telegram_src.plex_meta_for("tg", -100123, msg=503)
             art = data / "telegram_thumbs" / "tg" / "plex" / m["poster"].rsplit("/", 1)[1]
             assert art.read_bytes() == b"\xff\xd8thumb"
@@ -499,4 +500,55 @@ def test_screenshot_for_waiting_item(data, tmp_path, monkeypatch):
         plex_to_tg.save_state(state)
         mirror.drop_item("r", "8")
         assert not __import__("os").path.exists(path)
+    asyncio.run(main())
+
+
+def test_prefer_telegram_copy(data):
+    """Plex 항목과 같은 텔레그램 사본 찾기: 올릴 때 남긴 Plex 번호 > 제목·연도·회차, 첫 조각, 볼 수 있는 채널만, 설정으로 끄기"""
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from ym_player import server, telegram_src
+    telegram_src._migrated.discard(str(data))
+    cfg = config_store.load()
+    config_store.replace_sources(cfg, [
+        {"id": "px", "type": "plex", "name": "Plex", "url": "http://plex", "token": "t"},
+        {"id": "tg", "type": "telegram", "name": "텔레", "api_id": "1", "api_hash": "h",
+         "channels": [{"id": 777, "title": "영화"}, {"id": 888, "title": "드라마"}]}])
+    config_store.save(cfg)
+    with telegram_src.db() as conn:
+        conn.executemany(
+            "INSERT INTO videos(source,channel,msg,title,caption,file_name,mime,duration,size,width,height,date,has_thumb,kind)"
+            " VALUES('tg',?,?,?,'',?,'video/mp4',60,1,1,1,'2026-10-01T00:00:00+00:00',0,'video')",
+            [(777, 10, "듄 part1", "Dune part1.mkv"), (777, 11, "듄 part2", "Dune part2.mkv"),
+             (777, 20, "옛 영화", "old.mkv"), (888, 30, "호프 S01E02", "Hope.S01E02.mkv")])
+    dune = {"kind": "movie", "title": "듄", "year": "2021", "plex_src": "px", "plex_key": "500"}
+    telegram_src.plex_meta_put("tg", 777, [11, 10], dune)
+    telegram_src.plex_meta_put("tg", 777, [20], {"kind": "movie", "title": "Old Movie", "original": "옛 영화", "year": "1999"})
+    telegram_src.plex_meta_put("tg", 888, [30], {"kind": "tv", "title": "호프", "year": "2024"}, {"season": 1, "ep": 2})
+    allowed = {"tg": {777, 888}}
+    f = telegram_src.find_plex_copy
+    assert f(allowed, "px", "500", "movie", "아무 제목") == {"tg": "tg", "channel": 777, "msg": 10, "title": "듄 part1"}   # 번호로, 첫 조각
+    assert f(allowed, "px", "501", "movie", "듄", "2021") is None          # 번호가 있는 사본은 번호로만
+    assert f(allowed, "px", "9", "movie", "옛 영화", "1999")["msg"] == 20  # 번호 없는 예전 것은 제목·연도로
+    assert f(allowed, "px", "9", "movie", "옛 영화", "2000") is None
+    assert f(allowed, "px", "7", "episode", "다음", "", "호프", "1", "2")["msg"] == 30
+    assert f(allowed, "px", "7", "episode", "다음", "", "호프", "1", "3") is None
+    assert f({"tg": {888}}, "px", "500", "movie") is None                # 못 보는 채널은 빼고
+    with telegram_src.db() as conn:                                      # 텔레그램에서 지워진 것은 빼고
+        conn.execute("DELETE FROM videos WHERE msg IN (10, 11)")
+    assert f(allowed, "px", "500", "movie") is None
+    telegram_src.plex_meta_put("tg", 777, [20], {**dune, "plex_key": "600"})
+
+    async def main():
+        c = TestClient(TestServer(server.create_app(require_auth=False)))
+        await c.start_server()
+        try:
+            r = await (await c.get("/api/plex-tg/px/600?type=movie&title=x")).json()
+            assert r["found"] and r["tg"] == "tg" and r["channel"] == 777 and r["msg"] == 20
+            assert not (await (await c.get("/api/plex-tg/px/601?type=movie&title=x")).json())["found"]
+            await c.put("/api/admin/general", json={"prefer_tg": False})
+            assert not (await (await c.get("/api/plex-tg/px/600?type=movie")).json())["found"]   # 설정에서 끄면 없음
+            assert (await c.get("/api/plex-tg/tg/600")).status == 404                            # Plex 소스만
+        finally:
+            await c.close()
     asyncio.run(main())
