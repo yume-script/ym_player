@@ -344,7 +344,7 @@ export class PlexProvider {
      * opts.quality    QUALITIES의 id. 없으면 지난번 고른 것
      */
     async getPlayback(id, { fromStart = false, startAt = null, subtitleId, audioId, quality, plexOnly = false } = {}) {
-        const mc = await this.req(`/library/metadata/${id}`);
+        const mc = await this.req(`/library/metadata/${id}`, { includeGuids: 1 });
         const m = (mc.Metadata || [])[0];
         const media = m && (m.Media || [])[0];
         const part = media && (media.Part || [])[0];
@@ -475,8 +475,16 @@ export class PlexProvider {
     async _viaTelegram(m, { fromStart, startAt }) {
         let hit;
         try {
-            const q = new URLSearchParams({ type: m.type, title: m.title || '', year: m.year || '', show: m.grandparentTitle || '',
-                season: m.parentIndex ?? '', ep: m.index ?? '' });
+            const tmdbOf = (x) => ((x && x.Guid) || []).map((g) => String(g.id || '')).find((g) => g.startsWith('tmdb://'))?.slice(7) || '';
+            // TV는 작품(시리즈)의 원제·TMDB 번호로 찾는다 - 회차 정보에는 없어서 작품 정보를 한 번 더 받는다
+            let show = null;
+            if (m.type === 'episode' && m.grandparentRatingKey) {
+                show = await this.req(`/library/metadata/${m.grandparentRatingKey}`, { includeGuids: 1 }).then((c) => (c.Metadata || [])[0]).catch(() => null);
+            }
+            const q = new URLSearchParams({ type: m.type, title: m.title || '', original: m.originalTitle || '', year: m.year || '',
+                show: m.grandparentTitle || '', show_original: (show && show.originalTitle) || '',
+                season: m.parentIndex ?? '', ep: m.index ?? '', tmdb: tmdbOf(m), show_tmdb: tmdbOf(show),
+                duration: Math.round((m.duration || 0) / 1000) });
             hit = await api(`/api/plex-tg/${encodeURIComponent(this.id)}/${encodeURIComponent(m.ratingKey)}?${q}`);
         } catch (e) {
             return null;

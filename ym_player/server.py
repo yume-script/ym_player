@@ -1598,8 +1598,9 @@ async def tg_meta(request, tg):
 
 
 async def plex_tg_copy(request):
-    """GET /api/plex-tg/{sid}/{key}?type=movie|episode&title=&year=&show=&season=&ep=
-    -> 이 Plex 항목과 같은 영상이 텔레그램에 있으면 {"found": true, "tg", "channel", "msg", "title"} (설정 > 공통에서 끄면 늘 없음)"""
+    """GET /api/plex-tg/{sid}/{key}?type=movie|episode&title=&original=&year=&show=&show_original=&season=&ep=&tmdb=&show_tmdb=&duration=
+    -> 이 Plex 항목과 같은 영상이 텔레그램(볼 수 있는 채널 아무 데서나)에 있으면 {"found": true, "tg", "channel", "msg", "title", "how"}
+    (설정 > 공통에서 끄면 늘 없음). 찾는 순서는 telegram_src.find_plex_copy"""
     src = _source_or_404(request.match_info["sid"], "plex", request)
     cfg = config_store.load()
     if not config_store.clean_general(cfg.get("general"))["prefer_tg"]:
@@ -1612,9 +1613,13 @@ async def plex_tg_copy(request):
         libs = auth.allowed_libraries(user, s["id"])
         allowed[s["id"]] = {int(c["id"]) for c in s.get("channels") or [] if libs is None or str(c["id"]) in libs}
     q = request.query
-    hit = await asyncio.to_thread(telegram_src.find_plex_copy, allowed, src["id"], request.match_info["key"],
-                                  q.get("type", ""), q.get("title", ""), q.get("year", ""), q.get("show", ""),
-                                  q.get("season"), q.get("ep"))
+    info = {"kind": q.get("type", ""), **{k: q.get(k, "")[:300] for k in (
+        "title", "original", "year", "show", "show_original", "season", "ep", "tmdb", "show_tmdb", "duration")}}
+    try:
+        info["duration"] = float(info["duration"] or 0)
+    except ValueError:
+        info["duration"] = 0
+    hit = await asyncio.to_thread(telegram_src.find_plex_copy, allowed, src["id"], request.match_info["key"], info)
     return web.json_response({"success": True, "found": bool(hit), **(hit or {})})
 
 

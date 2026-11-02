@@ -526,8 +526,12 @@ def test_prefer_telegram_copy(data):
     telegram_src.plex_meta_put("tg", 777, [20], {"kind": "movie", "title": "Old Movie", "original": "옛 영화", "year": "1999"})
     telegram_src.plex_meta_put("tg", 888, [30], {"kind": "tv", "title": "호프", "year": "2024"}, {"season": 1, "ep": 2})
     allowed = {"tg": {777, 888}}
-    f = telegram_src.find_plex_copy
-    assert f(allowed, "px", "500", "movie", "아무 제목") == {"tg": "tg", "channel": 777, "msg": 10, "title": "듄 part1"}   # 번호로, 첫 조각
+
+    def f(allow, plex_src, key, kind, title="", year="", show="", season="", ep="", **kw):
+        return telegram_src.find_plex_copy(allow, plex_src, key, {"kind": kind, "title": title, "year": year, "show": show,
+                                                                   "season": season, "ep": ep, **kw})
+    got = f(allowed, "px", "500", "movie", "아무 제목")
+    assert {k: got[k] for k in ("tg", "channel", "msg")} == {"tg": "tg", "channel": 777, "msg": 10}   # 번호로, 첫 조각
     assert f(allowed, "px", "501", "movie", "듄", "2021") is None          # 번호가 있는 사본은 번호로만
     assert f(allowed, "px", "9", "movie", "옛 영화", "1999")["msg"] == 20  # 번호 없는 예전 것은 제목·연도로
     assert f(allowed, "px", "9", "movie", "옛 영화", "2000") is None
@@ -552,3 +556,43 @@ def test_prefer_telegram_copy(data):
         finally:
             await c.close()
     asyncio.run(main())
+
+
+def test_prefer_telegram_any_channel(data):
+    """자동 올리기 사본이 아닌, 다른 채널에 올라온 영상도: TMDB 번호 / 파일 이름(작품·연도·시즌·회차) + 재생 길이"""
+    from ym_player import telegram_src
+    telegram_src._migrated.discard(str(data))
+    rows = [(900, 1, "Inception.2010.1080p.BluRay", "Inception.2010.1080p.BluRay.mkv", 8880),
+            (900, 2, "인셉션 감독판", "inception_extended.mkv", 9600),
+            (900, 3, "기생충 (2019)", "parasite.mkv", 7920),
+            (900, 4, "기생충 (2019) 예고편", "trailer.mp4", 120),
+            (901, 5, "로또 1등도 출근합니다.E09.261008.1080p", "lotto.E09.mkv", 3600),
+            (901, 6, "로또 1등도 출근합니다.E10.261015.1080p", "lotto.E10.mkv", 3600),
+            (902, 7, "Some Movie part1", "Some.Movie.2020.part1.mkv", 3000),
+            (902, 8, "Some Movie part2", "Some.Movie.2020.part2.mkv", 3000)]
+    with telegram_src.db() as conn:
+        conn.executemany(
+            "INSERT INTO videos(source,channel,msg,title,caption,file_name,mime,duration,size,width,height,date,has_thumb,kind)"
+            " VALUES('tg',?,?,?,'',?,'video/mp4',?,1,1,1,'2026-10-01T00:00:00+00:00',0,'video')", rows)
+    telegram_src.link_series("tg", 901)
+    name = telegram_src._media_key("인셉션 감독판", "inception_extended.mkv")[0]
+    telegram_src.meta_put("tg", f"movie:{name}:", "movie", 27205, {"title": "인셉션"})   # 감독판에 TMDB가 붙어 있음
+    allowed = {"tg": {900, 901, 902}}
+
+    def f(kind, **kw):
+        return telegram_src.find_plex_copy(allowed, "px", "1", {"kind": kind, **kw})
+    # TMDB 번호가 같으면 이름이 달라도 (TMDB가 이름보다 먼저)
+    got = f("movie", title="인셉션", original="Inception", year="2010", tmdb="27205", duration=8880)
+    assert got["msg"] == 2 and got["how"].startswith("작품 정보")
+    # TMDB가 없으면 원제·연도·길이로
+    got = f("movie", title="인셉션", original="Inception", year="2010", duration=8880)
+    assert got["msg"] == 1 and got["how"] == "제목이 같음"
+    assert f("movie", title="인셉션", original="Inception", year="2011", duration=8880) is None    # 연도가 다르면 아님
+    assert f("movie", title="기생충", year="2019", duration=7900)["msg"] == 3                      # 예고편(길이가 다름)은 빼고
+    assert f("movie", title="기생충", year="2019", duration=3000) is None                           # 길이가 너무 다르면 아님
+    # TV: 작품 이름·시즌·회차
+    assert f("episode", show="로또 1등도 출근합니다", season="1", ep="10", duration=3600)["msg"] == 6
+    assert f("episode", show="로또 1등도 출근합니다", season="2", ep="10", duration=3600) is None
+    # 나눠진 파일: 첫 조각, 조각이라 원본보다 짧아도
+    assert f("movie", title="Some Movie", year="2020", duration=6000)["msg"] == 7
+    assert telegram_src.find_plex_copy({"tg": {902}}, "px", "1", {"kind": "movie", "title": "인셉션", "year": "2010"}) is None
