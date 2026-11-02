@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 102,
+        "version": "1.1.65",
+        "date": "2026-11-02",
+        "title": "Plex에서 눌러 텔레그램 사본으로 재생할 때 화면 속 화면의 소스 표시를 TELEGRAM으로 (재생 현황 버벅임도 telegram으로)"
+    },
+    {
         "pr": 101,
         "version": "1.1.64",
         "date": "2026-11-02",

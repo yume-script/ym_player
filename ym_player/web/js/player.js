@@ -327,8 +327,7 @@ class Player {
      */
     /** 버벅임 알리기 (event: 'stall' | 'retry'). 숫자만 모이고, 실패해도 재생에는 상관없다 */
     _report(event) {
-        const provider = this.ref && registry.byId(this.ref.pid);
-        const kind = provider && ACTIVITY_KIND[provider.kind];
+        const kind = ACTIVITY_KIND[this._sourceKind()];
         if (!kind) return;
         fetch('/api/activity/report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, keepalive: true,
             body: JSON.stringify({ event, kind }) }).catch(() => {});
@@ -1051,11 +1050,19 @@ class Player {
     }
 
     /** PiP 창 오른쪽 위: "PLEX" + 제목 (채널을 바꾸면 같이) */
+    /** 지금 실제로 재생 중인 소스 종류. Plex에서 눌렀어도 텔레그램 사본으로 틀고 있으면 telegram (pb.sourceKind) */
+    _sourceKind() {
+        if (this.pb && this.pb.sourceKind) return this.pb.sourceKind;
+        const provider = this.ref && registry.byId(this.ref.pid);
+        return provider ? provider.kind : '';
+    }
+
     _syncPipLabel() {
         if (!this.docPip || !this.pipSrcEl) return;
         const pb = this.pb || {};
         const provider = this.ref && registry.byId(this.ref.pid);
-        this.pipSrcEl.textContent = provider ? (SOURCE_LABEL[provider.kind] || provider.name || '') : '';
+        const kind = this._sourceKind();
+        this.pipSrcEl.textContent = kind ? (SOURCE_LABEL[kind] || (provider && provider.name) || '') : '';
         this.pipTitleEl.textContent = [pb.title, pb.live ? '' : pb.subtitle].filter(Boolean).join(' · ');
         this.docPip.document.title = pb.title || 'YMPlayer';
     }
