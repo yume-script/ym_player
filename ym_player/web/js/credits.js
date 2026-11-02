@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 100,
+        "version": "1.1.63",
+        "date": "2026-11-02",
+        "title": "Plex 영상을 재생할 때 텔레그램에 같은 영상(자동 올리기 사본)이 있으면 텔레그램으로 재생 (설정 > 공통, 기본 켬)"
+    },
+    {
         "pr": 99,
         "version": "1.1.62",
         "date": "2026-11-01",
