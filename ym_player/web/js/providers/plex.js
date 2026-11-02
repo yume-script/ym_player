@@ -517,6 +517,7 @@ export class PlexProvider {
         // 텔레그램 재생(탐색·서버 변환으로 바꿔 다시 불러오기 포함)에 Plex 제목·본 위치 알리기를 씌운다
         const wrap = (p) => ({
             ...p,
+            sourceKind: 'telegram',   // (화면 속 화면의 소스 표시·재생 현황은 실제로 트는 텔레그램으로)
             title, subtitle,
             poster: this.img(m.art || m.grandparentArt, 1280, 720) || p.poster,
             engineNote: `텔레그램 · ${p.engineNote || '원본'}`,
