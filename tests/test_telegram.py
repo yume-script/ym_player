@@ -1630,7 +1630,7 @@ def test_hide_bl_gl_webtoons(monkeypatch, tmp_path):
     telegram_src.save_progress("tg", 1, 2, 3, 20)
     telegram_src.save_progress("tg", 1, 4, 3, 20)
     assert [c["msg"] for c in telegram_src.continue_watching("tg", [1])] == [4]
-    assert config_store.clean_general({"hide_bl_gl": 1, "x": 2}) == {"hide_bl_gl": True}
+    assert config_store.clean_general({"hide_bl_gl": 1, "x": 2}) == {"hide_bl_gl": True, "prefer_tg": True}
 
 
 def test_general_settings_api_reads_yaml_genres(env, monkeypatch):
@@ -1644,7 +1644,7 @@ def test_general_settings_api_reads_yaml_genres(env, monkeypatch):
         env.authorized = True
         await c.get("/api/tg/tg/videos?channel=777&limit=5")      # 색인
         r = await (await c.put("/api/admin/general", json={"hide_bl_gl": True})).json()
-        assert r["settings"] == {"hide_bl_gl": True} and telegram_src.HIDE_BL
+        assert r["settings"] == {"hide_bl_gl": True, "prefer_tg": True} and telegram_src.HIDE_BL
         for _ in range(50):     # 켜면 작품 정보 파일을 뒤에서 읽어 장르를 기억
             if not telegram_src.meta_flags_pending("tg", [777]):
                 break

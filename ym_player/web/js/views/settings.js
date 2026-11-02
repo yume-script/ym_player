@@ -874,12 +874,17 @@ async function renderGeneral(pane) {
         } finally { chk.disabled = false; }
     };
     const blChk = h('input', { type: 'checkbox', checked: st.hide_bl_gl, on: { change: () => set({ hide_bl_gl: blChk.checked }, blChk) } });
+    const tgChk = h('input', { type: 'checkbox', checked: st.prefer_tg !== false, on: { change: () => set({ prefer_tg: tgChk.checked }, tgChk) } });
     clear(pane).append(h('div', { class: 'src-card' },
         h('h3', { class: 'pane-title' }, icon('sliders'), ' 공통'),
         h('label', { class: 'check' }, blChk, ' 웹툰 목록에서 BL·GL 작품 숨기기'),
         h('p', { class: 'field-hint', text: '작품 정보 파일(웹툰명.yaml)의 장르·태그나 회차의 제목·캡션·파일 이름에 BL / GL 표시(#BL, [GL], 보이즈러브, 걸즈러브, 백합 …)가 있으면 '
             + '그 작품 전체를 웹툰 목록·검색·홈·이어보기에서 뺍니다. 모든 사용자에게 적용됩니다. 처음 켜면 작품 정보 파일을 뒤에서 한 번씩 읽느라 '
-            + '모두 가려지기까지 잠깐 걸릴 수 있습니다.' })));
+            + '모두 가려지기까지 잠깐 걸릴 수 있습니다.' }),
+        h('label', { class: 'check' }, tgChk, ' Plex 영상을 재생할 때 텔레그램에 같은 영상이 있으면 텔레그램으로 재생'),
+        h('p', { class: 'field-hint', text: '자동 올리기(Plex → 텔레그램)로 올린 영상이 대상입니다. 올릴 때 남긴 Plex 항목 번호로 찾고, 번호가 없는 예전 것은 '
+            + '제목·연도(영화) / 작품 제목·시즌·회차(TV)로 맞춥니다. Plex 서버의 변환·업로드 부담을 덜고, 본 위치와 다 봄은 Plex에도 같이 남깁니다. '
+            + '재생 화면 아래 표시가 "텔레그램 · …"이면 텔레그램 사본으로 재생 중입니다. 텔레그램 쪽 재생 준비가 안 되면 Plex로 재생합니다.' })));
 }
 
 async function renderCache(pane) {

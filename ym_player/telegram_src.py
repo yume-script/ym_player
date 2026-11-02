@@ -1150,6 +1150,54 @@ def plex_meta_for(sid, channel, msg=None, series_key=None):
     return meta, episodes
 
 
+def _norm_title(v):
+    return re.sub(r"[\W_]+", "", unicodedata.normalize("NFKC", str(v or "")).casefold())
+
+
+def find_plex_copy(allowed, plex_src, key, kind, title="", year="", show="", season=None, ep=None):
+    """Plex 항목과 같은 영상을 텔레그램에서 찾는다 (Plex -> 텔레그램 자동 올리기로 올린 것).
+    allowed: {텔레그램 소스 id: {볼 수 있는 채널}}. 먼저 올릴 때 남긴 Plex 항목 번호(plex_src·plex_key)로,
+    그게 없는 예전 것은 제목·연도(영화) / 작품 제목·시즌·회차(TV)로 맞춘다.
+    나눠 올린 영상은 첫 조각. 반환 {"tg", "channel", "msg", "title"} 또는 None"""
+    if not allowed:
+        return None
+    sids = list(allowed)
+    with db() as conn:
+        rows = conn.execute(
+            f"SELECT p.source, p.channel, p.msg, p.meta, p.ep, v.title FROM plex_meta p JOIN videos v "
+            f"ON v.source=p.source AND v.channel=p.channel AND v.msg=p.msg WHERE p.source IN ({','.join('?' * len(sids))})",
+            sids).fetchall()
+    exact, loose = [], []
+    want_title, want_show = _norm_title(title), _norm_title(show)
+    for r in rows:
+        if int(r["channel"]) not in allowed.get(r["source"], ()):
+            continue
+        try:
+            meta = json.loads(r["meta"] or "{}")
+            epi = json.loads(r["ep"]) if r["ep"] else None
+        except ValueError:
+            continue
+        hit = (r["source"], int(r["channel"]), int(r["msg"]), r["title"])
+        if meta.get("plex_key"):
+            if str(meta.get("plex_src")) == str(plex_src) and str(meta["plex_key"]) == str(key):
+                exact.append(hit)
+            continue   # 번호가 있는 것은 번호로만 (같은 제목의 다른 판을 잘못 잡지 않게)
+        names = {_norm_title(meta.get("title")), _norm_title(meta.get("original"))} - {""}
+        if kind == "movie" and meta.get("kind") == "movie" and want_title in names:
+            if not year or not meta.get("year") or str(year) == str(meta["year"]):
+                loose.append(hit)
+        elif kind == "episode" and meta.get("kind") == "tv" and want_show in names and epi:
+            if str(epi.get("season")) == str(season) and str(epi.get("ep")) == str(ep):
+                loose.append(hit)
+    found = exact or loose
+    if not found:
+        return None
+    # 같은 채널의 첫 조각(가장 작은 메시지 번호) - 여러 채널에 있으면 처음 찾은 채널
+    src, ch = found[0][0], found[0][1]
+    first = min((f for f in found if f[0] == src and f[1] == ch), key=lambda f: f[2])
+    return {"tg": first[0], "channel": first[1], "msg": first[2], "title": first[3]}
+
+
 def _plex_posters(conn, sid, keys):
     """{(채널, 메시지): Plex 포스터 주소} - 목록 카드용"""
     keys = list(keys)

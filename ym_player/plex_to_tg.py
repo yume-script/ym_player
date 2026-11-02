@@ -821,7 +821,9 @@ class Mirror:
                     "cast": [{"name": r.get("tag", ""), "role": r.get("role", ""),
                               "thumb": r["thumb"] if str(r.get("thumb", "")).startswith("http") else ""}
                              for r in (show.get("Role") or m.get("Role") or [])[:15]],
-                    "seasons": []}
+                    "seasons": [],
+                    # 이 영상의 원래 Plex 항목 - Plex에서 재생할 때 텔레그램 쪽을 먼저 틀 수 있게 (telegram_src.find_plex_copy)
+                    "plex_src": src["id"], "plex_key": str(m.get("ratingKey") or "")}
             ep = None
             if tv:
                 ep = {"season": m.get("parentIndex"), "ep": m.get("index"), "name": str(m.get("title") or ""),
