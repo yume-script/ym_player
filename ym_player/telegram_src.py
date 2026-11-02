@@ -1154,48 +1154,134 @@ def _norm_title(v):
     return re.sub(r"[\W_]+", "", unicodedata.normalize("NFKC", str(v or "")).casefold())
 
 
-def find_plex_copy(allowed, plex_src, key, kind, title="", year="", show="", season=None, ep=None):
-    """Plex 항목과 같은 영상을 텔레그램에서 찾는다 (Plex -> 텔레그램 자동 올리기로 올린 것).
-    allowed: {텔레그램 소스 id: {볼 수 있는 채널}}. 먼저 올릴 때 남긴 Plex 항목 번호(plex_src·plex_key)로,
-    그게 없는 예전 것은 제목·연도(영화) / 작품 제목·시즌·회차(TV)로 맞춘다.
-    나눠 올린 영상은 첫 조각. 반환 {"tg", "channel", "msg", "title"} 또는 None"""
+_PIECE_RE = re.compile(r"(?:\bpart|\bcd|\bdisc)\s*0*(\d{1,2})\b", re.I)   # 이름 맞추기에서 뗄 조각 표시
+
+
+def _same_length(tg_sec, plex_sec, part=False):
+    """재생 길이가 비슷한지 (둘 다 알 때만 본다). 나눠 올린 조각은 원본보다 짧아도 된다"""
+    if not tg_sec or not plex_sec:
+        return True
+    if part:
+        return tg_sec <= plex_sec * 1.05 + 60
+    return abs(tg_sec - plex_sec) <= max(120, plex_sec * 0.1)
+
+
+def find_plex_copy(allowed, plex_src, key, info):
+    """Plex 항목과 같은 영상을 텔레그램(볼 수 있는 채널 아무 데서나)에서 찾는다.
+    allowed: {텔레그램 소스 id: {볼 수 있는 채널}}
+    info: {"kind": movie|episode, "title", "original", "year", "show", "show_original", "season", "ep",
+           "tmdb": 영화 TMDB 번호, "show_tmdb": 작품 TMDB 번호, "duration": 초}
+    찾는 순서 (앞 단계에서 찾으면 그것으로):
+      1. 자동 올리기 사본 - 올릴 때 남긴 Plex 항목 번호 (번호가 있는 사본은 번호로만)
+      2. 번호 없는 예전 자동 올리기 사본 - 그때 남긴 Plex 작품 정보의 제목·연도 / 작품·시즌·회차
+      3. 작품 정보(TMDB)를 찾아 둔 영상 - TMDB 번호가 같고 (TV는 시즌·회차도)
+      4. 그 밖의 영상 - 파일 이름·캡션에서 뽑은 작품 이름(+연도) / 작품 이름·시즌·회차, 재생 길이가 비슷한 것
+    나눠진 파일은 첫 조각. 반환 {"tg", "channel", "msg", "title", "how"} 또는 None"""
     if not allowed:
         return None
-    sids = list(allowed)
-    with db() as conn:
-        rows = conn.execute(
-            f"SELECT p.source, p.channel, p.msg, p.meta, p.ep, v.title FROM plex_meta p JOIN videos v "
-            f"ON v.source=p.source AND v.channel=p.channel AND v.msg=p.msg WHERE p.source IN ({','.join('?' * len(sids))})",
-            sids).fetchall()
-    exact, loose = [], []
-    want_title, want_show = _norm_title(title), _norm_title(show)
-    for r in rows:
-        if int(r["channel"]) not in allowed.get(r["source"], ()):
-            continue
-        try:
-            meta = json.loads(r["meta"] or "{}")
-            epi = json.loads(r["ep"]) if r["ep"] else None
-        except ValueError:
-            continue
-        hit = (r["source"], int(r["channel"]), int(r["msg"]), r["title"])
-        if meta.get("plex_key"):
-            if str(meta.get("plex_src")) == str(plex_src) and str(meta["plex_key"]) == str(key):
-                exact.append(hit)
-            continue   # 번호가 있는 것은 번호로만 (같은 제목의 다른 판을 잘못 잡지 않게)
-        names = {_norm_title(meta.get("title")), _norm_title(meta.get("original"))} - {""}
-        if kind == "movie" and meta.get("kind") == "movie" and want_title in names:
-            if not year or not meta.get("year") or str(year) == str(meta["year"]):
-                loose.append(hit)
-        elif kind == "episode" and meta.get("kind") == "tv" and want_show in names and epi:
-            if str(epi.get("season")) == str(season) and str(epi.get("ep")) == str(ep):
-                loose.append(hit)
-    found = exact or loose
-    if not found:
+    kind = info.get("kind")
+    if kind not in ("movie", "episode"):
         return None
-    # 같은 채널의 첫 조각(가장 작은 메시지 번호) - 여러 채널에 있으면 처음 찾은 채널
+    sids = list(allowed)
+    marks = ",".join("?" * len(sids))
+    want_names = {_norm_title(info.get("title")), _norm_title(info.get("original"))} - {""}
+    want_shows = {_norm_title(info.get("show")), _norm_title(info.get("show_original"))} - {""}
+    year, season, ep = str(info.get("year") or ""), str(info.get("season") or ""), str(info.get("ep") or "")
+    duration = float(info.get("duration") or 0)
+    tmdb = str(info.get("tmdb") or "") if kind == "movie" else str(info.get("show_tmdb") or "")
+    tiers = {1: [], 2: [], 3: [], 4: []}
+
+    def ok_channel(r):
+        return int(r["channel"]) in allowed.get(r["source"], ())
+
+    with db() as conn:
+        # 1·2: 자동 올리기 사본 (Plex 작품 정보가 붙은 것)
+        for r in conn.execute(
+                f"SELECT p.source, p.channel, p.msg, p.meta, p.ep, v.title FROM plex_meta p JOIN videos v "
+                f"ON v.source=p.source AND v.channel=p.channel AND v.msg=p.msg WHERE p.source IN ({marks})", sids):
+            if not ok_channel(r):
+                continue
+            try:
+                meta = json.loads(r["meta"] or "{}")
+                epi = json.loads(r["ep"]) if r["ep"] else None
+            except ValueError:
+                continue
+            hit = (r["source"], int(r["channel"]), int(r["msg"]), r["title"])
+            if meta.get("plex_key"):
+                if str(meta.get("plex_src")) == str(plex_src) and str(meta["plex_key"]) == str(key):
+                    tiers[1].append(hit)
+                continue
+            names = {_norm_title(meta.get("title")), _norm_title(meta.get("original"))} - {""}
+            if kind == "movie" and meta.get("kind") == "movie" and names & want_names:
+                if not year or not meta.get("year") or year == str(meta["year"]):
+                    tiers[2].append(hit)
+            elif kind == "episode" and meta.get("kind") == "tv" and names & want_shows and epi:
+                if str(epi.get("season")) == season and str(epi.get("ep")) == ep:
+                    tiers[2].append(hit)
+        if tiers[1] or tiers[2]:
+            return _first_part(tiers[1] or tiers[2], "자동 올리기 사본")
+        # (Plex 작품 정보가 붙은 자동 올리기 사본은 위에서 그 정보로만 맞춘다 - 이름이 같아도 다른 판일 수 있어서)
+        mirrored = {(r["source"], int(r["channel"]), int(r["msg"])) for r in conn.execute(
+            f"SELECT source, channel, msg FROM plex_meta WHERE source IN ({marks})", sids)}
+
+        # 3·4: 다른 채널의 영상 - TMDB로 찾아 둔 작품 이름 키, 파일 이름·캡션
+        tmdb_keys = set()
+        if tmdb:
+            tmdb_keys = {(r["source"], r["mkey"]) for r in conn.execute(
+                f"SELECT source, mkey FROM meta WHERE source IN ({marks}) AND tmdb_id=? AND kind=?",
+                (*sids, int(tmdb) if tmdb.isdigit() else -1, "movie" if kind == "movie" else "tv"))}
+        want_keys = {_media_key(n)[0] for n in (info.get("title"), info.get("original")) if n} - {""}
+        want_show_keys = {_media_key(n)[0] for n in (info.get("show"), info.get("show_original")) if n} - {""}
+        if kind == "episode":
+            for r in conn.execute(
+                    f"SELECT s.source, s.channel, s.video, s.skey, s.season, s.ep, v.title, v.duration FROM series s JOIN videos v "
+                    f"ON v.source=s.source AND v.channel=s.channel AND v.msg=s.video WHERE s.source IN ({marks}) AND v.kind='video' "
+                    f"AND s.special=0", sids):
+                if not ok_channel(r) or str(r["season"] or 1) != (season or "1") or str(r["ep"]) != ep \
+                        or (r["source"], int(r["channel"]), int(r["video"])) in mirrored:
+                    continue
+                hit = (r["source"], int(r["channel"]), int(r["video"]), r["title"])
+                if (r["source"], f"tv:{r['skey']}") in tmdb_keys:
+                    tiers[3].append(hit)
+                elif r["skey"] in want_show_keys and _same_length(r["duration"], duration):
+                    tiers[4].append(hit)
+        if not (tiers[3] or tiers[4]):
+            for r in conn.execute(f"SELECT source, channel, msg, title, file_name, duration FROM videos "
+                                  f"WHERE source IN ({marks}) AND kind='video'", sids):
+                if not ok_channel(r) or (r["source"], int(r["channel"]), int(r["msg"])) in mirrored:
+                    continue
+                part = bool(_PIECE_RE.search(f"{r['title']} {r['file_name']}"))
+                hit = (r["source"], int(r["channel"]), int(r["msg"]), r["title"])
+                if kind == "episode":
+                    got = _episode_info(r["title"], r["file_name"])
+                    if not got or str(got[1]) != (season or "1") or str(got[2]) != ep:
+                        continue
+                    if (r["source"], f"tv:{got[0]}") in tmdb_keys:
+                        tiers[3].append(hit)
+                    elif got[0] in want_show_keys and _same_length(r["duration"], duration, part):
+                        tiers[4].append(hit)
+                    continue
+                # "영화 part1" / "Movie.2020.CD2.mkv" -> 조각 표시는 떼고 이름을 본다
+                name, got_ep, got_year = _media_key(_PIECE_RE.sub(" ", r["title"] or ""), _PIECE_RE.sub(" ", r["file_name"] or ""))
+                if not name or got_ep is not None:
+                    continue
+                if (r["source"], f"movie:{name}:{got_year}") in tmdb_keys:
+                    tiers[3].append(hit)
+                elif name in want_keys and (not year or not got_year or year == got_year) \
+                        and _same_length(r["duration"], duration, part):
+                    tiers[4].append(hit)
+    if tiers[3]:
+        return _first_part(tiers[3], "작품 정보(TMDB)가 같음")
+    if tiers[4]:
+        return _first_part(tiers[4], "제목이 같음")
+    return None
+
+
+def _first_part(found, how):
+    """같은 채널의 첫 조각(가장 작은 메시지 번호) - 여러 채널에 있으면 처음 찾은 채널"""
     src, ch = found[0][0], found[0][1]
     first = min((f for f in found if f[0] == src and f[1] == ch), key=lambda f: f[2])
-    return {"tg": first[0], "channel": first[1], "msg": first[2], "title": first[3]}
+    return {"tg": first[0], "channel": first[1], "msg": first[2], "title": first[3], "how": how}
 
 
 def _plex_posters(conn, sid, keys):

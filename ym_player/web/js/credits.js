@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 101,
+        "version": "1.1.64",
+        "date": "2026-11-02",
+        "title": "Plex 재생 → 텔레그램: 자동 올리기 사본뿐 아니라 다른 텔레그램 채널의 같은 영상도 (TMDB 번호, 파일 이름·연도·회차 + 재생 길이)"
+    },
+    {
         "pr": 100,
         "version": "1.1.63",
         "date": "2026-11-02",
