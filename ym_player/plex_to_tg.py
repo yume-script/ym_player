@@ -151,7 +151,12 @@ def clean_settings(raw):
         rules.append(rule)
     if len(rules) > MAX_RULES:
         raise ValueError(f"규칙은 {MAX_RULES}개까지 만들 수 있습니다.")
-    return {"interval": num(raw.get("interval"), 2, 1440, 10), "max_gb": num(raw.get("max_gb"), 1, 4, 2), "rules": rules}
+    # max_gb: 0 = 자동 (올리는 텔레그램 계정이 프리미엄이면 4GB, 아니면 2GB), 2/4 = 그 한도로 고정.
+    # 예전 설정의 2(그때 기본값)는 자동으로 읽는다 (일반 계정이면 똑같이 2GB) - 새 화면에서 저장하면 max_gb_v가 붙어 그대로
+    max_gb = num(raw.get("max_gb"), 0, 4, 0)
+    if max_gb not in (0, 2, 4) or (max_gb == 2 and not raw.get("max_gb_v")):
+        max_gb = 0
+    return {"interval": num(raw.get("interval"), 2, 1440, 10), "max_gb": max_gb, "max_gb_v": 1, "rules": rules}
 
 
 def load_settings():
@@ -331,6 +336,7 @@ class Mirror:
         self.error = ""
         self._wake = asyncio.Event()
         self._shot_task = None
+        self._gb_cache = {}      # 텔레그램 소스 id -> (시각, 파일 한도 GB) - 프리미엄 계정인지
         self._shot_fail = {}     # (규칙, 항목) -> (시각, 오류) - 장면 뽑기에 실패한 것 (SHOT_RETRY_SEC 뒤에 다시)
 
     def wake(self):
@@ -592,6 +598,20 @@ class Mirror:
                                 *state["history"]][:KEEP_HISTORY]
             save_state(state)
 
+    async def _account_gb(self, tg_id, client):
+        """올리는 텔레그램 계정의 파일 한도(GB): 프리미엄 4, 일반 2 (한 시간 기억)"""
+        hit = self._gb_cache.get(tg_id)
+        if hit and time.time() - hit[0] < 3600:
+            return hit[1]
+        try:
+            me = await client.get_me()
+            gb = 4 if getattr(me, "premium", False) else 2
+        except Exception as e:   # 모르면 일반 계정 한도로 (작게 나누는 쪽이 안전)
+            log.info("텔레그램 계정 종류를 알 수 없어 2GB 한도로 나눕니다: %s", e)
+            gb = 2
+        self._gb_cache[tg_id] = (time.time(), gb)
+        return gb
+
     async def upload(self, rule, key, max_gb, test=False):
         cfg, src = self.plex_src(rule["plex"])
         data = await self.plex_json(cfg, src, f"/library/metadata/{key}")
@@ -617,6 +637,9 @@ class Mirror:
             if not rule["wait_hours"] or not w or time.time() - w.get("since", time.time()) < rule["wait_hours"] * 3600:
                 raise Waiting()
         size = int(part.get("size") or 0)
+        tg = self.tg_for(rule["tg"])
+        client = await tg.authorized_client()
+        max_gb = max_gb or await self._account_gb(rule["tg"], client)   # 자동: 그 계정이 프리미엄이면 4GB, 아니면 2GB
         limit = int(max_gb * PART_LIMIT * 0.97)
         duration = (m.get("duration") or media.get("duration") or 0) / 1000
         if size > limit and not transcode.ffmpeg_path():
@@ -626,8 +649,6 @@ class Mirror:
         name = os.path.basename(str(part.get("file") or "")) or f"{key}.{part.get('container') or 'mp4'}"
         name = re.sub(r'[\\/:*?"<>|]', "_", name)
         stem, ext = os.path.splitext(name)
-        tg = self.tg_for(rule["tg"])
-        client = await tg.authorized_client()
         peer = await tg.peer(int(rule["channel"]))
         self.current = {"title": fields["name"], "phase": "준비 중", "done": 0, "total": size}
         tmp = os.path.join(config_store.DATA_DIR, "plex_to_tg_tmp", secrets.token_hex(6))
@@ -718,7 +739,7 @@ class Mirror:
         if burn_skip:
             notes.append(burn_skip)
         if len(msgs) > 1:
-            notes.append(f"{len(msgs)}개로 나눠 올림")
+            notes.append(f"{len(msgs)}개로 나눠 올림 ({max_gb}GB 한도)")
         if sent_subs:
             notes.append(f"자막 파일 {sent_subs}개 첨부")
         elif embedded and not burned:

@@ -34,13 +34,17 @@ def data(monkeypatch, tmp_path):
 
 
 class FakeTg:
-    def __init__(self):
+    def __init__(self, premium=False):
+        self.premium = premium
         self.sent = []
         self.fail = 0
         self.next_id = 500
 
     async def authorized_client(self):
         return self
+
+    async def get_me(self):
+        return type("Me", (), {"premium": self.premium})()
 
     async def peer(self, channel):
         return ("peer", channel)
@@ -84,7 +88,7 @@ def test_mirror_uploads_new_items(data, tmp_path, monkeypatch):
     _video(local, 2)
     big = tmp_path / "Big.mkv"
     _video(big, 6)
-    monkeypatch.setattr(plex_to_tg, "PART_LIMIT", int(big.stat().st_size * 0.75 / 0.97))   # max_gb=1이면 한도가 파일의 75% -> 2조각
+    monkeypatch.setattr(plex_to_tg, "PART_LIMIT", int(big.stat().st_size * 0.75 / 0.97 / 2))   # 일반 계정(2GB)이면 한도가 파일의 75% -> 2조각
     items = [{"ratingKey": "1", "type": "movie", "title": "옛 영화", "year": 2020, "addedAt": 100,
               "Media": [{"Part": [{"key": "/library/parts/1/file.mkv", "file": "/nowhere/old.mkv", "size": 3}]}]}]
     meta = {}
@@ -138,7 +142,7 @@ def test_mirror_uploads_new_items(data, tmp_path, monkeypatch):
             async with http.get(s["url"] + path, params=params) as r:
                 return await r.json()
         mirror = plex_to_tg.Mirror(plex_json, lambda sid: (cfg, src if sid == "px" else None), lambda sid: tg, lambda: http)
-        config_store.save({**cfg, "plex_to_tg": {"max_gb": 1, "rules": [{"id": "r1", "plex": "px", "section": "1", "section_title": "영화",
+        config_store.save({**cfg, "plex_to_tg": {"rules": [{"id": "r1", "plex": "px", "section": "1", "section_title": "영화",
                                                                          "tg": "tg", "channel": "-100123", "channel_title": "내 채널", "burn_subs": False}]}})
         try:
             st = plex_to_tg.load_settings()
@@ -163,7 +167,7 @@ def test_mirror_uploads_new_items(data, tmp_path, monkeypatch):
             assert len(p1["body"]) + len(p2["body"]) >= big.stat().st_size * 0.9
             state = plex_to_tg.load_state()
             assert list(state["rules"]["r1"]["waiting"]) == ["3"]
-            assert [(h["title"], h["ok"], h["note"]) for h in state["history"]] == [("큰 영화 (2026)", True, "2개로 나눠 올림, 자막 파일 2개 첨부"), ("호프 (2026)", False, "일시 오류 (다시 시도 1/3: 10분 뒤)")]
+            assert [(h["title"], h["ok"], h["note"]) for h in state["history"]] == [("큰 영화 (2026)", True, "2개로 나눠 올림 (2GB 한도), 자막 파일 2개 첨부"), ("호프 (2026)", False, "일시 오류 (다시 시도 1/3: 10분 뒤)")]
             retry = state["rules"]["r1"]["retry"]["2"]
             assert retry["at"] > __import__("time").time() + 500 and state["rules"]["r1"]["fails"]["2"] == 1   # 10분 뒤에 다시
             # 올린 두 조각 메시지에 Plex 작품 정보
@@ -709,4 +713,25 @@ def test_split_in_halves(data, tmp_path):
         assert len(two) == 2 and abs(two[0][2] - 15) < 0.01              # 50%씩 (예전에는 한도의 90%로 나눠 3조각)
         three = await mirror._split(str(video), str(tmp_path / "b"), ".mp4", 30, int(size / 2.5), "영화")
         assert len(three) == 3 and abs(three[0][2] - 10) < 0.01
+    asyncio.run(main())
+
+
+def test_part_limit_by_account(data):
+    """파일 한도: 자동이면 올리는 텔레그램 계정이 프리미엄이면 4GB, 아니면 2GB (예전 설정의 2는 자동으로 읽음)"""
+    clean = plex_to_tg.clean_settings
+    assert clean({})["max_gb"] == 0                                        # 새 설정은 자동
+    assert clean({"max_gb": 2})["max_gb"] == 0                             # 예전 기본값 2 -> 자동
+    assert clean({"max_gb": 2, "max_gb_v": 1})["max_gb"] == 2              # 새 화면에서 2GB로 고정
+    assert clean({"max_gb": 4})["max_gb"] == 4 and clean({"max_gb": 1})["max_gb"] == 0
+
+    async def main():
+        mirror = plex_to_tg.Mirror(None, None, None, None)
+        assert await mirror._account_gb("a", FakeTg(premium=True)) == 4
+        assert await mirror._account_gb("b", FakeTg(premium=False)) == 2
+        assert await mirror._account_gb("a", FakeTg(premium=False)) == 4   # 한 시간 기억
+
+        class Broken:
+            async def get_me(self):
+                raise RuntimeError("연결 끊김")
+        assert await mirror._account_gb("c", Broken()) == 2                # 모르면 작게
     asyncio.run(main())

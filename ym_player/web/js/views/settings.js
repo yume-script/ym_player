@@ -1171,7 +1171,7 @@ async function renderMirror(pane) {
     const loadChannels = (sid) => (channelCache[sid] = channelCache[sid]
         || api(`/api/tg/${encodeURIComponent(sid)}/channels`).then((r) => r.channels).catch((e) => { delete channelCache[sid]; throw e; }));
     const intervalIn = h('input', { class: 'input', type: 'number', min: '2', max: '1440', value: String(st.interval) });
-    const maxSel = h('select', { class: 'select' }, [[2, '2GB (일반 계정)'], [4, '4GB (텔레그램 프리미엄)']].map(([v, t]) =>
+    const maxSel = h('select', { class: 'select' }, [[0, '자동 (프리미엄 계정이면 4GB, 아니면 2GB)'], [2, '2GB로 고정 (일반 계정)'], [4, '4GB로 고정 (텔레그램 프리미엄)']].map(([v, t]) =>
         h('option', { value: String(v), text: t, selected: st.max_gb === v })));
     const rulesBox = h('div', { class: 'mirror-rules' });
     const rows = [];
@@ -1230,7 +1230,7 @@ async function renderMirror(pane) {
     save.addEventListener('click', async () => {
         save.disabled = true;
         try {
-            const r = await api('/api/admin/plex-tg', { method: 'PUT', json: { interval: Number(intervalIn.value), max_gb: Number(maxSel.value), rules: rows.map((x) => x.get()) } });
+            const r = await api('/api/admin/plex-tg', { method: 'PUT', json: { interval: Number(intervalIn.value), max_gb: Number(maxSel.value), max_gb_v: 1, rules: rows.map((x) => x.get()) } });
             r.settings.rules.forEach((x, i) => { if (rows[i]) rows[i].id = x.id; });
             toast('저장했습니다. 새 규칙은 지금 있는 것 다음부터 올립니다.', 'success', 5000);
             setTimeout(paintStatus, 1500);
@@ -1328,7 +1328,7 @@ async function renderMirror(pane) {
                 + 'Plex의 포스터·줄거리·장르·출연·회차 정보를 같이 남겨 텔레그램 화면에서 Plex처럼 보입니다.' }),
             ...(opts.plex.length && opts.telegram.length ? [] : [h('p', { class: 'muted error', text: 'Plex 소스와 텔레그램 소스(로그인까지)가 둘 다 있어야 합니다.' })]),
             ...plexErr,
-            h('div', { class: 'row-2' }, field('확인 간격 (분)', intervalIn, '2~1440'), field('파일 크기 한도', maxSel, '넘는 파일은 나눠서 올립니다 (서버에 ffmpeg 필요).')),
+            h('div', { class: 'row-2' }, field('확인 간격 (분)', intervalIn, '2~1440'), field('파일 크기 한도', maxSel, '넘는 파일은 한도의 몇 배인지만큼 같은 길이로 나눠 올립니다 (2배까지는 반씩, 서버에 ffmpeg 필요). 자동은 규칙마다 올리는 텔레그램 계정을 봅니다.')),
             rulesBox,
             h('div', { class: 'toolbar' }, h('button', { class: 'btn', on: { click: () => addRule() } }, icon('plus'), ' 규칙 추가'), save, check),
             h('p', { class: 'field-hint', text: '올리려면 그 채널에 글을 쓸 수 있어야 합니다(채널 관리자). Plex 서버가 이 컴퓨터에 있고 원본 파일 경로가 보이면 그대로 올리고, '
