@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 106,
+        "version": "1.1.69",
+        "date": "2026-11-05",
+        "title": "자동 올리기 파일 한도 \"자동\": 올리는 텔레그램 계정이 프리미엄이면 4GB, 일반이면 2GB 기준으로 나누기"
+    },
+    {
         "pr": 105,
         "version": "1.1.68",
         "date": "2026-11-04",
