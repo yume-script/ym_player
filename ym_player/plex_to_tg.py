@@ -41,7 +41,10 @@ from . import config_store, telegram_src, transcode
 log = logging.getLogger("ym_player.plex_to_tg")
 
 MAX_RULES = 20
-MAX_TRIES = 3
+MAX_TRIES = 3          # 실패하면 다시 시도하는 횟수 (처음 한 번 + 3번)
+RETRY_AFTER = (10 * 60, 30 * 60, 2 * 3600)   # 몇 번째 다시 시도를 얼마 뒤에
+GIVE_UP = 99           # fails 값: 다시 하지 않음 (직접 뺌, 너무 큰 파일)
+SHOT_RETRY_SEC = 6 * 3600   # 장면 뽑기에 실패한 항목을 다시 해 보기까지
 KEEP_DONE = 5000
 KEEP_HISTORY = 50
 SCAN_SIZE = 50
@@ -174,6 +177,19 @@ def load_state():
     st = st if isinstance(st, dict) else {}
     st.setdefault("rules", {})
     st.setdefault("history", [])
+    if not st.get("retry_v"):   # 예전 기록: 실패 3번으로 포기한 것은 다시 3번 시도하게 (직접 뺀 것·너무 큰 파일은 그대로 포기)
+        skipped = {(h.get("key")) for h in st["history"] if str(h.get("note") or "").startswith("건너뜀")}
+        titles = {h.get("key"): h.get("title") for h in reversed(st["history"])}
+        for rs in st["rules"].values():
+            fails = rs.get("fails") or {}
+            for key, n in list(fails.items()):
+                if key in skipped or n >= GIVE_UP:
+                    fails[key] = GIVE_UP
+                    continue
+                if n >= MAX_TRIES:
+                    fails[key] = 0
+                rs.setdefault("retry", {}).setdefault(key, {"title": titles.get(key) or key, "at": 0})
+        st["retry_v"] = 1
     return st
 
 
@@ -314,7 +330,8 @@ class Mirror:
         self.last_check = 0
         self.error = ""
         self._wake = asyncio.Event()
-        self._shot_lock = asyncio.Semaphore(2)
+        self._shot_task = None
+        self._shot_fail = {}     # (규칙, 항목) -> (시각, 오류) - 장면 뽑기에 실패한 것 (SHOT_RETRY_SEC 뒤에 다시)
 
     def wake(self):
         self._wake.set()
@@ -325,8 +342,45 @@ class Mirror:
                 "current": {**self.current, **(self.current_job or {})} if self.current else None,
                 "last_check": self.last_check, "error": self.error, "history": st["history"][:KEEP_HISTORY],
                 "rules": {rid: {"baseline": r.get("baseline", 0), "count": len(r.get("done", []))} for rid, r in st["rules"].items()},
-                "waiting": [{"title": w.get("title", k), "since": w.get("since", 0), "rule": rid, "key": k}
-                            for rid, r in st["rules"].items() for k, w in (r.get("waiting") or {}).items()]}
+                "waiting": [{"title": w.get("title", k), "since": w.get("since", 0), "rule": rid, "key": k,
+                             "shot": self._shot_mtime(rid, k), "shot_error": (self._shot_fail.get((rid, k)) or (0, ""))[1]}
+                            for rid, r in st["rules"].items() for k, w in (r.get("waiting") or {}).items()],
+                "retry": [{"title": x.get("title", k), "at": x.get("at", 0), "tries": r.get("fails", {}).get(k, 0), "rule": rid, "key": k}
+                          for rid, r in st["rules"].items() for k, x in (r.get("retry") or {}).items()]}
+
+    @staticmethod
+    def _shot_mtime(rule_id, key):
+        try:
+            return int(os.path.getmtime(_shot_path(rule_id, key)))
+        except OSError:
+            return 0
+
+    def shot_file(self, rule_id, key):
+        """미리 만들어 둔 장면 파일 (없으면 None - 화면 요청에서는 만들지 않는다)"""
+        path = _shot_path(rule_id, key)
+        return path if os.path.exists(path) else None
+
+    def prepare_shots(self):
+        """자막 기다리는 항목의 장면을 뒤에서 하나씩 미리 만든다 (이미 돌고 있으면 그대로)"""
+        if self._shot_task and not self._shot_task.done():
+            return self._shot_task
+        self._shot_task = asyncio.ensure_future(self._prepare_shots())
+        return self._shot_task
+
+    async def _prepare_shots(self):
+        while True:
+            todo = [(rid, k) for rid, r in load_state()["rules"].items() for k in (r.get("waiting") or {})
+                    if not os.path.exists(_shot_path(rid, k))
+                    and time.time() - self._shot_fail.get((rid, k), (0, ""))[0] > SHOT_RETRY_SEC]
+            if not todo:
+                return
+            rid, key = todo[0]
+            try:
+                await self.screenshot(rid, key)
+                self._shot_fail.pop((rid, key), None)
+            except Exception as e:   # 이 항목은 SHOT_RETRY_SEC 뒤에 다시 (다른 항목은 계속)
+                self._shot_fail[(rid, key)] = (time.time(), str(e)[:200])
+                log.info("자동 올리기 장면 뽑기 실패 (%s): %s", key, e)
 
     async def loop(self):
         await asyncio.sleep(5)
@@ -340,6 +394,7 @@ class Mirror:
                     log.warning("자동 올리기 확인 실패: %s", e)
                     self.error = str(e)
                 await self.run_queue(st)
+                self.prepare_shots()   # 자막 기다리는 항목의 장면을 뒤에서 미리
             self._wake.clear()
             try:
                 await asyncio.wait_for(self._wake.wait(), st["interval"] * 60)
@@ -381,11 +436,18 @@ class Mirror:
                 elif (rule["id"], key) not in queued:
                     self.queue.append({"rule": rule["id"], "key": key, "title": w.get("title", key)})
                     queued.add((rule["id"], key))
+            now = time.time()
+            for key, r in list((rs.get("retry") or {}).items()):   # 실패해서 다시 해 볼 차례가 된 것
+                if key in done:
+                    rs["retry"].pop(key, None)
+                elif r.get("at", 0) <= now and (rule["id"], key) not in queued:
+                    self.queue.append({"rule": rule["id"], "key": key, "title": r.get("title", key)})
+                    queued.add((rule["id"], key))
             for m in sorted(items, key=lambda x: int(x.get("addedAt") or 0)):
                 key = str(m["ratingKey"])
                 if int(m.get("addedAt") or 0) <= rs["baseline"] or key in done or (rule["id"], key) in queued:
                     continue
-                if rs.get("fails", {}).get(key, 0) >= MAX_TRIES:
+                if key in rs.get("fails", {}):   # 실패한 적이 있으면 retry(정해진 시각)로만 다시
                     continue
                 self.queue.append({"rule": rule["id"], "key": key, "title": item_fields(m)["name"]})
                 queued.add((rule["id"], key))
@@ -407,7 +469,8 @@ class Mirror:
 
     async def screenshot(self, rule_id, key):
         """자막을 기다리는 항목의 10분 지점 장면(JPEG 경로) - 자막을 영상에 입힌 하드섭인지 사람이 보고 판단하게.
-        처음 한 번 ffmpeg로 뽑아 data/plex_to_tg_shots/에 두고, 항목이 대기에서 빠지면 지운다"""
+        prepare_shots가 뒤에서 하나씩 ffmpeg로 뽑아 data/plex_to_tg_shots/에 두고(화면은 만든 파일만 가져감),
+        항목이 대기에서 빠지면 지운다"""
         path = _shot_path(rule_id, key)
         if os.path.exists(path):
             return path
@@ -434,8 +497,7 @@ class Mirror:
         else:
             raise ValueError("Plex 항목에 파일 정보가 없습니다.")
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        async with self._shot_lock:   # 한꺼번에 여러 장을 보더라도 ffmpeg는 둘까지
-            ok, err = await self._ffmpeg(*args, "-frames:v", "1", "-vf", "scale='min(960,iw)':-2", "-q:v", "4", path + ".tmp.jpg")
+        ok, err = await self._ffmpeg(*args, "-frames:v", "1", "-vf", "scale='min(960,iw)':-2", "-q:v", "4", path + ".tmp.jpg")
         if not ok or not os.path.exists(path + ".tmp.jpg"):
             raise ValueError(f"장면을 뽑지 못했습니다: {err.strip()[-200:]}")
         os.replace(path + ".tmp.jpg", path)
@@ -464,7 +526,8 @@ class Mirror:
         w = (rs.get("waiting") or {}).pop(key, None)
         if w is None:
             raise ValueError("자막을 기다리는 항목이 아닙니다.")
-        rs.setdefault("fails", {})[key] = MAX_TRIES
+        rs.setdefault("fails", {})[key] = GIVE_UP
+        (rs.get("retry") or {}).pop(key, None)
         drop_shot(rule_id, key)
         state["history"] = [{"title": w.get("title", key), "ok": False, "note": "건너뜀: 직접 뺌", "at": int(time.time()), "key": key,
                              "subs": "", "channel": ""}, *state["history"]][:KEEP_HISTORY]
@@ -505,14 +568,25 @@ class Mirror:
             if (rs.get("waiting") or {}).pop(job["key"], None) is not None:
                 drop_shot(job["rule"], job["key"])   # 대기에서 빠졌으면 판단용 장면도
             fails = rs.setdefault("fails", {})
+            retry = rs.setdefault("retry", {})
             if ok and note.startswith("건너뜀"):   # 너무 큰 파일 - 다시 시도하지 않는다
                 ok = False
-                fails[job["key"]] = MAX_TRIES
+                fails[job["key"]] = GIVE_UP
+                retry.pop(job["key"], None)
             elif ok:
                 rs["done"] = [*rs.get("done", []), job["key"]][-KEEP_DONE:]
                 fails.pop(job["key"], None)
+                retry.pop(job["key"], None)
             elif not job.get("test"):
-                fails[job["key"]] = fails.get(job["key"], 0) + 1
+                # 실패: 10분 -> 30분 -> 2시간 뒤에 다시 (3번까지). Plex 최근 목록에서 밀려나도 retry에 남아 있어서 다시 한다
+                n = fails[job["key"]] = min(fails.get(job["key"], 0), MAX_TRIES) + 1
+                if n <= MAX_TRIES:
+                    wait = RETRY_AFTER[min(n, len(RETRY_AFTER)) - 1]
+                    retry[job["key"]] = {"title": job["title"], "at": int(time.time()) + wait}
+                    note += f" (다시 시도 {n}/{MAX_TRIES}: {wait // 60}분 뒤)"
+                else:
+                    retry.pop(job["key"], None)
+                    note += f" (다시 시도 {MAX_TRIES}번 모두 실패 - 그만둠)"
             state["history"] = [{"title": job["title"], "ok": ok, "note": note, "at": int(time.time()), "key": job["key"],
                                  "subs": self.subs_label if ok else "", "channel": (rule or {}).get("channel_title", "")},
                                 *state["history"]][:KEEP_HISTORY]
@@ -726,8 +800,9 @@ class Mirror:
             raise RuntimeError(f"자막 입혀 인코딩 실패: {''.join(errs).strip()[-300:]}")
 
     async def _split(self, src_path, base, ext, duration, limit, title):
-        """시간으로 n조각 [(경로, 시작초, 길이초)] - 조각이 한도를 넘으면 더 잘게 다시"""
-        n = max(2, math.ceil(os.path.getsize(src_path) / (limit * 0.9)))
+        """시간으로 n조각 [(경로, 시작초, 길이초)]. 한도의 몇 배인지만큼 같은 길이로 나눈다 - 한도의 2배까지는 반씩(50%),
+        3배까지는 3분의 1씩. 장면마다 용량이 달라 한 조각이라도 한도를 넘으면 하나 더 잘게 다시"""
+        n = max(2, math.ceil(os.path.getsize(src_path) / limit))
         while n <= MAX_PARTS:
             seg = duration / n
             out = []

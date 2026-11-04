@@ -1135,6 +1135,8 @@ body.docpip { margin: 0; background: #000; overflow: hidden; }
 .mirror-title-shot { display: flex; align-items: center; gap: 0.6rem; min-width: 0; }
 .mirror-shot { flex-shrink: 0; width: 112px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 4px; background: var(--bg-elev2); cursor: zoom-in; }
 .mirror-shot.failed { visibility: hidden; }
+.mirror-shot-wait { display: inline-flex; align-items: center; justify-content: center; cursor: default; color: var(--muted); }
+.mirror-shot-wait.failed { visibility: visible; opacity: 0.5; }
 .mirror-shot-big { display: block; width: 100%; max-height: 75vh; object-fit: contain; border-radius: 6px; background: #000; }
 
 /* 설정 > 팟캐스트: 프로그램 목록 / 찾은 결과 */
