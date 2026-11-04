@@ -18,6 +18,15 @@ python3 -m venv .venv                 # Ubuntu/Debian은 시스템 pip 설치를
 텔레그램의 mkv·HEVC·AC-3 영상까지 보려면 **ffmpeg**도 깔아 두세요: `sudo apt install ffmpeg` (없어도 나머지는 그대로 돕니다).
 테스트: `.venv/bin/pip install pytest && .venv/bin/python -m pytest -q`
 
+화면(브라우저) 테스트(`tests/e2e`, PR마다 GitHub Actions의 e2e 작업에서도 돎): 실제 서버를 빈 데이터 폴더로 띄우고 헤드리스 Chromium으로
+로그인 → 설정 탭 전부 → 라디오·팟캐스트 재생 → Plex→텔레그램 고르기 창(Plex·텔레그램 응답은 흉내) → 휴대폰 크기 화면을 돌려 봅니다.
+화면에 JavaScript 오류가 하나라도 나면 실패입니다.
+
+```bash
+.venv/bin/pip install pytest playwright && .venv/bin/python -m playwright install chromium
+YMP_E2E=1 .venv/bin/python -m pytest -v tests/e2e
+```
+
 ### 서버가 켜질 때 자동 실행 (systemd)
 
 `deploy/ym_player.service`는 저장소가 `/mnt/ym_player`에 있다고 가정합니다. 다른 곳이면 파일 안의
@@ -48,7 +57,7 @@ sudo systemctl enable --now ym_player
 - **관리자**: 사이드바 맨 아래 ⚙️ **설정**에서 탭으로 관리합니다 — **소스** / **사용자**(추가·삭제, 권한, 비밀번호, 볼 수 있는 범위) /
   **상태**(소스마다 실제 연결 점검, 서버 정보, 최근 경고) / **캐시** / **화면**(왼쪽 위 이름과 아이콘 - 로그인 화면과 브라우저 탭에도 쓰임, 아이콘의 버전 배지 켜기/끄기, 모든 사용자의 **기본 테마**) /
   **백업**(설정·사용자·즐겨찾기·아이콘을 JSON으로 받기, 그 파일로 복원) / **Thanks to**(참고한 저장소, 쓰는 오픈소스, 변경 이력).
-- **버전**: `ym_player/__init__.py`의 `__version__` 한 곳에서 정합니다. 왼쪽 위 아이콘 배지(예: 1.1.66), 설정 > 상태,
+- **버전**: `ym_player/__init__.py`의 `__version__` 한 곳에서 정합니다. 왼쪽 위 아이콘 배지(예: 1.1.67), 설정 > 상태,
   시작 로그에 그대로 나오므로 버전을 올릴 때 아이콘 그림을 다시 만들 필요가 없습니다(배지는 화면에서 글자로 얹음).
   업데이트(PR)마다 셋째 자리를 하나씩 올리고, `web/js/credits.js` CHANGELOG 맨 위 줄에 같은 `version`을 적습니다.
 - **새 버전 알림**: 아이콘 옆에 **[NEW]**가 뜨면 아직 안 본 새 버전입니다. 누르면 그 뒤로 새로워진 점이 나오고, 본 버전은 사람마다
