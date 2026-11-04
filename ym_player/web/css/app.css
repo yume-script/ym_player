@@ -1149,3 +1149,12 @@ body.docpip { margin: 0; background: #000; overflow: hidden; }
 .ep-row.ep-square .ep-thumb { flex-basis: 120px; aspect-ratio: 1; }
 @media (max-width: 900px) { .ep-row.ep-square { flex-direction: row; } .ep-row.ep-square .ep-thumb { width: 96px; flex-basis: 96px; } }
 .feed-name .feed-url { opacity: 0.7; font-size: 0.75rem; }
+
+/* Plex 영상이 텔레그램에도 있을 때 어디서 틀지 고르는 창 */
+.source-ask { display: flex; flex-direction: column; gap: 0.9rem; max-width: 30rem; }
+.source-ask .check { white-space: normal; align-items: flex-start; }
+.source-picks { display: flex; flex-direction: column; gap: 0.5rem; }
+.source-pick { justify-content: flex-start; gap: 0.75rem; padding: 0.7rem 0.9rem; text-align: left; height: auto; }
+.source-pick > .fa-solid { font-size: 1.2rem; width: 1.4rem; text-align: center; }
+.source-pick-text { display: flex; flex-direction: column; min-width: 0; }
+.source-pick-text small { opacity: 0.75; font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

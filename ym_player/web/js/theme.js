@@ -118,8 +118,13 @@ export function openThemeDialog() {
     // 아래쪽 흐르는 글(디스코드)은 이 브라우저에서만 끌 수 있다
     const tickerChk = h('input', { type: 'checkbox', checked: !storeGet(TICKER_OFF_KEY, false),
         on: { change: () => { storeSet(TICKER_OFF_KEY, !tickerChk.checked); refreshTicker(); } } });
+    // Plex 영상에 텔레그램 사본이 있을 때 어디서 틀지 (providers/plex.js PLEX_TG_CHOICE_KEY, 이 브라우저)
+    const choiceSel = h('select', { class: 'select', on: { change: () => storeSet('yp_plex_tg_choice', choiceSel.value) } },
+        [['ask', '매번 묻기'], ['telegram', '텔레그램으로 재생'], ['plex', 'Plex로 재생']].map(([v, label]) =>
+            h('option', { value: v, text: label, selected: storeGet('yp_plex_tg_choice', 'ask') === v })));
     const body = h('div', {}, themePicker(),
-        h('label', { class: 'check ticker-pref' }, tickerChk, ' 아래쪽에 흐르는 글(디스코드 새 글) 보기 (이 브라우저)'));
+        h('label', { class: 'check ticker-pref' }, tickerChk, ' 아래쪽에 흐르는 글(디스코드 새 글) 보기 (이 브라우저)'),
+        h('label', { class: 'field ticker-pref' }, h('span', { class: 'field-label', text: 'Plex 영상이 텔레그램에도 있을 때 (이 브라우저)' }), choiceSel));
     const m = modal('테마', body, [h('button', { class: 'btn btn-accent', on: { click: () => m.close() } }, '닫기')]);
 }
 
