@@ -6,10 +6,12 @@
 //              playable, viewOffset, duration, children[], childrenTitle, childrenStyle, parent }
 //   playback = { url, kind, live, startTime, title, subtitle, poster, audioOnly,
 //                onProgress(state, sec), onStop(sec), getNext() }
-import { api, fmtDuration, uuid, storeGet, storeSet, IS_SAFARI } from '../util.js';
+import { api, h, icon, modal, fmtDuration, uuid, storeGet, storeSet, IS_SAFARI } from '../util.js';
 import { registry } from './index.js';
 
 const PRODUCT = 'YMPlayer';
+// Plex 영상에 텔레그램 사본이 있을 때: 'ask' 매번 묻기 / 'telegram' / 'plex' (이 브라우저에 기억 - 사이드바 아래 [테마] 창)
+export const PLEX_TG_CHOICE_KEY = 'yp_plex_tg_choice';
 const LIB_ICONS = { movie: 'film', show: 'tv', artist: 'music' };
 const PLAYABLE = new Set(['movie', 'episode', 'track', 'clip']);
 const CONTINUE_HUBS = new Set(['home.continue', 'home.ondeck']);
@@ -86,7 +88,12 @@ export class PlexProvider {
         this.hidden = new Set((src.hidden_libraries || []).map(String));
         this.clientId = clientId;
         this.base = `/api/plex/${encodeURIComponent(src.id)}`;
+        this._route = new Map();   // Plex 항목 id -> 재생 전에 고른 곳 {via: 'telegram'|'plex', hit} (getPlayback이 한 번 쓰고 지움)
     }
+
+    // 이번에 고른 곳 - 자동으로 이어지는 재생(다음 화, 새로고침 뒤 이어 틀기)도 그쪽으로 (탭을 닫으면 잊음)
+    get _lastVia() { try { return sessionStorage.getItem('yp_plex_tg_last') || ''; } catch (e) { return ''; } }
+    set _lastVia(v) { try { sessionStorage.setItem('yp_plex_tg_last', v); } catch (e) { /* 사생활 보호 모드 등 */ } }
 
     url(path, params) {
         const qs = params ? new URLSearchParams(params).toString() : '';
@@ -351,8 +358,13 @@ export class PlexProvider {
         if (!part) throw new Error('재생할 파일이 없습니다.');
         // 텔레그램에 같은 영상이 있으면(자동 올리기로 올린 것) 그쪽으로 - Plex 서버의 부담(변환·업로드 대역)을 덜게.
         // 음성·화질·자막을 Plex 식으로 바꾸려 할 때(subtitleId/audioId/quality)와 설정 > 공통에서 끈 경우는 Plex로
-        if (!plexOnly && (m.type === 'movie' || m.type === 'episode') && subtitleId === undefined && audioId === undefined && quality === undefined) {
-            const viaTg = await this._viaTelegram(m, { fromStart, startAt });
+        // 재생 전에 고른 곳(confirmPlay: 텔레그램 / Plex). 고른 적이 없으면(바로 불린 경우) 예전처럼 텔레그램 사본이 있으면 그쪽으로
+        const route = this._route.get(String(id));
+        this._route.delete(String(id));
+        if (!plexOnly && (!route || route.via === 'telegram') && (m.type === 'movie' || m.type === 'episode')
+            && subtitleId === undefined && audioId === undefined && quality === undefined) {
+            const hit = route ? route.hit : await this._findCopy(m);
+            const viaTg = hit ? await this._viaTelegram(m, { fromStart, startAt }, hit) : null;
             if (viaTg) return viaTg;
         }
 
@@ -471,8 +483,9 @@ export class PlexProvider {
         };
     }
 
-    /** 이 Plex 항목의 텔레그램 사본으로 재생 (없거나 못 쓰면 null -> Plex로). Plex의 본 위치·다 봄도 같이 맞춘다 */
-    async _viaTelegram(m, { fromStart, startAt }) {
+    /** 이 Plex 항목과 같은 영상이 텔레그램에 있는지 ({tg, channel, msg, title, how} 또는 null). 설정 > 공통에서 끄면 늘 null */
+    async _findCopy(m) {
+        if (!m || (m.type !== 'movie' && m.type !== 'episode')) return null;
         let hit;
         try {
             const tmdbOf = (x) => ((x && x.Guid) || []).map((g) => String(g.id || '')).find((g) => g.startsWith('tmdb://'))?.slice(7) || '';
@@ -490,6 +503,62 @@ export class PlexProvider {
             return null;
         }
         const tg = hit && hit.found ? registry.byId(hit.tg) : null;
+        return tg && tg.kind === 'telegram' ? hit : null;
+    }
+
+    /**
+     * 재생 직전: 텔레그램에 같은 영상이 있으면 어디서 틀지 묻는다 (텔레그램 / Plex).
+     * "다음부터 묻지 않기"를 고르면 이 브라우저에 기억 (사이드바 아래 [테마] 창에서 바꿈). 자동으로 이어지는 재생(다음 화, 새로고침 뒤 이어 틀기)은
+     * 묻지 않고 기억한 선택이나 이번에 고른 쪽으로. 취소하면 null (재생 안 함)
+     */
+    async confirmPlay(id, opts = {}) {
+        this._route.delete(String(id));
+        if (opts.plexOnly) return id;
+        let m;
+        try { m = ((await this.req(`/library/metadata/${id}`, { includeGuids: 1 })).Metadata || [])[0]; } catch (e) { return id; }
+        const hit = await this._findCopy(m);
+        if (!hit) return id;
+        const pref = storeGet(PLEX_TG_CHOICE_KEY, 'ask');
+        let via = pref === 'telegram' || pref === 'plex' ? pref : null;
+        if (!via) via = opts.auto ? (this._lastVia || 'telegram') : await this._askSource(m, hit);
+        if (!via) return null;
+        this._lastVia = via;
+        this._route.set(String(id), { via, hit });
+        return id;
+    }
+
+    _askSource(m, hit) {
+        const tg = registry.byId(hit.tg);
+        const name = m.type === 'episode' ? `${m.grandparentTitle} S${m.parentIndex} · E${m.index}` : `${m.title}${m.year ? ` (${m.year})` : ''}`;
+        const where = [tg.name, tg.channelTitle ? tg.channelTitle(hit.channel) : '', hit.how].filter(Boolean).join(' · ');
+        return new Promise((resolve) => {
+            let answer = null;
+            const remember = h('input', { type: 'checkbox' });
+            const pick = (via) => {
+                answer = via;
+                if (remember.checked) storeSet(PLEX_TG_CHOICE_KEY, via);
+                dlg.close();
+            };
+            const choice = (via, ic, label, sub, accent) => h('button', { class: `btn source-pick${accent ? ' btn-accent' : ''}`, on: { click: () => pick(via) } },
+                icon(ic), h('span', { class: 'source-pick-text' }, h('b', { text: label }), h('small', { text: sub })));
+            const body = h('div', { class: 'source-ask' },
+                h('p', { text: `"${name}"은(는) 텔레그램에도 있습니다. 어디서 재생할까요?` }),
+                h('div', { class: 'source-picks' },
+                    choice('telegram', 'paper-plane', '텔레그램으로 재생', where || hit.title || '', true),
+                    choice('plex', 'server', 'Plex로 재생', `${this.name} · 음성·화질·자막을 Plex에서 고를 수 있음`, false)),
+                h('label', { class: 'check' }, remember, ' 다음부터 묻지 않기 (이 브라우저, 사이드바 [테마] 창에서 바꿈)'));
+            const dlg = modal('재생할 곳 고르기', body);
+            // 바깥을 누르거나 X로 닫으면 취소
+            new MutationObserver((_, obs) => {
+                if (!dlg.el.isConnected) { obs.disconnect(); resolve(answer); }
+            }).observe(document.body, { childList: true });
+            dlg.el.querySelector('.btn-accent').focus();
+        });
+    }
+
+    /** 이 Plex 항목의 텔레그램 사본(hit)으로 재생 (못 쓰면 null -> Plex로). Plex의 본 위치·다 봄도 같이 맞춘다 */
+    async _viaTelegram(m, { fromStart, startAt }, hit) {
+        const tg = registry.byId(hit.tg);
         if (!tg || tg.kind !== 'telegram') return null;
         const tid = `${hit.channel}:${hit.msg}`;
         // 이어보기: 텔레그램 쪽에서 본 위치가 없으면 Plex에서 본 위치부터

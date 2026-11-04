@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 103,
+        "version": "1.1.66",
+        "date": "2026-11-04",
+        "title": "Plex 영상이 텔레그램에도 있으면 재생 전에 텔레그램 / Plex 고르는 창 (다음부터 묻지 않기는 [테마] 창에서 바꿈)"
+    },
+    {
         "pr": 102,
         "version": "1.1.65",
         "date": "2026-11-02",
