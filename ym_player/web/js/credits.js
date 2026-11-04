@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 104,
+        "version": "1.1.67",
+        "date": "2026-11-04",
+        "title": "화면(브라우저) 자동 테스트를 CI에: 로그인·설정 탭·라디오·팟캐스트 재생·Plex→텔레그램 고르기 창·휴대폰 크기"
+    },
+    {
         "pr": 103,
         "version": "1.1.66",
         "date": "2026-11-04",
