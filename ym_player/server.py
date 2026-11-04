@@ -2781,6 +2781,7 @@ def _mirror_state(request):
 
 @admin_only
 async def admin_mirror_get(request):
+    request.app[MIRROR].prepare_shots()   # 장면이 없는 대기 항목이 있으면 뒤에서 만들기 시작 (화면은 기다리지 않는다)
     return web.json_response(_mirror_state(request))
 
 
@@ -2842,12 +2843,13 @@ async def admin_mirror_item(request):
 
 @admin_only
 async def admin_mirror_shot(request):
-    """자막 기다리는 항목의 10분 지점 장면 GET /api/admin/plex-tg/shot?rule=&key= (JPEG)"""
-    try:
-        path = await request.app[MIRROR].screenshot(request.query.get("rule", ""), request.query.get("key", ""))
-    except ValueError as e:
-        return _json_error(404, str(e))
-    return web.FileResponse(path, headers={"Cache-Control": "private, max-age=3600", "Content-Type": "image/jpeg"})
+    """자막 기다리는 항목의 10분 지점 장면 GET /api/admin/plex-tg/shot?rule=&key=&v=만든시각 (JPEG).
+    미리 만들어 둔 파일만 준다 (없으면 바로 404 - 여기서 ffmpeg를 돌리지 않는다, Mirror.prepare_shots)"""
+    path = request.app[MIRROR].shot_file(request.query.get("rule", ""), request.query.get("key", ""))
+    if not path:
+        return _json_error(404, "장면을 아직 만들지 않았습니다.")
+    cache = "private, max-age=31536000, immutable" if request.query.get("v") else "private, max-age=300"
+    return web.FileResponse(path, headers={"Cache-Control": cache, "Content-Type": "image/jpeg"})
 
 
 @admin_only

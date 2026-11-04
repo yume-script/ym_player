@@ -1280,15 +1280,25 @@ async function renderMirror(pane) {
         for (const [k, w] of waitKeys) {
             if (shown.has(k)) continue;
             const r = row(w.title, chip('wait', '자막 기다림'), '없음', `${when(w.since)}부터`);
-            // 하드섭인지 사람이 보고 판단하게: 10분 지점 장면 (누르면 크게)
-            const shotUrl = `/api/admin/plex-tg/shot?${new URLSearchParams({ rule: w.rule, key: w.key })}`;
-            const shot = h('img', { class: 'mirror-shot', src: shotUrl, alt: '', loading: 'lazy', title: '10분 지점 장면 (누르면 크게)',
+            // 하드섭인지 사람이 보고 판단하게: 10분 지점 장면 (누르면 크게). 서버가 뒤에서 미리 만들어 둔 것만 보여 준다
+            // (v=만든 시각 - 브라우저가 한 번 받은 그림은 다시 받지 않는다)
+            const shotUrl = `/api/admin/plex-tg/shot?${new URLSearchParams({ rule: w.rule, key: w.key, v: w.shot || 0 })}`;
+            const shot = w.shot ? h('img', { class: 'mirror-shot', src: shotUrl, alt: '', loading: 'lazy', title: '10분 지점 장면 (누르면 크게)',
                 on: { error: (e) => e.target.classList.add('failed'),
-                    click: () => modal(`${w.title} - 10분 지점`, h('img', { class: 'mirror-shot-big', src: shotUrl, alt: '' })) } });
+                    click: () => modal(`${w.title} - 10분 지점`, h('img', { class: 'mirror-shot-big', src: shotUrl, alt: '' })) } })
+                : h('span', { class: `mirror-shot mirror-shot-wait${w.shot_error ? ' failed' : ''}`,
+                    title: w.shot_error ? `장면을 뽑지 못했습니다 (6시간 뒤 다시): ${w.shot_error}` : '장면을 만드는 중 (잠시 뒤 나타남)' },
+                icon(w.shot_error ? 'image' : 'hourglass-half'));
             r.firstChild.replaceWith(h('span', { class: 'mirror-title-shot' }, shot, h('span', { class: 'mirror-title', title: w.title, text: w.title })));
             r.lastChild.append(h('span', { class: 'mirror-actions' }, act(w, 'upload', '지금 올리기'),
                 act(w, 'drop', '빼기', `"${w.title}"을(를) 올리지 않고 뺄까요?`)));
             live.push(r);
+        }
+        // 실패해서 다시 해 볼 것 (10분 -> 30분 -> 2시간 뒤, 3번까지)
+        for (const x of s.retry || []) {
+            const k = `${x.rule}/${x.key}`;
+            if (shown.has(k)) continue;
+            live.push(row(x.title, chip('queue', '다시 시도 대기'), '', `${x.at > Date.now() / 1000 ? `${when(x.at)}에` : '곧'} 다시 (${Math.max(1, x.tries)}/3)`));
         }
         const hist = s.history.map((x) => row(x.title,
             x.ok ? chip('ok', '완료') : String(x.note || '').startsWith('건너뜀') ? chip('skip', '건너뜀') : chip('fail', '실패'),

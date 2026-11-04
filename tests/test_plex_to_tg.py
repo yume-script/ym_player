@@ -163,7 +163,9 @@ def test_mirror_uploads_new_items(data, tmp_path, monkeypatch):
             assert len(p1["body"]) + len(p2["body"]) >= big.stat().st_size * 0.9
             state = plex_to_tg.load_state()
             assert list(state["rules"]["r1"]["waiting"]) == ["3"]
-            assert [(h["title"], h["ok"], h["note"]) for h in state["history"]] == [("큰 영화 (2026)", True, "2개로 나눠 올림, 자막 파일 2개 첨부"), ("호프 (2026)", False, "일시 오류")]
+            assert [(h["title"], h["ok"], h["note"]) for h in state["history"]] == [("큰 영화 (2026)", True, "2개로 나눠 올림, 자막 파일 2개 첨부"), ("호프 (2026)", False, "일시 오류 (다시 시도 1/3: 10분 뒤)")]
+            retry = state["rules"]["r1"]["retry"]["2"]
+            assert retry["at"] > __import__("time").time() + 500 and state["rules"]["r1"]["fails"]["2"] == 1   # 10분 뒤에 다시
             # 올린 두 조각 메시지에 Plex 작품 정보
             m, eps = telegram_src.plex_meta_for("tg", -100123, msg=501)
             assert m["title"] == "큰 영화" and m["genres"] == ["드라마"] and m["cast"][0]["thumb"] == "https://img/x.jpg"
@@ -171,11 +173,18 @@ def test_mirror_uploads_new_items(data, tmp_path, monkeypatch):
             assert m["poster"].startswith("/api/tg/tg/plex-art/") and telegram_src.plex_meta_for("tg", -100123, msg=503)
             art = data / "telegram_thumbs" / "tg" / "plex" / m["poster"].rsplit("/", 1)[1]
             assert art.read_bytes() == b"\xff\xd8thumb"
-            # 다음 확인: 실패한 호프 다시, 자막 없는 영화는 계속 기다림
+            # 다음 확인: 10분이 지나기 전에는 호프를 다시 하지 않고, 지나면 다시 (자막 없는 영화는 계속 기다림)
+            await mirror.check_all(st)
+            assert [j["key"] for j in mirror.queue] == ["3"]
+            mirror.queue.clear()
+            state = plex_to_tg.load_state()
+            state["rules"]["r1"]["retry"]["2"]["at"] = 0
+            plex_to_tg.save_state(state)
             await mirror.check_all(st)
             assert sorted(j["key"] for j in mirror.queue) == ["2", "3"]
             await mirror.run_queue(st)
             assert tg.sent[-1]["name"] == "Hope.2026.mp4" and tg.sent[-1]["stream"] is True
+            assert plex_to_tg.load_state()["rules"]["r1"]["retry"] == {}                 # 성공하면 다시 시도 목록에서 빠짐
             assert list(plex_to_tg.load_state()["rules"]["r1"]["waiting"]) == ["3"]
             # 자막이 생기면 올림
             nosub["Media"][0]["Part"][0]["Stream"] = [{"streamType": 3, "codec": "ass", "index": 3}]
@@ -596,3 +605,108 @@ def test_prefer_telegram_any_channel(data):
     # 나눠진 파일: 첫 조각, 조각이라 원본보다 짧아도
     assert f("movie", title="Some Movie", year="2020", duration=6000)["msg"] == 7
     assert telegram_src.find_plex_copy({"tg": {902}}, "px", "1", {"kind": "movie", "title": "인셉션", "year": "2010"}) is None
+
+
+def test_retry_three_times(data):
+    """실패하면 10분 -> 30분 -> 2시간 뒤 3번 다시, Plex 최근 목록에서 밀려나도 다시, 4번째 실패면 그만"""
+    items = {"7": {"ratingKey": "7", "type": "movie", "title": "실패작", "year": 2026, "addedAt": 500}}
+
+    async def plex_json(c, s, path, params=None):
+        if path == "/library/sections":
+            return {"MediaContainer": {"Directory": [{"key": "1", "type": "movie"}]}}
+        if path.endswith("/all"):
+            return {"MediaContainer": {"Metadata": list(items.values())}}
+        return {"MediaContainer": {"Metadata": [items.get(path.rsplit("/", 1)[-1])]}}
+    config_store.save({"client_id": "c", "sources": [], "plex_to_tg": {"rules": [{"id": "r", "plex": "px", "section": "1", "tg": "tg", "channel": "-1"}]}})
+    plex_to_tg.save_state({"rules": {"r": {"baseline": 100, "done": [], "fails": {}}}, "history": []})
+
+    async def main():
+        mirror = plex_to_tg.Mirror(plex_json, lambda sid: ({"client_id": "c"}, {"id": "px", "url": "http://x"}), lambda sid: None, lambda: None)
+        tries = []
+
+        async def upload(rule, key, max_gb, test=False):
+            tries.append(key)
+            raise RuntimeError("텔레그램 오류")
+        mirror.upload = upload
+        st = plex_to_tg.load_settings()
+        waits = []
+        for n in range(1, 5):
+            await mirror.check_all(st)
+            assert [j["key"] for j in mirror.queue] == ["7"], n
+            await mirror.run_queue(st)
+            state = plex_to_tg.load_state()
+            rs = state["rules"]["r"]
+            assert rs["fails"]["7"] == n
+            if n <= 3:
+                waits.append(rs["retry"]["7"]["at"] - __import__("time").time())
+                await mirror.check_all(st)
+                assert mirror.queue == []                             # 정해진 시각 전에는 다시 하지 않는다
+                rs["retry"]["7"]["at"] = 0                            # (시간이 지났다고 치고)
+                plex_to_tg.save_state(state)
+                items.pop("7", None) if n == 2 else None              # 최근 목록에서 밀려나도 다시
+                items.setdefault("7", {"ratingKey": "7", "type": "movie", "title": "실패작", "year": 2026, "addedAt": 500})
+            else:
+                assert "7" not in rs["retry"] and "그만둠" in state["history"][0]["note"]
+        assert len(tries) == 4                                        # 처음 + 다시 3번
+        assert 500 < waits[0] < 700 and 1700 < waits[1] < 1900 and 7100 < waits[2] < 7300
+        await mirror.check_all(st)
+        assert mirror.queue == []                                     # 그만둔 것은 더 하지 않는다
+    asyncio.run(main())
+
+
+def test_old_failures_get_retries(data):
+    """예전 기록: 실패 3번으로 포기했던 것은 다시 3번, 직접 뺀 것·너무 큰 파일(건너뜀)은 그대로 포기"""
+    plex_to_tg.save_state({"rules": {"r": {"baseline": 1, "done": [], "fails": {"a": 3, "b": 3, "c": 1}}},
+                           "history": [{"key": "b", "title": "큰 파일", "note": "건너뜀: 파일이 3GB인데 …"},
+                                       {"key": "a", "title": "예전 실패", "note": "오류"}]})
+    rs = plex_to_tg.load_state()["rules"]["r"]
+    assert rs["fails"] == {"a": 0, "b": plex_to_tg.GIVE_UP, "c": 1}
+    assert set(rs["retry"]) == {"a", "c"} and rs["retry"]["a"] == {"title": "예전 실패", "at": 0}
+    plex_to_tg.save_state(plex_to_tg.load_state())
+    assert plex_to_tg.load_state()["rules"]["r"]["fails"]["a"] == 0                # 한 번만 바꾼다
+
+
+def test_shots_prepared_in_background(data):
+    """대기 항목의 장면은 뒤에서 하나씩 미리 만들고, 화면 요청은 만든 파일만 (없으면 None). 실패한 것은 바로 다시 하지 않음"""
+    plex_to_tg.save_state({"rules": {"r": {"done": [], "fails": {}, "waiting": {"1": {"title": "가", "since": 1},
+                                                                                "2": {"title": "나", "since": 1}}}}, "history": []})
+
+    async def main():
+        mirror = plex_to_tg.Mirror(None, None, None, None)
+        made = []
+
+        async def screenshot(rule_id, key):
+            made.append(key)
+            if key == "2":
+                raise ValueError("장면을 뽑지 못했습니다")
+            path = plex_to_tg._shot_path(rule_id, key)
+            __import__("os").makedirs(__import__("os").path.dirname(path), exist_ok=True)
+            open(path, "wb").write(b"\xff\xd8")
+            return path
+        mirror.screenshot = screenshot
+        assert mirror.shot_file("r", "1") is None
+        await mirror.prepare_shots()
+        assert sorted(made) == ["1", "2"] and mirror.shot_file("r", "1")
+        w = {x["key"]: x for x in mirror.status()["waiting"]}
+        assert w["1"]["shot"] > 0 and w["2"]["shot"] == 0 and "뽑지 못했습니다" in w["2"]["shot_error"]
+        await mirror.prepare_shots()
+        assert sorted(made) == ["1", "2"]                                 # 만든 것·막 실패한 것은 다시 안 함
+    asyncio.run(main())
+
+
+def test_split_in_halves(data, tmp_path):
+    """한도의 2배까지는 반씩(2조각), 넘으면 3분의 1씩"""
+    import shutil as _sh
+    if not _sh.which("ffmpeg"):
+        pytest.skip("ffmpeg 없음")
+    video = tmp_path / "Movie.mp4"
+    _video(video, 30)          # (너무 짧으면 파일 머리 부분 비중이 커서 조각이 한도를 넘는다)
+    size = video.stat().st_size
+
+    async def main():
+        mirror = plex_to_tg.Mirror(None, None, None, None)
+        two = await mirror._split(str(video), str(tmp_path / "a"), ".mp4", 30, int(size / 1.6), "영화")
+        assert len(two) == 2 and abs(two[0][2] - 15) < 0.01              # 50%씩 (예전에는 한도의 90%로 나눠 3조각)
+        three = await mirror._split(str(video), str(tmp_path / "b"), ".mp4", 30, int(size / 2.5), "영화")
+        assert len(three) == 3 and abs(three[0][2] - 10) < 0.01
+    asyncio.run(main())

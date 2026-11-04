@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 105,
+        "version": "1.1.68",
+        "date": "2026-11-04",
+        "title": "자동 올리기: 장면은 뒤에서 미리 만들어 두고 가져오기(느려짐 해결), 2GB 넘으면 반씩 나누기, 실패하면 3번 다시 시도"
+    },
+    {
         "pr": 104,
         "version": "1.1.67",
         "date": "2026-11-04",
