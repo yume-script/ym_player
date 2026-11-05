@@ -690,6 +690,15 @@ export async function renderSettings(main, _params, query, ctx) {
                         '넣으면 아래 접두어로 시작하는 채널을 볼 때 재생 화면 오른쪽에 이 페이지를 띄웁니다 (보는 사람의 브라우저가 바로 엶).'),
                     field('적용할 채널 접두어', bindInput(src, 'chat_prefix', h('input', { class: 'input', value: src.chat_prefix || '', placeholder: '예: [스포츠] (비우면 모든 채널)' })),
                         '채널 이름이 이 글자로 시작할 때만. 비우면 이 소스의 모든 채널.')),
+                h('details', { class: 'chat-find', open: !!(src.chat_site || src.chat_notice || src.chat_host) },
+                    h('summary', { text: '채팅 주소가 자주 바뀌면: 사이트에서 찾기' }),
+                    h('p', { class: 'field-hint', text: '위 "채팅 패널 주소"를 비워 두고 아래를 넣으면, 서버가 공지 채널의 최신 글에서 사이트 주소를 찾고 그 사이트 페이지에서 '
+                        + '채팅 주소(아래 호스트가 들어간 주소)를 찾아 띄웁니다 (10분 기억, 패널의 새로고침 버튼은 다시 찾기). 사이트의 영상은 받지 않고, 찾은 채팅은 브라우저가 바로 엽니다.' }),
+                    h('div', { class: 'row-2' },
+                        field('주소 공지 텔레그램 채널', bindInput(src, 'chat_notice', h('input', { class: 'input', value: src.chat_notice || '', placeholder: 'https://t.me/s/채널이름', spellcheck: false }))),
+                        field('채팅을 찾을 사이트 주소', bindInput(src, 'chat_site', h('input', { class: 'input', value: src.chat_site || '', placeholder: 'https://… (공지에서 못 찾으면 이 주소)', spellcheck: false })))),
+                    field('채팅 주소의 호스트', bindInput(src, 'chat_host', h('input', { class: 'input', value: src.chat_host || '', placeholder: '예: bizchataicloud.com', spellcheck: false })),
+                        '사이트 페이지에서 이 호스트가 들어간 주소만 채팅으로 띄웁니다.')),
             ];
             // 같은 종류끼리만 자리를 바꾼다 (다른 탭의 소스를 건너뛰고 가장 가까운 같은 종류와)
             const move = (d) => {

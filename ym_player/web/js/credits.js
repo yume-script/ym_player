@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 108,
+        "version": "1.1.71",
+        "date": "2026-11-05",
+        "title": "IPTV 채팅 패널: 채팅 주소가 자주 바뀌는 곳은 공지 텔레그램 채널 → 사이트에서 서버가 찾아 띄우기 (내부 주소 차단)"
+    },
+    {
         "pr": 107,
         "version": "1.1.70",
         "date": "2026-11-05",

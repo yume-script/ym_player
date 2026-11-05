@@ -107,6 +107,12 @@ class Upstream:
         async def chat(request):  # 공개 채팅 페이지 흉내
             return web.Response(text="<!doctype html><title>chat</title><p id=hello>채팅 페이지</p>", content_type="text/html")
 
+        async def notice(request):   # 사이트 주소를 공지하는 텔레그램 공개 채널 흉내 (t.me/s/…)
+            return web.Response(text=f'<a href="https://t.me/x">텔레그램</a><a href="{self.base}/today">오늘 주소</a>', content_type="text/html")
+
+        async def site(request):     # 채팅이 붙어 있는 사이트 첫 화면
+            return web.Response(text=f'<div>영상 자리</div><iframe src="{self.base}/chat.html?token=abc"></iframe>', content_type="text/html")
+
         async def main():
             app = web.Application()
             app.router.add_get("/feed.xml", feed)
@@ -114,6 +120,8 @@ class Upstream:
             app.router.add_get("/live.wav", live)
             app.router.add_get("/list.m3u", m3u)
             app.router.add_get("/chat.html", chat)
+            app.router.add_get("/notice", notice)
+            app.router.add_get("/", site)
             runner = web.AppRunner(app)
             await runner.setup()
             await web.TCPSite(runner, "127.0.0.1", self.port).start()
@@ -138,7 +146,8 @@ def server(tmp_path_factory):
     data = tmp_path_factory.mktemp("ymp_data")
     port = free_port()
     env = {**os.environ, "MP_HOST": "127.0.0.1", "MP_PORT": str(port), "MP_DATA_DIR": str(data),
-           "MP_USER": ADMIN[0], "MP_PASSWORD": ADMIN[1], "MP_UPDATE_CHECK": "0", "PYTHONUNBUFFERED": "1"}
+           "MP_USER": ADMIN[0], "MP_PASSWORD": ADMIN[1], "MP_UPDATE_CHECK": "0", "PYTHONUNBUFFERED": "1",
+           "MP_CHAT_ALLOW_PRIVATE": "1"}   # (채팅 주소 찾기가 이 컴퓨터의 가짜 서버를 열 수 있게)
     log = open(os.path.join(str(data), "server.log"), "w")
     proc = subprocess.Popen([sys.executable, "-m", "ym_player"], cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
     base = f"http://127.0.0.1:{port}"

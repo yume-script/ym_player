@@ -72,6 +72,8 @@ export class IptvProvider {
         // 채팅 패널 (관리자가 정한 공개 채팅 페이지): 채널 이름이 접두어로 시작하면 재생 화면 오른쪽에 (player.js _syncChat)
         this.chatUrl = src.chat_url || '';
         this.chatPrefix = src.chat_prefix || '';
+        // 채팅 주소(토큰)가 자주 바뀌는 곳: 서버가 사이트·공지 채널에서 그때그때 찾는다 (/api/iptv/{id}/chat-url, chatfind.py)
+        this.chatAuto = !!src.chat_auto || !!(src.chat_host && (src.chat_site || src.chat_notice));
         this.channels = null;
         this.epg = null;
         this._channelsPromise = null;
@@ -170,10 +172,17 @@ export class IptvProvider {
      * alt번째 주소로 재생. 0은 원래 주소, 1부터는 여러 M3U를 합칠 때 붙은 예비 주소(ch.alts).
      * 이 주소가 끝내 안 나오면 재생기가 alternate()로 다음 예비 주소를 시도한다.
      */
-    /** 이 채널에 띄울 채팅 페이지 주소 (없으면 '') */
+    /** 이 채널에 띄울 채팅 페이지 주소 (없으면 '', 서버가 찾아야 하면 'auto' - findChat) */
     chatFor(ch) {
-        if (!this.chatUrl || !ch) return '';
-        return !this.chatPrefix || String(ch.name || '').startsWith(this.chatPrefix) ? this.chatUrl : '';
+        if ((!this.chatUrl && !this.chatAuto) || !ch) return '';
+        if (this.chatPrefix && !String(ch.name || '').startsWith(this.chatPrefix)) return '';
+        return this.chatUrl || 'auto';
+    }
+
+    /** 서버가 찾은 채팅 주소 (force: 기억한 것 말고 다시 찾기) */
+    async findChat(force = false) {
+        const j = await api(`/api/iptv/${encodeURIComponent(this.id)}/chat-url${force ? '?refresh=1' : ''}`);
+        return j.url;
     }
 
     getPlayback(ch, alt = 0) {

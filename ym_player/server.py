@@ -44,7 +44,7 @@ from urllib.parse import quote, urlencode
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
 from yarl import URL
 
-from . import __version__, activity, auth, cctv, config_store, discord_feed, iptv, mcp, media_cache, plex_to_tg, podcast, prefs, radio, subtitles, telegram_src, tmdb, transcode, updates
+from . import __version__, activity, auth, cctv, chatfind, config_store, discord_feed, iptv, mcp, media_cache, plex_to_tg, podcast, prefs, radio, subtitles, telegram_src, tmdb, transcode, updates
 
 log = logging.getLogger("ym_player")
 
@@ -82,6 +82,7 @@ RECENT = _RecentWarnings()
 STARTED = time.time()
 
 HTTP = web.AppKey("http", ClientSession)
+CHAT_FINDER = web.AppKey("chat_finder", chatfind.ChatFinder)   # IPTV 채팅 패널 주소 찾기 (공개 주소만 여는 따로 된 연결)
 CHANNEL_CACHE = web.AppKey("channel_cache", dict)
 EPG_CACHE = web.AppKey("epg_cache", dict)
 TELEGRAM = web.AppKey("telegram", dict)
@@ -222,6 +223,8 @@ async def get_config(request):
                 item["channels"] = [c for c in item.get("channels") or [] if str(c["id"]) in allowed]
             if s["type"] == "radio" and allowed is not None:  # 라디오는 방송국 id
                 item["stations"] = [st for st in item.get("stations") or [] if st["id"] in allowed]
+            if s["type"] == "iptv":   # 채팅을 그때그때 찾는 소스인지만 (사이트·공지 주소는 관리자만)
+                item["chat_auto"] = bool(s.get("chat_host") and (s.get("chat_site") or s.get("chat_notice")))
             if s["type"] == "podcast" and allowed is not None:  # 팟캐스트는 프로그램(피드) id
                 item["feeds"] = [f for f in item.get("feeds") or [] if f["id"] in allowed]
             out.append(item)
@@ -3228,7 +3231,19 @@ async def _on_startup(app):
         telegram_src.MIGRATE_USER = admins[0] if admins else ""
 
 
+async def iptv_chat_url(request):
+    """GET /api/iptv/{sid}/chat-url[?refresh=1] -> {"url": 채팅 페이지 주소} - 설정의 사이트·공지 채널에서 찾은 것 (10분 기억).
+    브라우저가 이 주소를 iframe으로 바로 연다 (서버는 채팅을 중계하지 않음)"""
+    src = _source_or_404(request.match_info["sid"], "iptv", request)
+    try:
+        url = await request.app[CHAT_FINDER].find(src, force=request.query.get("refresh") == "1")
+    except chatfind.ChatFindError as e:
+        return _json_error(502, f"채팅 주소를 찾지 못했습니다: {e}")
+    return web.json_response({"success": True, "url": url})
+
+
 async def _on_cleanup(app):
+    await app[CHAT_FINDER].close()
     for task in (app.get(HLS_SWEEPER), app.get(UPDATE_TASK), app.get(DISCORD_TASK), app.get(MIRROR_TASK)):
         if task:
             task.cancel()
@@ -3272,6 +3287,7 @@ def create_app(require_auth=True):
     app[PODCAST] = podcast.FeedCache()
     app[PODCAST_LOCKS] = {}
     app[CCTV_CACHE] = {}
+    app[CHAT_FINDER] = chatfind.ChatFinder()
     app[CCTV_LOCKS] = {}
     app[PLEX_FILES] = {}
     app[STATIC_TOKEN] = static_token()
@@ -3330,6 +3346,7 @@ def create_app(require_auth=True):
     app.router.add_put("/api/config", put_config)
     app.router.add_get("/api/iptv/{sid}/channels", iptv_channels)
     app.router.add_get("/api/iptv/{sid}/epg", iptv_epg)
+    app.router.add_get("/api/iptv/{sid}/chat-url", iptv_chat_url)
     app.router.add_get("/api/stream", stream_proxy)
     app.router.add_get("/api/radio/{sid}/now", radio_now)
     app.router.add_get("/api/podcast/{sid}/shows", podcast_shows)
