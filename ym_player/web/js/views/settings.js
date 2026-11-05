@@ -471,6 +471,34 @@ export async function renderSettings(main, _params, query, ctx) {
             field('영상 종류', typeSel, '영상이 안 나오면 https 주소 쪽으로 바꿔 보세요. 영상 주소는 몇 분마다 새로 받습니다.'));
     }
 
+    /**
+     * 북마크 [채팅 주소 보내기]: 서버가 사이트를 열 수 없을 때(망에서 막힘 등), 내 브라우저로 연 사이트 페이지에서 채팅 주소
+     * (채팅 호스트가 들어간 iframe src, 없으면 페이지 HTML에서)를 찾아 이 YMPlayer의 #/chat-set으로 넘긴다
+     */
+    function chatBookmarklet(src) {
+        const saved = registry.config.sources.find((x) => x.id === src.id);
+        const host = (saved && saved.chat_host) || '';
+        const wrap = h('div', { class: 'field' }, h('span', { class: 'field-label', text: '북마크로 채팅 주소 보내기' }));
+        if (!saved || !host) {
+            wrap.appendChild(h('span', { class: 'field-hint', text: '채팅 주소의 호스트를 넣고 [저장]하면 여기에 북마크 버튼이 나옵니다.' }));
+            return wrap;
+        }
+        const code = `(()=>{const H=${JSON.stringify(host)},B=${JSON.stringify(location.origin)},S=${JSON.stringify(src.id)};`
+            + 'const ok=(u)=>{try{const x=new URL(u,location.href);return /^https?:$/.test(x.protocol)&&(x.hostname===H||x.hostname.endsWith("."+H))?x.href:""}catch(e){return ""}};'
+            + 'let u="";for(const f of document.querySelectorAll("iframe[src]")){u=ok(f.getAttribute("src"));if(u)break}'
+            + 'if(!u){for(const m of document.documentElement.innerHTML.replace(/&amp;/g,"&").matchAll(/https?:\\/\\/[^\\s"\\x27<>\\\\]+/g)){u=ok(m[0]);if(u)break}}'
+            + 'if(!u){alert("이 페이지에서 "+H+" 채팅 주소를 찾지 못했습니다.");return}'
+            + 'window.open(B+"/#/chat-set?sid="+encodeURIComponent(S)+"&url="+encodeURIComponent(u),"_blank")})()';
+        const link = h('a', { class: 'btn btn-sm chat-bookmarklet', href: `javascript:${encodeURIComponent(code)}`, draggable: 'true',
+            title: '북마크바로 끌어다 놓으세요', on: { click: (e) => { e.preventDefault(); toast('이 버튼을 브라우저 북마크바로 끌어다 놓은 뒤, 채팅이 있는 사이트 페이지에서 누르세요.'); } } },
+        icon('bookmark'), ` 채팅 주소 보내기 (${src.name || 'IPTV'})`);
+        const sent = h('span', { class: 'field-hint' });
+        wrap.append(link, h('span', { class: 'field-hint', text: '이 버튼을 북마크바로 끌어다 놓고, 채팅이 보이는 사이트 페이지를 내 브라우저로 연 채 누르면 '
+            + '그 페이지에서 채팅 주소를 찾아 이 YMPlayer에 저장합니다 (서버가 그 사이트에 접속할 수 없을 때 - 서버는 사이트를 열지 않음). '
+            + '채팅 주소가 바뀌면 다시 누르세요. 보낸 주소는 서버가 찾은 것보다 새것이면 그것을 씁니다.' }), sent);
+        return wrap;
+    }
+
     function bindInput(src, key, input, kind = 'value') {
         input.addEventListener(kind === 'checked' ? 'change' : 'input', () => { src[key] = input[kind]; touch(); });
         return input;
@@ -698,7 +726,8 @@ export async function renderSettings(main, _params, query, ctx) {
                         field('주소 공지 텔레그램 채널', bindInput(src, 'chat_notice', h('input', { class: 'input', value: src.chat_notice || '', placeholder: 'https://t.me/s/채널이름', spellcheck: false }))),
                         field('채팅을 찾을 사이트 주소', bindInput(src, 'chat_site', h('input', { class: 'input', value: src.chat_site || '', placeholder: 'https://… (공지에서 못 찾으면 이 주소)', spellcheck: false })))),
                     field('채팅 주소의 호스트', bindInput(src, 'chat_host', h('input', { class: 'input', value: src.chat_host || '', placeholder: '예: bizchataicloud.com', spellcheck: false })),
-                        '사이트 페이지에서 이 호스트가 들어간 주소만 채팅으로 띄웁니다.')),
+                        '사이트 페이지에서 이 호스트가 들어간 주소만 채팅으로 띄웁니다.'),
+                    chatBookmarklet(src)),
             ];
             // 같은 종류끼리만 자리를 바꾼다 (다른 탭의 소스를 건너뛰고 가장 가까운 같은 종류와)
             const move = (d) => {

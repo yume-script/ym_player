@@ -14,6 +14,7 @@ import { renderDetail } from './views/detail.js';
 import { renderLive } from './views/live.js';
 import { renderSearch } from './views/search.js';
 import { renderSettings } from './views/settings.js';
+import { renderChatSet } from './views/chatset.js';
 
 const ROUTES = [
     [/^\/home$/, renderHome, 'home'],
@@ -22,6 +23,7 @@ const ROUTES = [
     [/^\/live(?:\/([^/]+))?$/, renderLive, 'live'],
     [/^\/search$/, renderSearch, null],
     [/^\/settings$/, renderSettings, 'settings'],
+    [/^\/chat-set$/, renderChatSet, null],   // 북마크 [채팅 주소 보내기]
 ];
 
 const main = document.getElementById('main');

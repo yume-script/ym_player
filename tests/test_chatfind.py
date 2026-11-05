@@ -82,3 +82,40 @@ def test_find_and_block(monkeypatch):
             await f.close()
             await srv.close()
     asyncio.run(main())
+
+
+def test_sent_url_priority(monkeypatch, tmp_path):
+    """북마크로 보내 온 주소: 호스트 검사, 저장, 찾은 것과 비교해 새것, 다시 찾기에 실패하면 보내 온 것"""
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    with pytest.raises(chatfind.ChatFindError):
+        chatfind.check_sent("https://evil.example/?bizchataicloud.com", "bizchataicloud.com")
+    with pytest.raises(chatfind.ChatFindError):
+        chatfind.check_sent("javascript:alert(1)", "bizchataicloud.com")
+    assert chatfind.check_sent("https://bizchataicloud.com/?token=A", "bizchataicloud.com") == "https://bizchataicloud.com/?token=A"
+
+    async def main():
+        f = chatfind.ChatFinder()
+        only = {"id": "a", "chat_host": "bizchataicloud.com"}
+        with pytest.raises(chatfind.ChatFindError, match="북마크"):
+            await f.find(only)
+        chatfind.save_sent("a", "https://bizchataicloud.com/?token=A")
+        assert await f.find(only) == "https://bizchataicloud.com/?token=A"            # 찾을 곳이 없으면 보내 온 것
+        with pytest.raises(chatfind.ChatFindError):
+            await f.find({**only, "chat_host": "other.example"})                     # 호스트를 바꾸면 예전 것은 버림
+
+        both = {"id": "a", "chat_host": "bizchataicloud.com", "chat_site": "https://blocked.example/"}
+
+        async def search_ok(src, host):
+            return "https://bizchataicloud.com/?token=FOUND"
+
+        async def search_fail(src, host):
+            raise chatfind.ChatFindError("Connection reset by peer")
+        monkeypatch.setattr(f, "_search", search_fail)
+        assert await f.find(both, force=True) == "https://bizchataicloud.com/?token=A"   # 사이트가 막혀도 보내 온 것으로
+        monkeypatch.setattr(f, "_search", search_ok)
+        assert await f.find(both, force=True) == "https://bizchataicloud.com/?token=FOUND"
+        assert await f.find(both) == "https://bizchataicloud.com/?token=FOUND"        # 찾은 것이 더 새것
+        chatfind.save_sent("a", "https://bizchataicloud.com/?token=NEW")
+        assert await f.find(both) == "https://bizchataicloud.com/?token=NEW"          # 그 뒤에 보낸 것이 더 새것
+        await f.close()
+    asyncio.run(main())

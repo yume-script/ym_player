@@ -1183,3 +1183,7 @@ body.docpip { margin: 0; background: #000; overflow: hidden; }
 .chat-msg { padding: 1rem; color: var(--muted); font-size: 0.9rem; }
 .chat-msg.hidden { display: none; }
 .chat-find > summary { cursor: pointer; color: var(--text-soft); margin: 0.25rem 0 0.5rem; }
+.chat-bookmarklet { align-self: flex-start; cursor: grab; }
+.chat-set { max-width: 720px; }
+.chat-set-url { font-family: ui-monospace, monospace; font-size: 0.85rem; word-break: break-all; color: var(--muted); }
+.chat-set-ok { color: var(--ok); }

@@ -14,8 +14,10 @@ SSRF: 서버가 받는 주소는 http(s)만, 접속할 때 DNS로 얻은 주소�
 import asyncio
 import html
 import ipaddress
+import json
 import os
 import re
+import threading
 import time
 
 from aiohttp import ClientSession, ClientTimeout, TCPConnector
@@ -33,6 +35,58 @@ _TG_HOSTS = ("t.me", "telegram.me", "telegram.org", "telesco.pe", "cdn-telegram.
 
 class ChatFindError(Exception):
     pass
+
+
+# ---------------------------------------------------------------------------
+# 보내 온 채팅 주소 - 서버가 사이트를 열 수 없을 때(망에서 막힘 등) 관리자가 자기 브라우저로 사이트를 열고
+# 북마크 [채팅 주소 보내기]로 보낸 것 (data/chat_sent.json: {소스 id: {"url", "at"}})
+# ---------------------------------------------------------------------------
+_sent_lock = threading.Lock()
+
+
+def _sent_path():
+    from . import config_store
+    return os.path.join(config_store.DATA_DIR, "chat_sent.json")
+
+
+def sent_all():
+    try:
+        with open(_sent_path(), encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def sent_url(sid):
+    """(주소, 보낸 시각) 또는 None"""
+    x = sent_all().get(sid)
+    return (x["url"], float(x.get("at") or 0)) if isinstance(x, dict) and x.get("url") else None
+
+
+def check_sent(url, chat_host):
+    """보내 온 주소가 쓸 수 있는 채팅 주소인지 (http(s)이고 설정한 채팅 호스트) - 아니면 ChatFindError"""
+    try:
+        u = URL(str(url or "").strip())
+    except (ValueError, TypeError):
+        raise ChatFindError("주소 형식이 아닙니다") from None
+    if u.scheme not in ("http", "https") or not u.host:
+        raise ChatFindError("http(s) 주소만 받습니다")
+    if not chat_host or not _host_match(u.host.lower(), chat_host):
+        raise ChatFindError(f"설정한 채팅 호스트({chat_host or '없음'})의 주소가 아닙니다")
+    return str(u)[:2000]
+
+
+def save_sent(sid, url):
+    from . import config_store
+    with _sent_lock:
+        data = sent_all()
+        data[sid] = {"url": url, "at": time.time()}
+        os.makedirs(config_store.DATA_DIR, exist_ok=True)
+        tmp = _sent_path() + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, _sent_path())
 
 
 def _blocked(ip):
@@ -156,18 +210,41 @@ class ChatFinder:
             raise ChatFindError(f"{u.host or url}: {e}") from None
 
     async def find(self, src, force=False):
-        """채팅 주소 (못 찾으면 ChatFindError). 10분 기억"""
+        """채팅 주소 (못 찾으면 ChatFindError). 직접 넣은 주소 > (보내 온 것과 찾은 것 중 새것) > 찾기.
+        찾은 것은 10분 기억, force(새로고침)면 다시 찾고 실패하면 보내 온 것으로"""
         if src.get("chat_url"):
             return src["chat_url"]
         chat_host = (src.get("chat_host") or "").strip()
-        if not chat_host or not (src.get("chat_site") or src.get("chat_notice")):
-            raise ChatFindError("채팅 주소를 찾을 사이트나 공지 채널, 채팅 주소의 호스트가 설정되지 않았습니다")
+        sent = sent_url(src["id"]) if chat_host else None
+        if sent:
+            try:
+                sent = (check_sent(sent[0], chat_host), sent[1])   # (호스트 설정을 바꿨으면 예전 것은 버린다)
+            except ChatFindError:
+                sent = None
+        if not chat_host:
+            raise ChatFindError("채팅 주소의 호스트가 설정되지 않았습니다")
+        if not (src.get("chat_site") or src.get("chat_notice")):
+            if sent:
+                return sent[0]
+            raise ChatFindError("아직 채팅 주소가 없습니다 - 설정의 북마크 [채팅 주소 보내기]로 보내 주세요")
         key = (src.get("chat_site"), src.get("chat_notice"), chat_host)
         hit = self.cache.get(src["id"])
-        if hit and hit[1] == key and not force and time.time() - hit[0] < CACHE_SEC:
-            if hit[2]:
-                return hit[2]
-            raise ChatFindError(hit[3])
+        fresh = hit and hit[1] == key and time.time() - hit[0] < CACHE_SEC
+        if not force:
+            if sent and (not fresh or not hit[2] or sent[1] >= hit[0]):
+                return sent[0]           # 보내 온 것이 더 새것이거나, 찾은 것이 없을 때
+            if fresh:
+                if hit[2]:
+                    return hit[2]
+                raise ChatFindError(hit[3])
+        try:
+            return await self._find_locked(src, chat_host, key, force)
+        except ChatFindError:
+            if sent:
+                return sent[0]           # (서버가 사이트를 못 열어도 보내 온 주소로)
+            raise
+
+    async def _find_locked(self, src, chat_host, key, force):
         lock = self._locks.setdefault(src["id"], asyncio.Lock())
         async with lock:
             hit = self.cache.get(src["id"])

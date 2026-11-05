@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 109,
+        "version": "1.1.72",
+        "date": "2026-11-05",
+        "title": "IPTV 채팅 패널: 북마크 [채팅 주소 보내기] - 서버가 사이트를 열 수 없을 때 내 브라우저로 연 페이지에서 채팅 주소를 보내 저장"
+    },
+    {
         "pr": 108,
         "version": "1.1.71",
         "date": "2026-11-05",
