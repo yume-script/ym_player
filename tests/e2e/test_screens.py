@@ -203,3 +203,32 @@ def test_iptv_chat_found_from_notice(page, server, upstream):
     page.click(".chat-panel button[title='채팅 새로고침']")              # 다시 찾기
     assert frame.locator("#hello").inner_text(timeout=10000) == "채팅 페이지"
     page.evaluate("window._pl.stop()")
+
+
+def test_chat_bookmarklet(page, server, upstream):
+    """서버가 사이트를 못 열 때: 설정의 북마크 [채팅 주소 보내기]를 사이트 페이지에서 누르면 채팅 주소가 YMPlayer에 저장되고 채널에 뜬다"""
+    set_sources(page, server, [{"id": "tv3", "type": "iptv", "name": "E2E TV3", "enabled": True, "m3u": f"{upstream.base}/list.m3u",
+                                "chat_host": "127.0.0.1", "chat_prefix": "[스포츠]"}])
+    page.goto(server + "/#/settings")
+    page.wait_for_selector(".src-tabs")
+    page.click(".src-tabs .tab:has-text('IPTV')")
+    href = page.locator("a.chat-bookmarklet").first.get_attribute("href")
+    assert href.startswith("javascript:")
+    code = __import__("urllib.parse").parse.unquote(href[len("javascript:"):])
+    site = page.context.new_page()                                     # "내 브라우저로 연 사이트 페이지"
+    site.goto(upstream.base + "/")
+    site.evaluate("window.open = (u) => { window.__opened = u; }")
+    site.evaluate(code)
+    opened = site.evaluate("window.__opened")
+    assert opened.startswith(server + "/#/chat-set?sid=tv3&url=") and "chat.html%3Ftoken%3Dabc" in opened
+    site.close()
+    page.goto(opened)
+    page.wait_for_selector(".chat-set-ok", timeout=10000)
+    page.goto(server + "/#/live/tv3")
+    page.wait_for_selector("text=[스포츠] 축구 중계", timeout=15000)
+    js_modules(page)
+    page.evaluate("""() => { const p = window._reg.byId('tv3');
+        return p.loadChannels().then((chs) => window._pl.playChannel(p, chs[0], chs.map((c) => ({provider: p, channel: c})))); }""")
+    page.wait_for_selector(".chat-panel:not(.hidden)", timeout=10000)
+    assert page.frame_locator(".chat-frame").locator("#hello").inner_text(timeout=10000) == "채팅 페이지"
+    page.evaluate("window._pl.stop()")

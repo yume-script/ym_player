@@ -73,7 +73,7 @@ export class IptvProvider {
         this.chatUrl = src.chat_url || '';
         this.chatPrefix = src.chat_prefix || '';
         // 채팅 주소(토큰)가 자주 바뀌는 곳: 서버가 사이트·공지 채널에서 그때그때 찾는다 (/api/iptv/{id}/chat-url, chatfind.py)
-        this.chatAuto = !!src.chat_auto || !!(src.chat_host && (src.chat_site || src.chat_notice));
+        this.chatAuto = !!src.chat_auto || !!src.chat_host;   // (북마크로 보내 온 주소도 이 길로)
         this.channels = null;
         this.epg = null;
         this._channelsPromise = null;

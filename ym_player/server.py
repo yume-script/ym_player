@@ -224,7 +224,7 @@ async def get_config(request):
             if s["type"] == "radio" and allowed is not None:  # 라디오는 방송국 id
                 item["stations"] = [st for st in item.get("stations") or [] if st["id"] in allowed]
             if s["type"] == "iptv":   # 채팅을 그때그때 찾는 소스인지만 (사이트·공지 주소는 관리자만)
-                item["chat_auto"] = bool(s.get("chat_host") and (s.get("chat_site") or s.get("chat_notice")))
+                item["chat_auto"] = bool(s.get("chat_host"))
             if s["type"] == "podcast" and allowed is not None:  # 팟캐스트는 프로그램(피드) id
                 item["feeds"] = [f for f in item.get("feeds") or [] if f["id"] in allowed]
             out.append(item)
@@ -3242,6 +3242,20 @@ async def iptv_chat_url(request):
     return web.json_response({"success": True, "url": url})
 
 
+@admin_only
+async def iptv_chat_url_send(request):
+    """POST /api/iptv/{sid}/chat-url {url} - 북마크 [채팅 주소 보내기]가 관리자 브라우저에서 찾은 채팅 주소를 저장
+    (서버가 사이트를 열 수 없을 때). 설정한 채팅 호스트의 http(s) 주소만"""
+    src = _source_or_404(request.match_info["sid"], "iptv", request)
+    body = await _json_body(request)
+    try:
+        url = chatfind.check_sent(body.get("url"), src.get("chat_host") or "")
+    except chatfind.ChatFindError as e:
+        return _json_error(400, str(e))
+    await asyncio.to_thread(chatfind.save_sent, src["id"], url)
+    return web.json_response({"success": True, "url": url, "source": src["name"]})
+
+
 async def _on_cleanup(app):
     await app[CHAT_FINDER].close()
     for task in (app.get(HLS_SWEEPER), app.get(UPDATE_TASK), app.get(DISCORD_TASK), app.get(MIRROR_TASK)):
@@ -3347,6 +3361,7 @@ def create_app(require_auth=True):
     app.router.add_get("/api/iptv/{sid}/channels", iptv_channels)
     app.router.add_get("/api/iptv/{sid}/epg", iptv_epg)
     app.router.add_get("/api/iptv/{sid}/chat-url", iptv_chat_url)
+    app.router.add_post("/api/iptv/{sid}/chat-url", iptv_chat_url_send)
     app.router.add_get("/api/stream", stream_proxy)
     app.router.add_get("/api/radio/{sid}/now", radio_now)
     app.router.add_get("/api/podcast/{sid}/shows", podcast_shows)
