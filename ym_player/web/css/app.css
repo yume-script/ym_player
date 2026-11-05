@@ -1180,3 +1180,6 @@ body.docpip { margin: 0; background: #000; overflow: hidden; }
     .player.chat-open .player-stage, .player.chat-open .player-bottom { bottom: 45%; }
     .player.chat-open .osd { bottom: calc(45% + 4.5rem); }
 }
+.chat-msg { padding: 1rem; color: var(--muted); font-size: 0.9rem; }
+.chat-msg.hidden { display: none; }
+.chat-find > summary { cursor: pointer; color: var(--text-soft); margin: 0.25rem 0 0.5rem; }

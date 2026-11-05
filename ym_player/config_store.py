@@ -16,6 +16,7 @@ Plex 토큰은 브라우저로 내보내지 않는다(public_config가 has_token
 저장할 때 토큰 칸을 비워 보내면 기존 토큰을 그대로 둔다.
 """
 import json
+import re
 import os
 import secrets
 import threading
@@ -144,6 +145,16 @@ def _clean_source(raw, old):
             raise ValueError(f"[{src['name']}] 채팅 패널 주소는 http:// 또는 https://로 시작해야 합니다.")
         src["chat_url"] = chat_url
         src["chat_prefix"] = str(raw.get("chat_prefix") or "").strip()[:80]
+        # 채팅 주소(토큰)가 자주 바뀌는 곳: 사이트 페이지 / 주소 공지 텔레그램 채널에서 그때그때 찾는다 (chatfind.py)
+        for key, label in (("chat_site", "채팅을 찾을 사이트 주소"), ("chat_notice", "주소 공지 텔레그램 채널")):
+            v = str(raw.get(key) or "").strip()[:500]
+            if v and not v.lower().startswith(("http://", "https://")):
+                raise ValueError(f"[{src['name']}] {label}는 http:// 또는 https://로 시작해야 합니다.")
+            src[key] = v
+        host = re.sub(r"^https?://", "", str(raw.get("chat_host") or "").strip().lower()).split("/")[0][:200]
+        if host and not re.fullmatch(r"[a-z0-9.-]+", host):
+            raise ValueError(f"[{src['name']}] 채팅 주소의 호스트는 bizchataicloud.com 같은 이름만 넣어 주세요.")
+        src["chat_host"] = host
         if not src["m3u"]:
             raise ValueError(f"[{src['name']}] M3U 주소가 비어 있습니다.")
     return src

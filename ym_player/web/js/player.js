@@ -216,6 +216,7 @@ class Player {
                 h('span', { class: 'chat-title' }, icon('comments'), ' 채팅'),
                 btn('rotate-right', '채팅 새로고침', () => this._reloadChat(), 'chat-btn'),
                 btn('xmark', '채팅 닫기', () => this._showChat(false, true), 'chat-btn')),
+            this.chatMsg = h('div', { class: 'chat-msg hidden' }),
             this.chatFrame);
         this.chatOpenBtn = h('button', { class: 'chat-open-btn hidden', title: '채팅 다시 열기',
             on: { click: (e) => { e.stopPropagation(); this._showChat(true); } } }, icon('comments'), ' 채팅 열기');
@@ -536,17 +537,48 @@ class Player {
     // 채팅 패널 (IPTV 채널: providers/iptv.js chatFor). 닫으면 같은 재생 동안은 채널을 바꿔도 닫힌 채로 ([채팅 열기]로 다시)
     // ------------------------------------------------------------------
     _syncChat(pb) {
-        const url = pb && pb.live && pb.channel && pb.provider && pb.provider.chatFor ? pb.provider.chatFor(pb.channel) : '';
-        this.chatUrl = url;
-        if (url && this.chatFrame.dataset.url !== url) {   // 같은 주소면 다시 불러오지 않는다 (채널을 바꿔도 대화가 이어지게)
+        const want = pb && pb.live && pb.channel && pb.provider && pb.provider.chatFor ? pb.provider.chatFor(pb.channel) : '';
+        this.chatUrl = want;
+        this.chatProvider = want ? pb.provider : null;
+        if (want === 'auto') {
+            // 서버가 사이트·공지 채널에서 찾는다 - 같은 소스에서 이미 찾아 띄웠으면 그대로 (채널을 바꿔도 대화가 이어지게)
+            if (this.chatFrame.dataset.src !== pb.provider.id) this._findChat(false);
+        } else {
+            this._setChatFrame(want, want);
+        }
+        this._showChat(!!want && !this._chatClosed);
+    }
+
+    _setChatFrame(url, srcKey) {
+        this.chatMsg.classList.add('hidden');
+        if (url && this.chatFrame.dataset.url !== url) {   // 같은 주소면 다시 불러오지 않는다
             this.chatFrame.dataset.url = url;
             this.chatFrame.src = url;
         }
+        if (url) this.chatFrame.dataset.src = srcKey;
         if (!url && this.chatFrame.dataset.url) {
             delete this.chatFrame.dataset.url;
+            delete this.chatFrame.dataset.src;
             this.chatFrame.src = 'about:blank';
         }
-        this._showChat(!!url && !this._chatClosed);
+    }
+
+    async _findChat(force) {
+        const p = this.chatProvider;
+        if (!p) return;
+        const seq = (this._chatSeq = (this._chatSeq || 0) + 1);
+        this.chatMsg.textContent = '채팅 주소를 찾는 중...';
+        this.chatMsg.classList.remove('hidden');
+        try {
+            const url = await p.findChat(force);
+            if (seq !== this._chatSeq || this.chatProvider !== p) return;
+            this._setChatFrame(url, p.id);
+        } catch (e) {
+            if (seq !== this._chatSeq || this.chatProvider !== p) return;
+            this._setChatFrame('', '');
+            this.chatMsg.textContent = e.message;
+            this.chatMsg.classList.remove('hidden');
+        }
     }
 
     _showChat(on, byUser = false) {
@@ -559,6 +591,7 @@ class Player {
     }
 
     _reloadChat() {
+        if (this.chatUrl === 'auto') return this._findChat(true);   // 서버가 다시 찾는다 (주소가 바뀌었을 수 있어서)
         const url = this.chatFrame.dataset.url;
         if (!url) return;
         this.chatFrame.src = 'about:blank';   // (다른 사이트 페이지라 reload()를 못 불러서 주소를 다시 넣는다)

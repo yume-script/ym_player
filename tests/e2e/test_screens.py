@@ -185,3 +185,21 @@ def test_iptv_chat_panel(page, server, upstream):
     assert page.locator(".chat-panel").evaluate("e => e.classList.contains('hidden')")
     assert page.locator(".chat-open-btn").evaluate("e => e.classList.contains('hidden')")
     page.evaluate("window._pl.stop()")
+
+
+def test_iptv_chat_found_from_notice(page, server, upstream):
+    """채팅 주소가 바뀌는 곳: 공지 채널 -> 사이트 -> 채팅 주소를 서버가 찾아 띄운다 (브라우저가 채팅을 바로 엶)"""
+    set_sources(page, server, [{"id": "tv2", "type": "iptv", "name": "E2E TV2", "enabled": True, "m3u": f"{upstream.base}/list.m3u",
+                                "chat_notice": f"{upstream.base}/notice", "chat_host": "127.0.0.1", "chat_prefix": "[스포츠]"}])
+    page.goto(server + "/#/live/tv2")
+    page.wait_for_selector("text=[스포츠] 축구 중계", timeout=15000)
+    js_modules(page)
+    page.evaluate("""() => { const p = window._reg.byId('tv2');
+        return p.loadChannels().then((chs) => window._pl.playChannel(p, chs[0], chs.map((c) => ({provider: p, channel: c})))); }""")
+    page.wait_for_selector(".chat-panel:not(.hidden)", timeout=10000)
+    frame = page.frame_locator(".chat-frame")
+    assert frame.locator("#hello").inner_text(timeout=10000) == "채팅 페이지"
+    assert page.evaluate("document.querySelector('.chat-frame').src").endswith("/chat.html?token=abc")
+    page.click(".chat-panel button[title='채팅 새로고침']")              # 다시 찾기
+    assert frame.locator("#hello").inner_text(timeout=10000) == "채팅 페이지"
+    page.evaluate("window._pl.stop()")
