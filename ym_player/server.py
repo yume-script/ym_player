@@ -202,7 +202,8 @@ async def _pipe_response(request, upstream):
 # 설정
 # ---------------------------------------------------------------------------
 # 관리자가 아닌 사용자에게는 서버 주소/M3U 주소(키가 들어 있기도 함)/API ID 등을 안 보여준다
-_USER_VISIBLE = ("id", "type", "name", "enabled", "channels", "hidden_libraries", "stations", "feeds")
+_USER_VISIBLE = ("id", "type", "name", "enabled", "channels", "hidden_libraries", "stations", "feeds",
+                 "chat_url", "chat_prefix")   # (채팅 패널: 관리자가 넣은 공개 채팅 페이지 주소 - 브라우저가 열어야 해서)
 
 
 async def get_config(request):

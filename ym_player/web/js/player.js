@@ -208,7 +208,19 @@ class Player {
 
         // 시각화 고르기 (+ 아이폰·아이패드: 음악에 맞춰 움직이기 = 소리를 Web Audio로, 백그라운드 재생과 맞바꿈)
         this.vizMenu = h('div', { class: 'lp-menu viz-menu hidden', on: { click: (e) => e.stopPropagation() } });
-        this.root = h('div', { class: 'player hidden' }, this.stage, this.top, this.bottom, this.drawer, this.subMenu, this.optMenu, this.rateMenu, this.lpMenu, this.vizMenu);
+        // 채팅 패널 (IPTV 소스 설정의 채팅 패널 주소 - 채널 이름이 접두어로 시작할 때). 닫으면 [채팅 열기]로 다시
+        this.chatFrame = h('iframe', { class: 'chat-frame', title: '채팅', referrerpolicy: 'no-referrer',
+            sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox' });
+        this.chatPanel = h('aside', { class: 'chat-panel hidden', on: { click: (e) => e.stopPropagation(), dblclick: (e) => e.stopPropagation() } },
+            h('div', { class: 'chat-head' },
+                h('span', { class: 'chat-title' }, icon('comments'), ' 채팅'),
+                btn('rotate-right', '채팅 새로고침', () => this._reloadChat(), 'chat-btn'),
+                btn('xmark', '채팅 닫기', () => this._showChat(false, true), 'chat-btn')),
+            this.chatFrame);
+        this.chatOpenBtn = h('button', { class: 'chat-open-btn hidden', title: '채팅 다시 열기',
+            on: { click: (e) => { e.stopPropagation(); this._showChat(true); } } }, icon('comments'), ' 채팅 열기');
+        this.root = h('div', { class: 'player hidden' }, this.stage, this.top, this.bottom, this.drawer, this.subMenu, this.optMenu, this.rateMenu, this.lpMenu, this.vizMenu,
+            this.chatPanel, this.chatOpenBtn);
         this._setupMediaSession();
         window.addEventListener('pagehide', () => this._saveForReload());
 
@@ -340,6 +352,7 @@ class Player {
         if (playlist) pb.playlist = playlist;
         else if (this.pb && this.pb.playlist && pb.live) pb.playlist = this.pb.playlist;
         this.pb = pb;
+        this._syncChat(pb);   // IPTV 채널이면 채팅 패널
         const token = ++this.token;
         this.lastReport = 0;
 
@@ -496,6 +509,8 @@ class Player {
     stop() {
         this.prepSeq++;
         this.ref = null;
+        this._chatClosed = false;
+        this._syncChat(null);
         if (this.pipArt) setTimeout(() => this.pipArt && this.pipArt.release(), 0);
         this._setShuffle(null);
         this._finishCurrent();
@@ -515,6 +530,39 @@ class Player {
         this.root.classList.add('hidden');
         this.mini.classList.add('hidden');
         document.body.classList.remove('player-open');
+    }
+
+    // ------------------------------------------------------------------
+    // 채팅 패널 (IPTV 채널: providers/iptv.js chatFor). 닫으면 같은 재생 동안은 채널을 바꿔도 닫힌 채로 ([채팅 열기]로 다시)
+    // ------------------------------------------------------------------
+    _syncChat(pb) {
+        const url = pb && pb.live && pb.channel && pb.provider && pb.provider.chatFor ? pb.provider.chatFor(pb.channel) : '';
+        this.chatUrl = url;
+        if (url && this.chatFrame.dataset.url !== url) {   // 같은 주소면 다시 불러오지 않는다 (채널을 바꿔도 대화가 이어지게)
+            this.chatFrame.dataset.url = url;
+            this.chatFrame.src = url;
+        }
+        if (!url && this.chatFrame.dataset.url) {
+            delete this.chatFrame.dataset.url;
+            this.chatFrame.src = 'about:blank';
+        }
+        this._showChat(!!url && !this._chatClosed);
+    }
+
+    _showChat(on, byUser = false) {
+        if (byUser) this._chatClosed = !on;
+        if (on && !this.chatUrl) on = false;
+        this.root.classList.toggle('chat-open', on);
+        this.chatPanel.classList.toggle('hidden', !on);
+        this.chatOpenBtn.classList.toggle('hidden', on || !this.chatUrl);
+        if (on) this._chatClosed = false;
+    }
+
+    _reloadChat() {
+        const url = this.chatFrame.dataset.url;
+        if (!url) return;
+        this.chatFrame.src = 'about:blank';   // (다른 사이트 페이지라 reload()를 못 불러서 주소를 다시 넣는다)
+        setTimeout(() => { this.chatFrame.src = url; }, 50);
     }
 
     minimize() {

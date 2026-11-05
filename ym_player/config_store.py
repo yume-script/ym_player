@@ -137,6 +137,13 @@ def _clean_source(raw, old):
     else:
         src["m3u"] = "\n".join(url_list(raw.get("m3u")))
         src["epg"] = "\n".join(url_list(raw.get("epg")))
+        # 채팅 패널: 채널 이름이 접두어로 시작하면 재생 화면 오른쪽에 이 주소를 띄운다 (브라우저가 바로 엶 - 서버는 받지 않음).
+        # 접두어가 비어 있으면 이 소스의 모든 채널
+        chat_url = str(raw.get("chat_url") or "").strip()[:1000]
+        if chat_url and not chat_url.lower().startswith(("http://", "https://")):
+            raise ValueError(f"[{src['name']}] 채팅 패널 주소는 http:// 또는 https://로 시작해야 합니다.")
+        src["chat_url"] = chat_url
+        src["chat_prefix"] = str(raw.get("chat_prefix") or "").strip()[:80]
         if not src["m3u"]:
             raise ValueError(f"[{src['name']}] M3U 주소가 비어 있습니다.")
     return src

@@ -479,3 +479,14 @@ def test_radio_station_groups_and_korean_list():
     assert {r["group"] for r in rows} >= {"전국", "서울·경기", "부산·경남", "제주"}
     cleaned = config_store.clean_stations(rows)
     assert len(cleaned) == 194 and len({s["id"] for s in cleaned}) == 194
+
+
+def test_iptv_chat_settings():
+    """IPTV 채팅 패널 설정: http(s) 주소만, 접두어는 그대로 (비우면 모든 채널)"""
+    import pytest as _pt
+    from ym_player import config_store as cs
+    src = cs._clean_source({"type": "iptv", "m3u": "http://x/a.m3u", "chat_url": " https://chat.example/room ", "chat_prefix": " [스포츠] "}, None)
+    assert src["chat_url"] == "https://chat.example/room" and src["chat_prefix"] == "[스포츠]"
+    assert cs._clean_source({"type": "iptv", "m3u": "http://x/a.m3u"}, None)["chat_url"] == ""
+    with _pt.raises(ValueError):
+        cs._clean_source({"type": "iptv", "m3u": "http://x/a.m3u", "chat_url": "javascript:alert(1)"}, None)

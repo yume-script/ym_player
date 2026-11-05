@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 107,
+        "version": "1.1.70",
+        "date": "2026-11-05",
+        "title": "IPTV 채팅 패널: 소스 설정의 채팅 페이지 주소를 접두어로 시작하는 채널에서 재생 화면 오른쪽에 (새로고침·닫기·다시 열기)"
+    },
+    {
         "pr": 106,
         "version": "1.1.69",
         "date": "2026-11-05",

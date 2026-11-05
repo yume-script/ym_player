@@ -685,6 +685,11 @@ export async function renderSettings(main, _params, query, ctx) {
                     class: 'input url-list', rows: Math.max(1, (src.epg || '').split('\n').length), spellcheck: false, text: src.epg || '',
                     placeholder: '선택 - .xml 또는 .xml.gz (여러 개면 한 줄에 하나씩)',
                 })), '편성표 채널 매칭: tvg-id → 채널 표시명 순서로 찾습니다.'),
+                h('div', { class: 'row-2' },
+                    field('채팅 패널 주소 (선택)', bindInput(src, 'chat_url', h('input', { class: 'input', value: src.chat_url || '', placeholder: 'https://… (공개 채팅 페이지)', spellcheck: false })),
+                        '넣으면 아래 접두어로 시작하는 채널을 볼 때 재생 화면 오른쪽에 이 페이지를 띄웁니다 (보는 사람의 브라우저가 바로 엶).'),
+                    field('적용할 채널 접두어', bindInput(src, 'chat_prefix', h('input', { class: 'input', value: src.chat_prefix || '', placeholder: '예: [스포츠] (비우면 모든 채널)' })),
+                        '채널 이름이 이 글자로 시작할 때만. 비우면 이 소스의 모든 채널.')),
             ];
             // 같은 종류끼리만 자리를 바꾼다 (다른 탭의 소스를 건너뛰고 가장 가까운 같은 종류와)
             const move = (d) => {

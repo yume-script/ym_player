@@ -158,3 +158,30 @@ def test_phone_layout(browser, server, page):
     assert width <= 390 + 2, f"가로로 넘침: {width}px"            # 휴대폰 화면에서 옆으로 밀리지 않게
     ctx.close()
     assert not errors, errors
+
+
+def test_iptv_chat_panel(page, server, upstream):
+    """IPTV 채팅 패널: 접두어로 시작하는 채널에서 오른쪽에 채팅 페이지, 닫기 -> [채팅 열기], 다른 채널에서는 숨김"""
+    set_sources(page, server, [{"id": "tv", "type": "iptv", "name": "E2E TV", "enabled": True, "m3u": f"{upstream.base}/list.m3u",
+                                "chat_url": f"{upstream.base}/chat.html", "chat_prefix": "[스포츠]"}])
+    page.goto(server + "/#/live/tv")
+    page.wait_for_selector("text=[스포츠] 축구 중계", timeout=15000)
+    js_modules(page)
+    play = """(name) => { const p = window._reg.byId('tv');
+        return p.loadChannels().then((chs) => { const ch = chs.find((c) => c.name === name); window._pl.playChannel(p, ch, chs.map((c) => ({provider: p, channel: c}))); }); }"""
+    page.evaluate(play, "[스포츠] 축구 중계")
+    page.wait_for_selector(".chat-panel:not(.hidden)", timeout=10000)
+    frame = page.frame_locator(".chat-frame")
+    assert frame.locator("#hello").inner_text(timeout=10000) == "채팅 페이지"
+    assert page.evaluate("document.querySelector('.player').classList.contains('chat-open')")
+    page.click(".chat-panel button[title='채팅 닫기']")              # 닫기 -> [채팅 열기]
+    assert page.locator(".chat-panel").evaluate("e => e.classList.contains('hidden')")
+    page.click(".chat-open-btn")
+    assert not page.locator(".chat-panel").evaluate("e => e.classList.contains('hidden')")
+    page.click(".chat-panel button[title='채팅 새로고침']")
+    assert frame.locator("#hello").inner_text(timeout=10000) == "채팅 페이지"
+    page.evaluate(play, "뉴스 채널")                                   # 접두어가 아닌 채널: 패널도 버튼도 없음
+    page.wait_for_timeout(800)
+    assert page.locator(".chat-panel").evaluate("e => e.classList.contains('hidden')")
+    assert page.locator(".chat-open-btn").evaluate("e => e.classList.contains('hidden')")
+    page.evaluate("window._pl.stop()")

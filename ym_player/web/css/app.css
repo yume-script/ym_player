@@ -1160,3 +1160,23 @@ body.docpip { margin: 0; background: #000; overflow: hidden; }
 .source-pick > .fa-solid { font-size: 1.2rem; width: 1.4rem; text-align: center; }
 .source-pick-text { display: flex; flex-direction: column; min-width: 0; }
 .source-pick-text small { opacity: 0.75; font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* IPTV 채팅 패널: 재생 화면 오른쪽 (좁은 화면은 아래쪽) - player.js _syncChat */
+.chat-panel { position: absolute; top: 0; right: 0; bottom: 0; width: 380px; z-index: 8; display: flex; flex-direction: column;
+    background: var(--bg-elev); border-left: 1px solid var(--border); }
+.chat-panel.hidden { display: none; }
+.chat-head { display: flex; align-items: center; gap: 0.25rem; padding: 0.35rem 0.4rem 0.35rem 0.8rem; border-bottom: 1px solid var(--border); }
+.chat-title { flex: 1; font-weight: 600; font-size: 0.9rem; }
+.chat-head .chat-btn { width: 2rem; height: 2rem; font-size: 1rem; }
+.chat-frame { flex: 1; min-height: 0; width: 100%; border: 0; background: #fff; }
+.player.chat-open .player-stage, .player.chat-open .player-top, .player.chat-open .player-bottom { right: 380px; }
+.chat-open-btn { position: absolute; top: 4.2rem; right: 1rem; z-index: 8; display: inline-flex; align-items: center; gap: 0.35rem;
+    padding: 0.4rem 0.8rem; border: 1px solid rgba(255, 255, 255, 0.25); border-radius: 999px; background: rgba(0, 0, 0, 0.6); color: #fff; cursor: pointer; }
+.chat-open-btn:hover { background: rgba(0, 0, 0, 0.8); }
+.chat-open-btn.hidden { display: none; }
+@media (max-width: 760px) {
+    .chat-panel { top: auto; left: 0; width: auto; height: 45%; border-left: 0; border-top: 1px solid var(--border); }
+    .player.chat-open .player-stage, .player.chat-open .player-top, .player.chat-open .player-bottom { right: 0; }
+    .player.chat-open .player-stage, .player.chat-open .player-bottom { bottom: 45%; }
+    .player.chat-open .osd { bottom: calc(45% + 4.5rem); }
+}

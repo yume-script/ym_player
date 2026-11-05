@@ -100,11 +100,20 @@ class Upstream:
                 pass
             return resp
 
+        async def m3u(request):   # IPTV 재생목록: 채팅 패널 접두어가 붙은 채널과 아닌 채널
+            return web.Response(text=f"#EXTM3U\n#EXTINF:-1 group-title=\"스포츠\",[스포츠] 축구 중계\n{self.base}/live.wav\n"
+                                     f"#EXTINF:-1 group-title=\"뉴스\",뉴스 채널\n{self.base}/live.wav?2\n", content_type="audio/x-mpegurl")
+
+        async def chat(request):  # 공개 채팅 페이지 흉내
+            return web.Response(text="<!doctype html><title>chat</title><p id=hello>채팅 페이지</p>", content_type="text/html")
+
         async def main():
             app = web.Application()
             app.router.add_get("/feed.xml", feed)
             app.router.add_get("/a.wav", wav)
             app.router.add_get("/live.wav", live)
+            app.router.add_get("/list.m3u", m3u)
+            app.router.add_get("/chat.html", chat)
             runner = web.AppRunner(app)
             await runner.setup()
             await web.TCPSite(runner, "127.0.0.1", self.port).start()
