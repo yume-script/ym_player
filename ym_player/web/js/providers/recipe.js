@@ -1,4 +1,4 @@
-// 만개의레시피 (10000recipe.com). 랭킹·분류·검색과 레시피는 서버(/api/recipe/{id}, recipe.py)가 읽어 글자만 넘긴다.
+// 만개의레시피 (10000recipe.com). 추천·분류·검색과 레시피는 서버(/api/recipe/{id}, recipe.py)가 읽어 글자만 넘긴다.
 // 카드를 누르면 글 읽기 화면(article.js)에서 재료·만드는 순서를 한 페이지로 ([듣기]로 순서를 소리 내어).
 import { api, h } from '../util.js';
 import { openArticle } from '../article.js';
@@ -21,7 +21,7 @@ export class RecipeProvider {
 
     librarySorts() { return [['default', '사이트 순']]; }
 
-    libraryKinds() { return [['', '오늘의 인기'], ...CATEGORIES.map((c, i) => [String(i), c])]; }
+    libraryKinds() { return [['', '추천 레시피'], ...CATEGORIES.map((c, i) => [String(i), c])]; }
 
     libraryKindLabel() { return '분류'; }
 
@@ -36,12 +36,11 @@ export class RecipeProvider {
     }
 
     async getLibraryItems(_libId, { start = 0, kind = '' } = {}) {
-        if (!kind && start > 0) return { items: [], total: start };   // 랭킹은 한 쪽뿐
         const page = start > 0 ? (this._pages.get(kind) || 2) : 1;
         const d = await api(`${this.base}/list?${new URLSearchParams({ cat: kind, page })}`);
         this._pages.set(kind, page + 1);
         const items = d.items.map((r) => this.toItem(r));
-        const more = !!kind && items.length > 0;
+        const more = items.length > 0;
         const shown = start + items.length;
         return { items, total: more ? shown + 1 : shown, shown, approx: more };
     }
@@ -49,7 +48,7 @@ export class RecipeProvider {
     async getHomeHubs() {
         const d = await api(`${this.base}/list`);
         const items = d.items.slice(0, HOME_MAX).map((r) => this.toItem(r));
-        return items.length ? [{ title: '오늘의 인기 레시피', source: this.name, items, more: `#/library/${this.id}/recipes` }] : [];
+        return items.length ? [{ title: '추천 레시피', source: this.name, items, more: `#/library/${this.id}/recipes` }] : [];
     }
 
     async search(query) {
