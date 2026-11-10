@@ -241,7 +241,7 @@ def test_mirror_folder_rule(page, server):
     page.click(".tabs:not(.src-tabs) > .tab:has-text('자동 올리기')")
     page.click("button:has-text('규칙 추가')")
     rule = page.locator(".mirror-rule").last
-    assert rule.locator(".mirror-folder").is_hidden() and rule.locator(".mirror-enc").is_hidden()
+    assert rule.locator(".mirror-folder").is_hidden() and rule.locator(".mirror-height").input_value() == "720"   # Plex도 720p로
     rule.locator(".mirror-kind").select_option("folder")
     assert rule.locator(".mirror-folder").is_visible() and rule.locator(".mirror-enc").is_visible()
     assert rule.locator(".mirror-height").input_value() == "720"

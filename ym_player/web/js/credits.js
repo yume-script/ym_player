@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 112,
+        "version": "1.1.75",
+        "date": "2026-11-10",
+        "title": "자동 올리기: 텔레그램에 올리는 영상은 용량과 상관없이 720p로 (Plex·폴더 규칙 모두, 규칙에서 화질 고르기)"
+    },
+    {
         "pr": 111,
         "version": "1.1.74",
         "date": "2026-11-10",

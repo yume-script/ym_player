@@ -1279,8 +1279,7 @@ async function renderMirror(pane) {
             opt('folder', 'rclone 드라이브 · 폴더', r.kind === 'folder'));
         const folderIn = h('input', { class: 'input mirror-folder', placeholder: '/mnt/gdrive/영화 또는 gdrive:영화', value: r.folder || '' });
         const pickBtn = h('button', { class: 'btn mirror-pick-folder', type: 'button', on: { click: () => pickFolder(folderIn) } }, icon('folder-open'), ' 고르기');
-        const shrinkIn = h('input', { class: 'input input-sm mirror-days', type: 'number', min: '0', max: '100', value: String(r.shrink_gb ?? 2) });
-        const heightSel = h('select', { class: 'select mirror-height' }, [[720, '720p'], [480, '480p'], [1080, '1080p'], [0, '줄이지 않음']].map(([v, t]) =>
+        const heightSel = h('select', { class: 'select mirror-height' }, [[720, '720p'], [480, '480p'], [1080, '1080p'], [0, '원본 그대로']].map(([v, t]) =>
             h('option', { value: String(v), text: t, selected: (r.height ?? 720) === v })));
         const plexSel = h('select', { class: 'select' }, opt('', 'Plex 라이브러리 고르기', !r.section),
             ...opts.plex.flatMap((p) => p.sections.map((sec) => opt(`${p.id}|${sec.key}`, `${p.name} · ${sec.title} (${sec.type === 'show' ? 'TV' : '영화'})`,
@@ -1312,14 +1311,14 @@ async function renderMirror(pane) {
         const folderField = field('폴더', h('div', { class: 'toolbar mirror-folder-row' }, folderIn, pickBtn),
             '[고르기]에서 rclone 드라이브를 고르거나, rclone mount로 붙인 폴더(/로 시작) 또는 rclone 원격 "이름:경로"를 적으세요. 하위 폴더까지 봅니다.'
             + (opts.rclone_note ? ` (${opts.rclone_note})` : ''));
-        const encBox = h('div', { class: 'mirror-wait mirror-enc' },
-            h('span', { class: 'muted', text: '텔레그램에서 바로 재생되게 H.264/AAC mp4로 올림 (이미 그 모양이면 그대로) · 파일이' }), shrinkIn,
-            h('span', { class: 'muted', text: 'GB보다 크면' }), heightSel, h('span', { class: 'muted', text: '로 줄여 인코딩 (0GB면 늘)' }));
+        const encText = h('span', { class: 'muted' });
+        const encBox = h('div', { class: 'mirror-wait mirror-enc' }, h('span', { class: 'muted', text: '화질:' }), heightSel, encText);
         const syncKind = () => {
             const folder = kindSel.value === 'folder';
             plexField.classList.toggle('hidden', folder);
             folderField.classList.toggle('hidden', !folder);
-            encBox.classList.toggle('hidden', !folder);
+            encText.textContent = folder ? '보다 높은 영상은 용량과 상관없이 줄여서, 텔레그램에서 바로 재생되는 H.264/AAC mp4로 올림 (이미 그 모양이면 그대로)'
+                : '보다 높은 영상은 용량과 상관없이 줄여서 H.264 mp4로 다시 인코딩해 올림';
             burnText.textContent = folder ? ' 자막 파일(SRT 등)이나 파일 안의 자막을 화면에 입혀 인코딩 (텔레그램 앱에서도 자막이 보임)'
                 : ' 영상 안에 자막이 없으면 외부 자막을 화면에 입혀 다시 인코딩 (텔레그램 앱에서도 자막이 보임)';
         };
@@ -1337,7 +1336,7 @@ async function renderMirror(pane) {
         syncKind();
         const row = { id: r.id, get: () => {
             const [plex, section] = plexSel.value.split('|');
-            return { id: row.id, enabled: enabledIn.checked, kind: kindSel.value, folder: folderIn.value.trim(), shrink_gb: Number(shrinkIn.value) || 0,
+            return { id: row.id, enabled: enabledIn.checked, kind: kindSel.value, folder: folderIn.value.trim(),
                 height: Number(heightSel.value), plex, section, section_title: ((plexSel.selectedOptions[0] || {}).dataset || {}).name || '',
                 tg: tgSel.value, channel: chSel.value, channel_title: ((chSel.selectedOptions[0] || {}).dataset || {}).name || '', caption: capIn.value,
                 wait_subs: waitIn.checked, wait_hours: Number(hoursIn.value) || 0, burn_subs: burnIn.checked };

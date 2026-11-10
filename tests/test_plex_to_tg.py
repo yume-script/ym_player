@@ -735,3 +735,43 @@ def test_part_limit_by_account(data):
                 raise RuntimeError("연결 끊김")
         assert await mirror._account_gb("c", Broken()) == 2                # 모르면 작게
     asyncio.run(main())
+
+
+def test_plex_rule_scales_to_720p(data, tmp_path, monkeypatch):
+    """Plex 규칙도 720p보다 높은 영상은 용량과 상관없이 720p로 줄여 mp4로 올린다 (높이를 "원본 그대로"로 하면 그대로)"""
+    import json as _json
+    import shutil as _sh
+    import subprocess
+
+    from ym_player import telegram_src
+    if not _sh.which("ffmpeg"):
+        pytest.skip("ffmpeg 없음")
+    telegram_src._migrated.discard(str(data))
+    src_video = tmp_path / "Tall.2026.mkv"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=1280x960:rate=25:duration=1",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", str(src_video)], check=True)
+    m = {"ratingKey": "9", "type": "movie", "title": "큰 영화", "year": 2026, "addedAt": 10, "duration": 1000,
+         "Media": [{"width": 1280, "height": 960, "Part": [{"key": "/p/9", "file": str(src_video), "size": src_video.stat().st_size, "Stream": []}]}]}
+    tg = FakeTg()
+
+    async def plex_json(c, s, path, params=None):
+        return {"MediaContainer": {"Metadata": [m]}}
+
+    async def main():
+        mirror = plex_to_tg.Mirror(plex_json, lambda sid: ({"client_id": "c"}, {"id": "px", "url": "http://x"}), lambda sid: tg, lambda: None)
+        monkeypatch.setattr(mirror, "_art", lambda *a: asyncio.sleep(0))
+        rule = plex_to_tg.clean_settings({"rules": [{"id": "r", "plex": "px", "section": "1", "tg": "tg", "channel": "-1",
+                                                      "wait_subs": False}]})["rules"][0]
+        assert rule["height"] == 720
+        note = await mirror.upload(rule, "9", 2)
+        assert "720p로 줄임" in note and tg.sent[0]["name"] == "Tall.2026.mp4" and tg.sent[0]["stream"] is True
+        out = tmp_path / "out.mp4"
+        out.write_bytes(tg.sent[0]["body"])
+        v = _json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(out)],
+                                       capture_output=True, text=True).stdout)["streams"][0]
+        assert (v["codec_name"], v["width"], v["height"]) == ("h264", 960, 720)
+        rule["height"] = 0                                                   # 원본 그대로
+        tg.sent.clear()
+        await mirror.upload(rule, "9", 2)
+        assert tg.sent[0]["name"] == "Tall.2026.mkv" and tg.sent[0]["body"] == src_video.read_bytes()
+    asyncio.run(main())

@@ -7,7 +7,7 @@
 
 인코딩(encode_plan): 텔레그램 앱·브라우저에서 바로 재생되게 H.264(yuv420p) + AAC를 mp4(faststart)에 담는다.
 - 이미 그 모양이면 그대로 (mp4가 아니면 다시 담기만 - 화질 그대로)
-- 파일이 정한 크기보다 크고 720p보다 높으면 720p로 줄여 다시 인코딩 (용량 낮추기)
+- 720p보다 높은 영상은 용량과 상관없이 720p로 줄여 다시 인코딩 (규칙에서 480p/1080p/줄이지 않음도)
 - 자막 파일(SRT 등)이 있으면 화면에 입혀 인코딩 - 텔레그램 앱에서도 자막이 보인다
 """
 import asyncio
@@ -370,16 +370,16 @@ def duration(info):
     return 0.0
 
 
-def encode_plan(info, size, ext, shrink_bytes, height_cap, burn_sub=None):
+def encode_plan(info, ext, height_cap, burn_sub=None):
     """텔레그램에서 바로 재생되게 할 ffmpeg 인자 (출력 파일 앞까지) - 손댈 것이 없으면 None.
-    shrink_bytes: 파일이 이보다 크면 height_cap보다 높은 영상을 줄인다 (0이면 늘). burn_sub: 화면에 입힐 자막 파일 이름
+    height_cap보다 높은 영상은 용량과 상관없이 그 높이로 줄인다 (0이면 줄이지 않음). burn_sub: 화면에 입힐 자막 파일 이름
     (ffmpeg를 그 폴더에서 돌린다). 돌려주는 값: (인자, 설명들)"""
     v = (streams(info, "video") or [None])[0]
     a = (streams(info, "audio") or [None])[0]
     if not v:
         raise FolderError("영상 트랙이 없는 파일입니다.")
     h = int(v.get("height") or 0)
-    scale = height_cap and h > height_cap and (not shrink_bytes or size > shrink_bytes)
+    scale = bool(height_cap and h > height_cap)
     v_ok = (str(v.get("codec_name")) == "h264" and str(v.get("pix_fmt")) in ("yuv420p", "yuvj420p")
             and "10" not in str(v.get("profile") or "") and "4:4" not in str(v.get("profile") or "")
             and not scale and not burn_sub)
