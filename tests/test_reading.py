@@ -230,9 +230,19 @@ def test_redirects_followed_only_inside_the_site():
     http = _Http({url: _Resp(302, location=moved), moved: _Resp(200, json.dumps(LIST_BODY).encode())})
     d = asyncio.run(brunch.Brunch(lambda: http).list("MONDAY"))
     assert d["items"][0]["title"] == "3화 첫눈" and http.asked == [url, moved]
+    # 처음에 카카오 로그인 확인으로 넘기면 따라가지 않고 같은 주소를 다시 (쿠키가 생겨 두 번째는 됨)
+    class Bounce(_Http):
+        def get(self, u, **kw):
+            self.asked.append(u)
+            if len(self.asked) == 1:
+                return _Resp(302, location="https://kauth.kakao.com/oauth/authorize?x=1")
+            return _Resp(200, json.dumps(LIST_BODY).encode())
+    once = Bounce({})
+    assert asyncio.run(brunch.Brunch(lambda: once).list("MONDAY"))["items"] and once.asked == [url, url]
     out = _Http({url: _Resp(302, location="https://login.example.com/?next=x")})
-    with pytest.raises(brunch.BrunchError, match="다른 곳으로"):
+    with pytest.raises(brunch.BrunchError, match="다른 곳으로"):   # 계속 넘기면 (세 번) 오류
         asyncio.run(brunch.Brunch(lambda: out).list("MONDAY"))
+    assert out.asked == [url, url, url]
     # 레시피: 리다이렉트 + EUC-KR 페이지, 목록이 비면 받은 페이지를 알려 준다
     rank = recipe.list_url()
     page = RANK_PAGE.encode("cp949", "replace")
