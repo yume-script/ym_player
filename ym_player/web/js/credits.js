@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 123,
+        "version": "1.1.86",
+        "date": "2026-11-11",
+        "title": "사이드바 소스 머리줄(PLEX·TELEGRAM 등)에 아이콘, 라이브러리 제목을 \"Telegram › contentSave\"처럼 소스 이름과 같이"
+    },
+    {
         "pr": 122,
         "version": "1.1.85",
         "date": "2026-11-11",

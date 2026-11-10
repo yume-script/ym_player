@@ -1243,3 +1243,12 @@ body.docpip { margin: 0; background: #000; overflow: hidden; }
 .nav-group.nav-single .nav-items { display: none; }
 .nav-group.nav-single { margin-top: 0.35rem; }
 .nav-head.nav-single-link { padding: 0.55rem 0.9rem; font-size: inherit; font-weight: 500; text-transform: none; letter-spacing: normal; }
+/* 사이드바 머리줄 아이콘 (메뉴 아이콘과 같은 자리) */
+.nav-head { display: flex; align-items: center; gap: 0.85rem; }
+.nav-head .nav-head-icon { width: 18px; text-align: center; font-size: 0.85rem; flex-shrink: 0; }
+.nav-head .nav-head-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 라이브러리 제목: 소스 › 라이브러리 */
+.page-head h1 .crumb-src { color: var(--muted); font-weight: 600; }
+.page-head h1 .crumb-sep { color: var(--muted); font-weight: 400; }
+.page-head h1 .crumb-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 600px) { .page-head h1 .crumb-src, .page-head h1 .crumb-sep { font-size: 0.75em; } }

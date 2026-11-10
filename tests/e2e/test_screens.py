@@ -304,3 +304,17 @@ def test_single_library_source_opens_from_nav(page, server):
     assert page.locator(".nav-single-link.active:has-text('만개의레시피')").count() == 1
     page.click(".nav-single-link:has-text('브런치 연재')")
     page.wait_for_selector(".page.library h1:has-text('브런치 연재')")
+
+
+def test_nav_head_icons_and_library_crumb(page, server, upstream):
+    """하위 메뉴가 있는 소스 머리줄에 소스 종류 아이콘, 라이브러리 제목은 "소스 › 라이브러리" (이름이 같으면 한 번만)"""
+    set_sources(page, server, [{"type": "podcast", "name": "팟캐스트", "enabled": True, "feeds": [{"url": f"{upstream.base}/feed.xml"}]},
+                               {"type": "recipe", "name": "만개의레시피", "enabled": True}])
+    page.goto(server + "/#/home")
+    page.wait_for_selector(".nav-toggle .nav-head-icon.fa-podcast")
+    page.goto(server + "/" + page.get_attribute(".nav-link:has-text('새 에피소드')", "href"))
+    page.wait_for_selector(".page.library h1 .crumb-src")
+    assert page.inner_text(".page.library h1").replace("\n", " ").split() == ["팟캐스트", "›", "새", "에피소드"]
+    page.click(".nav-single-link:has-text('만개의레시피')")
+    page.wait_for_selector(".page.library h1 .crumb-title:has-text('만개의레시피')")
+    assert page.locator(".page.library h1 .crumb-src").count() == 0           # 소스 이름과 같으면 한 번만

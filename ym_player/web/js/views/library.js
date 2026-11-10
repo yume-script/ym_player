@@ -26,7 +26,10 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
     const body = h('div', { class: 'lib-body' });
     const page = h('div', { class: 'page library' },
         h('div', { class: 'page-head' },
-            h('h1', {}, icon(lib.icon || 'film'), ` ${lib.title}`),
+            // 소스 › 라이브러리 (이름이 같으면 한 번만 - 만개의레시피 등 라이브러리가 하나인 소스)
+            h('h1', {}, icon(lib.icon || 'film'),
+                p.name && p.name !== lib.title ? [h('span', { class: 'crumb-src', text: p.name }), h('span', { class: 'crumb-sep', text: '›' })] : null,
+                h('span', { class: 'crumb-title', text: lib.title })),
             p.getLibraryHubs ? h('div', { class: 'tabs' }, tabLink('recommended', '추천'), tabLink('library', '라이브러리')) : null),
         body);
     main.appendChild(page);
