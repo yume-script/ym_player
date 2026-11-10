@@ -73,7 +73,9 @@ export function posterCard(item, { wide = false } = {}) {
         on: item.onOpen ? { click: (e) => { e.preventDefault(); item.onOpen(); } } : {} },
         art,
         h('div', { class: 'card-title', text: item.title, title: item.title }),
-        item.subtitle ? h('div', { class: 'card-sub', text: item.subtitle }) : null);
+        item.subtitle ? h('div', { class: 'card-sub', text: item.subtitle }) : null,
+        // 텔레그램 파일 이름(확장자까지) - 격자 보기에서만 보인다 (app.css .grid .card-file)
+        item.fileName ? h('div', { class: 'card-file', text: item.fileName, title: item.fileName }) : null);
 }
 
 /** 세부/테이블 보기에 쓸 정보 (Plex 메타데이터 / 텔레그램 색인) */

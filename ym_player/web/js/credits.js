@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 116,
+        "version": "1.1.79",
+        "date": "2026-11-11",
+        "title": "텔레그램 격자 보기에 파일 이름(확장자까지), 텔레그램에서 파일을 못 받을 때 \"Input/output error\" 대신 진짜 이유를 보여 줌"
+    },
+    {
         "pr": 115,
         "version": "1.1.78",
         "date": "2026-11-10",

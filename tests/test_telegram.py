@@ -466,6 +466,36 @@ def test_transcode_stream_end_to_end(env, tmp_path):
     run(flow)
 
 
+def test_download_error_reason_reaches_player(env, tmp_path, monkeypatch):
+    """텔레그램에서 파일을 못 받으면 ffmpeg의 "Input/output error" 대신 진짜 이유가 형식 확인·서버 변환(HLS) 실패에 나온다"""
+    from ym_player import transcode
+    if not transcode.available():
+        pytest.skip("ffmpeg 없음")
+    doc = env.msgs[999].document
+    doc.size, doc.data, doc.mime_type = 4096, b"x" * 4096, "video/x-matroska"
+
+    class LocationInvalidError(Exception):
+        pass
+
+    async def broken(self, channel, msg, start, length, size, duration=0):
+        raise LocationInvalidError("The upload location is invalid")
+        yield b""   # (async generator)
+    monkeypatch.setattr(telegram_src.TelegramSource, "iter_cached", broken)
+
+    async def flow(c):
+        env.authorized = True
+        await c.get("/api/tg/tg/videos?channel=777&limit=5")
+        item = (await (await c.get("/api/tg/tg/video/777/999?probe=1")).json())["item"]
+        assert "텔레그램에서 이 파일을 찾을 수 없음" in item["play"]["reason"], item["play"]
+        assert "container" not in item["play"]                 # 형식을 몰라서 Safari는 바로 서버 변환으로 간다
+        r = await c.post("/api/tg/tg/hls/777/999", params={"start": "0", "mode": "transcode"})
+        assert r.status == 502 and "텔레그램에서 이 파일을 찾을 수 없음" in (await r.json())["error"]
+        r = await c.get("/api/tg/tg/stream/777/999", headers={"Range": "bytes=0-"})
+        assert r.status == 502                                  # 빈 206이 아니라 이유가 있는 오류
+
+    run(flow)
+
+
 def test_block_cache_serves_same_bytes_and_reuses_head_tail(env):
     """512KB 경계로 받아 디스크에 남김 - 어떤 Range든 내용이 같고, 두 번째부터는 텔레그램에 안 간다."""
     from ym_player import media_cache

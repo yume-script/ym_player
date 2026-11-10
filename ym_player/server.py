@@ -88,6 +88,7 @@ EPG_CACHE = web.AppKey("epg_cache", dict)
 TELEGRAM = web.AppKey("telegram", dict)
 REQUIRE_AUTH = web.AppKey("require_auth", bool)
 TG_INTERNAL = web.AppKey("tg_internal", dict)   # ffmpeg용 내부 주소 토큰 -> (소스id, 채널, 메시지, 만료)
+TG_INTERNAL_ERR = web.AppKey("tg_internal_err", dict)   # 내부 주소 토큰 -> 텔레그램에서 받다가 난 오류 (변환 실패 이유로 보여 줌)
 TRANSCODES = web.AppKey("transcodes", dict)     # 사용자명 -> 돌고 있는 ffmpeg 프로세스
 PLEX_FILES = web.AppKey("plex_files", dict)  # 캐시 키 -> (크기, Content-Type) - Plex 원본 파일
 HLS_JOBS = web.AppKey("hls_jobs", dict)  # HLS 변환 id -> HlsJob (Safari용 서버 변환)
@@ -1751,7 +1752,20 @@ async def tg_stream(request, tg):
     return await _tg_range_response(request, tg, channel, msg)
 
 
-async def _tg_range_response(request, tg, channel, msg):
+def _tg_err_text(e):
+    """텔레그램에서 파일을 받다가 난 오류를 화면에 보일 말로"""
+    name = type(e).__name__
+    hints = {"FileReferenceExpiredError": "파일 참조가 만료됨 - 채널 목록을 새로고침한 뒤 다시",
+             "FileMigrateError": "텔레그램 데이터센터 이동 중", "FloodWaitError": "텔레그램 요청 제한 - 잠시 뒤에 다시",
+             "AuthKeyUnregisteredError": "텔레그램 로그인이 풀림 - 설정에서 다시 로그인",
+             "LocationInvalidError": "텔레그램에서 이 파일을 찾을 수 없음 (지워졌거나 바뀜)"}
+    text = str(e).strip() or name
+    if name in hints:
+        text = f"{hints[name]} ({name})"
+    return f"텔레그램에서 받지 못했습니다: {text}"[:300]
+
+
+async def _tg_range_response(request, tg, channel, msg, on_error=None):
     row = telegram_src.get_video(tg.sid, channel, msg)
     if not row or not row["size"]:
         return _json_error(404, "색인에 없는 영상입니다.")
@@ -1760,11 +1774,13 @@ async def _tg_range_response(request, tg, channel, msg):
     return await _range_response(
         request, size, telegram_src.browser_mime(row["mime"]),
         lambda start, length: tg.iter_cached(channel, msg, start, length, size, duration=row.get("duration") or 0),
-        f"telegram 스트림 {channel}/{msg}")
+        f"telegram 스트림 {channel}/{msg}", on_error=on_error, err_text=_tg_err_text)
 
 
-async def _range_response(request, size, content_type, open_range, label):
-    """Range 요청 하나에 답한다. open_range(start, length)는 바이트 조각을 내는 async iterator."""
+async def _range_response(request, size, content_type, open_range, label, on_error=None, err_text=str):
+    """Range 요청 하나에 답한다. open_range(start, length)는 바이트 조각을 내는 async iterator.
+    첫 조각은 응답 머리를 보내기 전에 받아 본다 - 원본에서 아예 못 받으면 빈 206 대신 502와 이유를 준다
+    (ffmpeg가 "Input/output error"로만 실패하지 않게, on_error(e)로 이유를 알린다)"""
     try:
         start, end, partial = telegram_src.parse_range(request.headers.get("Range"), size)
     except ValueError:
@@ -1774,6 +1790,20 @@ async def _range_response(request, size, content_type, open_range, label):
                "Content-Length": str(length), "Cache-Control": "no-store"}
     if partial:
         headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+    first, chunks, t0 = b"", None, time.monotonic()
+    if request.method != "HEAD":
+        chunks = open_range(start, length).__aiter__()
+        try:
+            first = await chunks.__anext__()
+        except StopAsyncIteration:
+            chunks = None
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.warning("%s 실패 (%s-%s): %s: %s", label, start, end, type(e).__name__, e)
+            if on_error:
+                on_error(e)
+            return _json_error(502, err_text(e))
     resp = web.StreamResponse(status=206 if partial else 200, headers=headers)
     await resp.prepare(request)
     if request.method == "HEAD":
@@ -1782,18 +1812,25 @@ async def _range_response(request, size, content_type, open_range, label):
     # Safari 요청만 구간/첫 바이트까지 걸린 시간/보낸 양을 남긴다.
     ua = request.headers.get("User-Agent", "")
     trace = "Safari" in ua and "Chrome" not in ua and "CriOS" not in ua
-    t0, ttfb, sent = time.monotonic(), None, 0
+    ttfb, sent = time.monotonic() - t0, 0
     try:
-        async for chunk in open_range(start, length):
-            if ttfb is None:
-                ttfb = time.monotonic() - t0
-            await resp.write(chunk)
-            sent += len(chunk)
+        if first:
+            await resp.write(first)
+            sent += len(first)
+        if chunks is not None:
+            async for chunk in chunks:
+                await resp.write(chunk)
+                sent += len(chunk)
     except (ConnectionError, asyncio.CancelledError):
         pass  # 브라우저가 탐색하거나 닫으면 연결을 끊는다 - 정상
     except Exception as e:
         log.warning("%s 중단: %s", label, e)
     finally:
+        if chunks is not None and hasattr(chunks, "aclose"):
+            try:
+                await chunks.aclose()
+            except Exception:
+                pass
         if trace:
             log.info("Safari %s: %s-%s/%s 첫 바이트 %.2f초, %d/%d바이트 %.2f초", label, start, end, size,
                      ttfb if ttfb is not None else -1, sent, length, time.monotonic() - t0)
@@ -1829,7 +1866,13 @@ async def internal_tg(request):
     tg = request.app[TELEGRAM].get(sid)
     if tg is None:
         return web.Response(status=404)
-    return await _tg_range_response(request, tg, channel, msg)
+    errs = request.app[TG_INTERNAL_ERR]
+
+    def failed(e):
+        errs[request.match_info["token"]] = _tg_err_text(e)
+        while len(errs) > 200:
+            errs.pop(next(iter(errs)))
+    return await _tg_range_response(request, tg, channel, msg, on_error=failed)
 
 
 async def _tg_decision(request, tg, channel, msg):
@@ -1858,8 +1901,9 @@ async def _tg_probe(app, tg, channel, msg, token, url):
         info = await transcode.probe(url)
         result = {**transcode.decide(info), "available": True}
     except Exception as e:
-        log.warning("telegram %s/%s ffprobe 실패: %s", channel, msg, e)
-        return {"mode": "direct", "available": True, "reason": f"형식을 알아내지 못했습니다: {e}"}
+        why = app[TG_INTERNAL_ERR].pop(token, None) or str(e)
+        log.warning("telegram %s/%s ffprobe 실패: %s", channel, msg, why)
+        return {"mode": "direct", "available": True, "reason": f"형식을 알아내지 못했습니다: {why}"}
     finally:
         app[TG_INTERNAL].pop(token, None)
     log.info("telegram %s/%s 형식 확인 %.1f초: %s (%s/%s/%s, 음성 트랙 %s개, 음성 시작 차이 %+.3f초)", channel, msg,
@@ -2000,8 +2044,8 @@ async def tg_hls_start(request, tg):
     deadline = time.monotonic() + 45
     while "#EXTINF" not in job.playlist():
         if proc.returncode is not None or time.monotonic() > deadline:
-            reason = job.errors[-1] if job.errors else (
-                f"ffmpeg 종료 코드 {proc.returncode}" if proc.returncode is not None else "첫 조각을 만들지 못했습니다 (시간 초과)")
+            reason = app[TG_INTERNAL_ERR].pop(token, None) or (job.errors[-1] if job.errors else (
+                f"ffmpeg 종료 코드 {proc.returncode}" if proc.returncode is not None else "첫 조각을 만들지 못했습니다 (시간 초과)"))
             log.warning("%s HLS 변환 실패: %s", label, reason)
             await _hls_stop(app, job)
             return _json_error(502, f"서버 변환 실패: {reason}")
@@ -3315,6 +3359,7 @@ def create_app(require_auth=True):
     app[TELEGRAM] = {}
     app[PLEX_SECTIONS] = {}
     app[TG_INTERNAL] = {}
+    app[TG_INTERNAL_ERR] = {}
     app[TRANSCODES] = {}
     app[PROBES] = {}
     app[HLS_JOBS] = {}

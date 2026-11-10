@@ -175,6 +175,7 @@ export class TelegramProvider {
                 progress: v.duration && v.position ? Math.min(1, v.position / v.duration) : 0,
                 watched: !!v.watched,
                 onOpen: () => this.readDoc(id),
+                fileName: v.file_name || '',
                 ts: v.updated || 0,
                 isNew: !!(seenBefore() && v.date && v.date > seenBefore() && !v.watched && !(v.position > 0)),
                 raw: v,
@@ -189,6 +190,7 @@ export class TelegramProvider {
                 progress: v.duration && v.position ? Math.min(1, v.position / v.duration) : 0,
                 watched: !!v.watched,
                 onOpen: () => this.read(id),
+                fileName: v.file_name || '',
                 ts: v.updated || 0,
                 isNew: !!(seenBefore() && v.date && v.date > seenBefore() && !v.watched && !(v.position > 0)),
                 raw: v,
@@ -211,6 +213,7 @@ export class TelegramProvider {
             ts: v.updated || 0,
             isNew: !!(seenBefore() && v.date && v.date > seenBefore() && !v.watched && !(v.position > 0)),
             posterImg,
+            fileName: v.file_name || '',
             raw: v,
         };
     }

@@ -1195,3 +1195,7 @@ body.docpip { margin: 0; background: #000; overflow: hidden; }
 .folder-pick-item:hover { background: var(--bg-elev2); }
 .folder-pick-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .folder-pick-path { font-family: monospace; font-size: 0.85rem; word-break: break-all; margin: 0 0 0.25rem; }
+/* 텔레그램 파일 이름(확장자까지): 격자 보기에서만 */
+.card-file { display: none; }
+.grid .card-file { display: block; font-size: 0.72rem; color: var(--muted); opacity: 0.85; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
