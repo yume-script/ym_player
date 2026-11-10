@@ -14,6 +14,7 @@
   YMPlayer가 영상에 자동으로 붙인다 (나눈 영상이면 자막도 조각 시간에 맞춰 자른다).
 - 자막 입혀 인코딩(규칙마다, 기본 켬): 영상 안에 자막이 없고 외부 자막만 있으면(자막을 기다리다 생긴 경우 등) 그 자막을
   화면에 입혀 H.264 mp4로 다시 인코딩해서 올린다 - 텔레그램 앱에서도 자막이 보인다 (한국어 자막을 먼저 고름).
+- 720p로 줄이기(규칙마다 높이, 기본 720): 그보다 높은 영상은 용량과 상관없이 줄여 H.264 mp4로 올린다 (자막 입히기와 한 번에).
 - 올린 영상마다 Plex의 작품 정보(포스터·배경·줄거리·장르·출연·회차 제목/줄거리/스틸)를 텔레그램 색인에 같이 남겨
   (telegram_src.plex_meta_put) YMPlayer의 텔레그램 화면이 TMDB 없이도 Plex처럼 보인다.
 
@@ -21,7 +22,7 @@
   텔레그램에서 바로 재생되는 H.264/AAC mp4로(필요할 때만 인코딩), 큰 파일은 720p로 줄이고, 자막 파일은 화면에 입힌다.
 
 설정은 config.json의 "plex_to_tg": {interval, max_gb, rules: [{id, enabled, plex, section, section_title, tg, channel,
-channel_title, caption, wait_subs, wait_hours, burn_subs, kind, folder, shrink_gb, height}]}
+channel_title, caption, wait_subs, wait_hours, burn_subs, kind, folder, height}]}
 (예전 wait_days는 읽을 때 wait_hours = wait_days x 24로 바꾼다)
 """
 import asyncio
@@ -152,8 +153,8 @@ def clean_settings(raw):
                 # 폴더 규칙 (rclone 드라이브 등): kind "folder", folder = 절대 경로 또는 rclone "원격:경로"
                 "kind": "folder" if r.get("kind") == "folder" else "plex",
                 "folder": str(r.get("folder") or "").strip()[:500],
-                # 파일이 shrink_gb보다 크면 height보다 높은 영상을 height로 줄인다 (0GB면 늘, height 0이면 줄이지 않음)
-                "shrink_gb": num(r.get("shrink_gb"), 0, 100, 2), "height": num(r.get("height"), 0, 2160, 720)}
+                # height보다 높은 영상은 용량과 상관없이 height로 줄여 올린다 (0이면 줄이지 않음) - Plex·폴더 규칙 모두
+                "height": num(r.get("height"), 0, 2160, 720)}
         if rule["height"] not in (0, 480, 720, 1080):
             rule["height"] = 720
         if rule["kind"] == "folder":
@@ -758,12 +759,28 @@ class Mirror:
             embedded = bool(soft)
             if rule["burn_subs"] and sub_files and not embedded and not has_korean_font():
                 burn_skip = "한글 글꼴이 없어 자막을 입히지 않고 파일로 올림 (sudo apt install fonts-nanum)"
-            elif rule["burn_subs"] and sub_files and not embedded:   # 영상 안에 자막이 없으면 외부 자막을 입혀 다시 인코딩
+            burn_name = None
+            if rule["burn_subs"] and sub_files and not embedded and has_korean_font():   # 영상 안에 자막이 없으면 외부 자막을 입힌다
                 best = next((f for f in sub_files if f[1].lower() in ("kor", "ko", "ko-kr")), sub_files[0])
-                out = os.path.join(tmp, f"{stem}.burn.mp4")
-                await self._burn(local, best[0], out, duration, fields["name"])
-                local, name, ext, burned = out, f"{stem}.mp4", ".mp4", True
-                sub_files = []   # 화면에 들어갔으니 따로 올리지 않는다
+                burn_name = os.path.basename(self.utf8_sub(best[0], os.path.join(tmp, f"burn.{best[2]}")))
+            # 정한 높이(기본 720p)보다 큰 영상은 용량과 상관없이 줄인다 - 자막 입히기와 한 번에 인코딩
+            info = await folder_watch.probe(local)
+            vh = int(((folder_watch.streams(info, "video") or [{}])[0]).get("height") or 0)
+            scale = bool(rule["height"] and vh > rule["height"])
+            width, height = int(media.get("width") or 0), int(media.get("height") or 0)
+            if burn_name or scale:
+                args, enc_notes = folder_watch.encode_plan(info, ".mkv", rule["height"], burn_name)
+                out = os.path.join(tmp, f"{stem}.enc.mp4")
+                phase = "자막 입혀 인코딩 중" if burn_name and not scale else "인코딩 중 (" + ", ".join(enc_notes) + ")"
+                await self._encode(local, args, out, duration, fields["name"], phase, tmp)
+                local, name, ext = out, f"{stem}.mp4", ".mp4"
+                burned, scaled = bool(burn_name), scale
+                v = (folder_watch.streams(await folder_watch.probe(local), "video") or [{}])[0]
+                width, height = int(v.get("width") or width), int(v.get("height") or height)
+                if burned:
+                    sub_files = []   # 화면에 들어갔으니 따로 올리지 않는다
+            else:
+                scaled = False
             thumb = await self._art(cfg, src, m.get("thumb") or m.get("grandparentThumb") or m.get("parentThumb"), 320, tmp)
             thumb = thumb if thumb and os.path.getsize(thumb) <= 200 * 1024 else None
             # 나누기 (각 조각이 따로 재생되게 시간으로)
@@ -771,8 +788,8 @@ class Mirror:
             if os.path.getsize(local) > limit:
                 pieces = await self._split(local, os.path.join(tmp, stem), ext, duration, limit, fields["name"])
             caption = make_caption(rule["caption"], fields)
-            sent_subs = await self._send_pieces(client, peer, pieces, name, caption, int(media.get("width") or 0),
-                                                int(media.get("height") or 0), thumb, sub_files, fields["name"], tmp, msgs)
+            sent_subs = await self._send_pieces(client, peer, pieces, name, caption, width, height, thumb, sub_files,
+                                                fields["name"], tmp, msgs)
             await self._save_meta(rule, cfg, src, m, [x for x in msgs if x], tmp)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
@@ -782,6 +799,8 @@ class Mirror:
         notes = []
         if burned:
             notes.append("자막 입혀 인코딩")
+        if scaled:
+            notes.append(f"{rule['height']}p로 줄임")
         if burn_skip:
             notes.append(burn_skip)
         if len(msgs) > 1:
@@ -819,14 +838,12 @@ class Mirror:
                     head = os.path.join(tmp, "head" + ext)
                     info = await folder_watch.probe(head) if await folder_watch.fetch_head(folder, key, head) else {}
                     self._head_info = {**dict(list(self._head_info.items())[-200:]), (folder, key): info}
-                size = 0
             else:
                 local = folder_watch.local_path(folder, key)
                 if not os.path.isfile(local):
                     raise RuntimeError("파일이 없습니다 (지워졌거나 옮겨짐).")
                 side = sidecar_subs(local)
                 info = await folder_watch.probe(local)
-                size = os.path.getsize(local)
             any_inside = bool(folder_watch.streams(info, "subtitle"))
             if rule["wait_subs"] and not side and not any_inside and not test:
                 w = (load_state()["rules"].get(rule["id"], {}).get("waiting") or {}).get(key)
@@ -847,7 +864,6 @@ class Mirror:
                     if self.current:
                         self.current["done"] = n
                 await folder_watch.fetch(folder, key, local, got)
-                size = os.path.getsize(local)
                 info = await folder_watch.probe(local)
                 for i, (rel, lang, sext) in enumerate(side):
                     dest = os.path.join(tmp, f"side{i}.{sext}")
@@ -875,7 +891,7 @@ class Mirror:
                     else:
                         log.info("자동 올리기: 파일 안의 자막을 꺼내지 못했습니다 (%s): %s", fields["name"], err.strip()[-200:])
             # 4) 인코딩 (필요할 때만)
-            plan = folder_watch.encode_plan(info, size, ext, rule["shrink_gb"] * 1024 ** 3, rule["height"], burn)
+            plan = folder_watch.encode_plan(info, ext, rule["height"], burn)
             notes = []
             if plan:
                 args, notes = plan
@@ -1002,15 +1018,6 @@ class Mirror:
         with open(dest, "w", encoding="utf-8") as f:
             f.write(text)
         return dest
-
-    async def _burn(self, src_path, sub_path, out, duration, title):
-        """자막을 화면에 입혀 H.264/AAC mp4로"""
-        sub_utf8 = self.utf8_sub(sub_path, os.path.splitext(sub_path)[0] + ".utf8" + os.path.splitext(sub_path)[1])
-        # 자막 파일은 그 폴더에서 이름만으로 (필터 안에서 경로의 : ' 등을 이스케이프하지 않게 - 이름은 subN.utf8.srt 꼴)
-        await self._encode(src_path, ["-map", "0:v:0", "-map", "0:a?", "-vf", f"subtitles=filename={os.path.basename(sub_utf8)}",
-                                      "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
-                                      "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"],
-                           out, duration, title, "자막 입혀 인코딩 중", os.path.dirname(sub_utf8))
 
     async def _encode(self, src_path, args, out, duration, title, phase, cwd):
         """ffmpeg -i src args out (진행률은 ffmpeg -progress로 self.current에)"""

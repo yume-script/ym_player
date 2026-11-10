@@ -28,7 +28,7 @@ def data(monkeypatch, tmp_path):
 def test_settings_and_names():
     rule = plex_to_tg.clean_settings({"rules": [{"kind": "folder", "folder": "/mnt/gdrive/영화/", "tg": "tg", "channel": "-100"}]})["rules"][0]
     assert rule["kind"] == "folder" and rule["folder"] == "/mnt/gdrive/영화" and rule["section_title"] == "영화"
-    assert rule["shrink_gb"] == 2 and rule["height"] == 720 and rule["plex"] == ""
+    assert rule["height"] == 720 and rule["plex"] == "" and "shrink_gb" not in rule
     remote = plex_to_tg.clean_settings({"rules": [{"kind": "folder", "folder": "gdrive:드라마", "tg": "tg", "channel": "-1", "height": 333}]})["rules"][0]
     assert remote["folder"] == "gdrive:드라마" and folder_watch.is_remote("gdrive:드라마") and remote["height"] == 720
     assert not folder_watch.is_remote("/mnt/a:b")
@@ -56,29 +56,25 @@ def _info(vcodec="h264", pix="yuv420p", height=1080, acodec="aac", profile="High
 
 
 def test_encode_plan():
-    G = 1024 ** 3
     plan = folder_watch.encode_plan
-    assert plan(_info(), 1 * G, ".mp4", 2 * G, 720) is None                       # 바로 재생되는 mp4 -> 그대로
-    args, notes = plan(_info(), 1 * G, ".mkv", 2 * G, 720)                         # mkv -> mp4로 다시 담기만
+    assert plan(_info(height=720), ".mp4", 720) is None                            # 바로 재생되는 720p mp4 -> 그대로
+    args, notes = plan(_info(height=720), ".mkv", 720)                             # mkv -> mp4로 다시 담기만
     assert args[args.index("-c:v") + 1] == "copy" and args[args.index("-c:a") + 1] == "copy" and notes == ["mp4로 다시 담음"]
-    args, notes = plan(_info(), 3 * G, ".mp4", 2 * G, 720)                         # 큰 1080p -> 720p
+    args, notes = plan(_info(), ".mp4", 720)                                        # 1080p는 용량과 상관없이 720p로
     assert "scale=-2:720" in args[args.index("-vf") + 1] and args[args.index("-c:v") + 1] == "libx264" and "720p로 줄임" in notes
     assert args[args.index("-c:a") + 1] == "copy"
-    assert plan(_info(height=720), 3 * G, ".mp4", 2 * G, 720) is None             # 이미 720p면 줄이지 않는다
-    args, _n = plan(_info(), 1 * G, ".mp4", 0, 720)                                # 0GB면 늘 줄인다
-    assert "scale=-2:720" in args[args.index("-vf") + 1]
-    assert plan(_info(), 3 * G, ".mp4", 2 * G, 0) is None                          # 줄이지 않음
-    args, notes = plan(_info(vcodec="hevc", acodec="eac3"), 1 * G, ".mkv", 2 * G, 720)   # HEVC/E-AC3 -> H.264/AAC
+    assert plan(_info(), ".mp4", 0) is None                                         # 원본 그대로
+    args, notes = plan(_info(vcodec="hevc", acodec="eac3", height=720), ".mkv", 720)   # HEVC/E-AC3 -> H.264/AAC
     assert args[args.index("-c:v") + 1] == "libx264" and args[args.index("-c:a") + 1] == "aac" and "-vf" not in args
-    args, _n = plan(_info(pix="yuv420p10le", profile="High 10"), 1 * G, ".mp4", 2 * G, 720)   # 10비트 H.264도 다시
+    args, _n = plan(_info(pix="yuv420p10le", profile="High 10", height=720), ".mp4", 720)   # 10비트 H.264도 다시
     assert args[args.index("-c:v") + 1] == "libx264"
-    args, notes = plan(_info(height=480), 1 * G, ".mp4", 2 * G, 720, "burn.srt")  # 자막 입히기
+    args, notes = plan(_info(height=480), ".mp4", 720, "burn.srt")                  # 자막 입히기
     assert args[args.index("-vf") + 1] == "subtitles=filename=burn.srt" and "자막 입힘" in notes
-    args, _n = plan(_info(), 3 * G, ".mkv", 2 * G, 720, "burn.srt")
+    args, _n = plan(_info(), ".mkv", 720, "burn.srt")
     assert args[args.index("-vf") + 1] == "scale=-2:720,subtitles=filename=burn.srt"    # 줄인 뒤에 자막 (글자 크기가 화면에 맞게)
     assert "-movflags" in args and "+faststart" in args
     with pytest.raises(folder_watch.FolderError):
-        plan({"streams": [{"codec_type": "audio", "codec_name": "aac"}]}, 1, ".mp4", 0, 720)
+        plan({"streams": [{"codec_type": "audio", "codec_name": "aac"}]}, ".mp4", 720)
 
 
 def _make(path, seconds=3, size="320x240", vcodec="libx264", audio=True, color=None):
@@ -157,7 +153,7 @@ def test_folder_rule_waits_for_subs_and_scales(data, tmp_path, monkeypatch):
     big = drive / "Big.Movie.2025.mkv"
     _make(big, size="640x480", vcodec="libx264")
     rule = plex_to_tg.clean_settings({"rules": [{"id": "w", "kind": "folder", "folder": str(drive), "tg": "tg", "channel": "-1",
-                                                  "shrink_gb": 0, "height": 480}]})["rules"][0]
+                                                  "height": 480}]})["rules"][0]
     assert rule["wait_subs"] is True
 
     async def main():
