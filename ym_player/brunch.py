@@ -26,7 +26,9 @@ API_URL = f"{_TEST}/api" if _TEST else "https://api.brunch.co.kr/v2/serial-brunc
 WEB_URL = _TEST or "https://brunch.co.kr"
 DAYS = ("MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY")
 SORTS = ("PUBLISH_TIME", "DONATION_TOTAL_AMOUNT", "LIKE_COUNT")
-UA = "Mozilla/5.0 (YMPlayer brunch source)"
+# 브라우저와 같은 모양으로 (봇처럼 보이는 이름이면 다른 곳으로 넘기는 경우가 있어서)
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+_HOSTS = ("brunch.co.kr", "api.brunch.co.kr", "www.brunch.co.kr")   # 넘겨줘도(리다이렉트) 따라가는 곳은 브런치 주소만
 TIMEOUT = ClientTimeout(total=15)
 LIST_CACHE_SEC = 300
 ARTICLE_CACHE_SEC = 600
@@ -255,12 +257,23 @@ class Brunch:
         self._cache[key] = (time.time(), value)
 
     async def _get(self, url, accept):
+        from urllib.parse import urljoin, urlparse
         try:
-            async with self.http().get(url, headers={"User-Agent": UA, "Accept": accept, "Referer": WEB_URL + "/"},
-                                       timeout=TIMEOUT, allow_redirects=False) as r:
-                if r.status != 200:
-                    raise BrunchError(f"브런치 응답 HTTP {r.status}")
-                return await r.text(encoding="utf-8", errors="replace")
+            for _hop in range(5):   # 리다이렉트는 브런치 주소 안에서만 직접 따라간다
+                async with self.http().get(url, headers={"User-Agent": UA, "Accept": accept, "Referer": WEB_URL + "/",
+                                                         "Accept-Language": "ko-KR,ko;q=0.9"},
+                                           timeout=TIMEOUT, allow_redirects=False) as r:
+                    if r.status in (301, 302, 303, 307, 308) and r.headers.get("Location"):
+                        nxt = urljoin(url, r.headers["Location"])
+                        host = urlparse(nxt).hostname or ""
+                        if not (host in _HOSTS or (_TEST and nxt.startswith(_TEST))):
+                            raise BrunchError(f"브런치가 다른 곳으로 넘겼습니다 ({host or nxt[:80]})")
+                        url = nxt
+                        continue
+                    if r.status != 200:
+                        raise BrunchError(f"브런치 응답 HTTP {r.status}")
+                    return await r.text(encoding="utf-8", errors="replace")
+            raise BrunchError("브런치가 너무 여러 번 다른 주소로 넘겼습니다.")
         except BrunchError:
             raise
         except Exception as e:

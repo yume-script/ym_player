@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 119,
+        "version": "1.1.82",
+        "date": "2026-11-11",
+        "title": "텔레그램 목록이 느려진 것 고침(조각 묶음을 채널마다 한 번만 계산), 브런치·만개의레시피: 사이트 안 리다이렉트 따라가기, 목록을 못 읽으면 이유 보이기"
+    },
+    {
         "pr": 118,
         "version": "1.1.81",
         "date": "2026-11-11",

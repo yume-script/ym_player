@@ -16,7 +16,8 @@ from urllib.parse import urlencode
 from aiohttp import ClientTimeout
 
 BASE = os.environ.get("MP_TEST_RECIPE", "").rstrip("/") or "https://www.10000recipe.com"   # (MP_TEST_RECIPE: 화면 자동 테스트 전용)
-UA = "Mozilla/5.0 (YMPlayer recipe source)"
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+_HOSTS = ("www.10000recipe.com", "10000recipe.com", "m.10000recipe.com")   # 리다이렉트를 따라가는 곳
 TIMEOUT = ClientTimeout(total=15)
 LIST_CACHE_SEC = 600
 RECIPE_CACHE_SEC = 3600
@@ -58,13 +59,23 @@ def list_url(cat="", q="", page=1):
     return f"{BASE}/ranking/home_new.html?rtype=r&dtype=d"
 
 
-_LINK_RE = re.compile(r'href="(?:https?://www\.10000recipe\.com)?/recipe/(\d+)"')
+_LINK_RE = re.compile(r"""href\s*=\s*["']?(?:https?://(?:www\.|m\.)?10000recipe\.com)?/recipe/(\d+)(?:[?#][^"'\s>]*)?["'\s>]""", re.I)
 _IMG_RE = re.compile(r"<img\b[^>]*>", re.I)
 
 
 def _attr(tag, name):
-    m = re.search(r'\b%s="([^"]*)"' % name, tag)
-    return m.group(1) if m else ""
+    """태그 문자열에서 속성 값 ("·'·따옴표 없음 모두). src는 data-src와 헷갈리지 않게"""
+    m = re.search(r"""(?<![\w-])%s\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""" % re.escape(name), tag, re.I)
+    return next((g for g in m.groups() if g is not None), "") if m else ""
+
+
+def _img_src(tag):
+    """게으른 불러오기(data-src, data-original)를 먼저, 자리 채움 그림(blank.gif 등)은 뺀다"""
+    for name in ("data-src", "data-original", "data-lazy-src", "src"):
+        v = _attr(tag, name)
+        if v and not re.search(r"blank|spacer|loading|noimg|icon_", v, re.I):
+            return _abs(v)
+    return ""
 
 
 def parse_list(page):
@@ -77,17 +88,23 @@ def parse_list(page):
         start = page.rfind("<li", 0, m.start())
         end = page.find("</li>", m.end())
         box = page[start if start >= 0 else m.start():end if end >= 0 else m.end() + 3000]
-        imgs = [t for t in _IMG_RE.findall(box) if "icon_vod" not in t and "icon_" not in _attr(t, "src")]
-        if not imgs:
+        imgs = [t for t in _IMG_RE.findall(box) if _img_src(t)]
+        img = imgs[0] if imgs else ""
+        t = re.search(r"""class=["'][^"']*caption_tit[^"']*["'][^>]*>(.*?)</(?:div|p|span|h\d)>""", box, re.S)
+        w = re.search(r"""class=["'][^"']*(?:caption_rv_name|_name)[^"']*["'][^>]*>(.*?)</(?:div|p|span)>""", box, re.S)
+        title = _clean(t.group(1)) if t else _clean(_attr(img, "alt")) if img else ""
+        if not img and not title:   # 그림도 제목도 없는 링크 (본문 속 링크 등)
             continue
-        img = imgs[0]
-        t = re.search(r'class="common_sp_caption_tit[^"]*"[^>]*>(.*?)</div>', box, re.S)
-        w = re.search(r'class="common_sp_caption_rv_name[^"]*"[^>]*>(.*?)</div>', box, re.S)
-        title = _clean(t.group(1)) if t else _clean(_attr(img, "alt"))
         seen.add(rid)
         out.append({"id": rid, "title": title or f"레시피 {rid}", "by": _clean(w.group(1)) if w else "",
-                    "image": _abs(_attr(img, "data-src") or _attr(img, "src"))})
+                    "image": _img_src(img) if img else ""})
     return out
+
+
+def page_hint(page):
+    """레시피를 못 찾았을 때 무엇을 받았는지 (제목·크기) - 화면·로그에 보여 고치기 쉽게"""
+    t = re.search(r"<title[^>]*>(.*?)</title>", page or "", re.S | re.I)
+    return f"받은 페이지: {_clean(t.group(1))[:60] if t else '제목 없음'}, {len(page or '') // 1024}KB, 레시피 링크 {len(_LINK_RE.findall(page or ''))}개"
 
 
 def _ld_recipe(page):
@@ -165,12 +182,31 @@ class Recipes:
         self._cache[key] = (time.time(), value)
 
     async def _get(self, url):
+        from urllib.parse import urljoin, urlparse
         try:
-            async with self.http().get(url, headers={"User-Agent": UA, "Accept": "text/html", "Referer": BASE + "/"},
-                                       timeout=TIMEOUT, allow_redirects=False) as r:
-                if r.status != 200:
-                    raise RecipeError(f"만개의레시피 응답 HTTP {r.status}")
-                return await r.text(encoding="utf-8", errors="replace")
+            for _hop in range(5):   # 리다이렉트는 만개의레시피 주소 안에서만 직접 따라간다
+                async with self.http().get(url, headers={"User-Agent": UA, "Accept": "text/html,application/xhtml+xml",
+                                                         "Accept-Language": "ko-KR,ko;q=0.9", "Referer": BASE + "/"},
+                                           timeout=TIMEOUT, allow_redirects=False) as r:
+                    if r.status in (301, 302, 303, 307, 308) and r.headers.get("Location"):
+                        nxt = urljoin(url, r.headers["Location"])
+                        host = urlparse(nxt).hostname or ""
+                        if not (host in _HOSTS or nxt.startswith(BASE)):
+                            raise RecipeError(f"만개의레시피가 다른 곳으로 넘겼습니다 ({host or nxt[:80]})")
+                        url = nxt
+                        continue
+                    if r.status != 200:
+                        raise RecipeError(f"만개의레시피 응답 HTTP {r.status}")
+                    raw = await r.read()
+                    charset = (r.charset or "").lower()
+                    if not charset:
+                        m = re.search(rb"charset=[\"']?([\w-]+)", raw[:4000])
+                        charset = m.group(1).decode().lower() if m else "utf-8"
+                    try:
+                        return raw.decode("cp949" if charset in ("euc-kr", "ks_c_5601-1987") else charset, errors="replace")
+                    except LookupError:
+                        return raw.decode("utf-8", errors="replace")
+            raise RecipeError("만개의레시피가 너무 여러 번 다른 주소로 넘겼습니다.")
         except RecipeError:
             raise
         except Exception as e:
@@ -180,7 +216,10 @@ class Recipes:
         url = list_url(cat, q, page)
         hit = self._hit(url, LIST_CACHE_SEC)
         if hit is None:
-            hit = parse_list(await self._get(url))
+            page = await self._get(url)
+            hit = parse_list(page)
+            if not hit and not q:   # 랭킹·분류에 하나도 없으면 사이트가 다른 페이지를 준 것 - 이유를 보여 준다 (검색은 0개일 수 있음)
+                raise RecipeError(f"레시피 목록을 읽지 못했습니다 ({page_hint(page)})")
             self._keep(url, hit)
         return hit
 

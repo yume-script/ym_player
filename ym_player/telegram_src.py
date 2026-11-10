@@ -1478,6 +1478,29 @@ def _part_key(r):
     return split_part(r["file_name"]) or split_part(r["title"])
 
 
+_GROUPS = {}   # (소스, 채널) -> (표시, {묶음 이름: [조각 행 (번호순)]}) - 채널의 영상 수·마지막 번호가 그대로면 다시 계산하지 않는다
+
+
+def _part_groups(conn, sid, channel):
+    """채널의 조각 묶음들 {이름: [행(msg, file_name, title, duration, size, mime), ...] 번호순, 2개 이상만}.
+    채널을 한 번 훑어 묶고 기억한다 (목록·재생 요청마다 묶음별로 표 전체를 LIKE로 훑으면 느려서)"""
+    sig = tuple(conn.execute("SELECT COUNT(*), MAX(msg) FROM videos WHERE source=? AND channel=?", (sid, channel)).fetchone())
+    hit = _GROUPS.get((sid, channel))
+    if hit and hit[0] == sig:
+        return hit[1]
+    found = {}
+    for r in conn.execute("SELECT msg, file_name, title, duration, size, mime FROM videos WHERE source=? AND channel=? "
+                          "AND kind='video' ORDER BY msg", (sid, channel)):
+        k = _part_key(r)
+        if k:
+            found.setdefault(k[0], {})[k[1]] = r   # 같은 번호가 두 번 올라왔으면 나중 것
+    groups = {k: [v[n] for n in sorted(v)] for k, v in found.items() if len(v) >= 2}
+    if len(_GROUPS) > 200:
+        _GROUPS.clear()
+    _GROUPS[(sid, channel)] = (sig, groups)
+    return groups
+
+
 def video_parts(sid, channel, msg, user=""):
     """같은 채널에서 이 영상과 한 묶음인 조각들 (번호순). 조각이 아니거나 하나뿐이면 []."""
     with db() as conn:
@@ -1485,24 +1508,23 @@ def video_parts(sid, channel, msg, user=""):
         key = r and r["kind"] == "video" and _part_key(r)
         if not key:
             return []
-        like = key[0].replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-        rows = conn.execute(
-            "SELECT * FROM videos WHERE source=? AND channel=? AND kind='video' AND (file_name LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\') "
-            "ORDER BY msg LIMIT 300", (sid, channel, like, like)).fetchall()
-        rows = [x for x in rows if (_part_key(x) or ("",))[0] == key[0]]
+        members = _part_groups(conn, sid, channel).get(key[0]) or []
+        if len(members) < 2:
+            return []
+        msgs = [int(m["msg"]) for m in members]
+        rows = conn.execute(f"SELECT * FROM videos WHERE source=? AND channel=? AND msg IN ({','.join('?' * len(msgs))})",
+                            (sid, channel, *msgs)).fetchall()
         prog = _progress_map(conn, sid, rows, user)
-    best = {}
-    for x in rows:  # 같은 번호가 두 번 올라왔으면 나중 것
-        best[_part_key(x)[1]] = x
-    if len(best) < 2:
-        return []
+    by_msg = {int(x["msg"]): x for x in rows}
     out = []
-    for i, num in enumerate(sorted(best)):
-        d = _row(best[num], prog)
+    for i, m in enumerate(msgs):
+        if m not in by_msg:
+            continue
+        d = _row(by_msg[m], prog)
         out.append({"msg": d["msg"], "part": i + 1, "title": d["title"], "duration": d["duration"],
                     "position": d["position"], "watched": d["watched"], "size": int(d.get("size") or 0),
                     "mime": d.get("mime") or ""})
-    return out
+    return out if len(out) >= 2 else []
 
 
 def part_base_title(title):
@@ -1518,26 +1540,15 @@ def part_base_title(title):
 def _merge_parts(conn, sid, out):
     """목록에서 나눠 올린 조각들을 하나로: 첫 조각만 남기고(제목은 조각 표시를 떼고, 길이·크기는 합쳐서) 나머지는 뺀다.
     돌려주는 값: 뺀 개수"""
-    groups, dropped, keep = {}, 0, []
+    dropped, keep, cache = 0, [], {}
     for d in out:
         key = d.get("kind") == "video" and _part_key(d)
         if not key:
             keep.append(d)
             continue
-        gk = (d["channel"], key[0])
-        if gk not in groups:
-            like = key[0].replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-            rows = conn.execute(
-                "SELECT msg, file_name, title, duration, size FROM videos WHERE source=? AND channel=? AND kind='video' "
-                "AND (file_name LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\') ORDER BY msg LIMIT 300",
-                (sid, d["channel"], like, like)).fetchall()
-            best = {}
-            for r in rows:
-                k = _part_key(r)
-                if k and k[0] == key[0]:
-                    best[k[1]] = r
-            groups[gk] = [best[n] for n in sorted(best)]
-        members = groups[gk]
+        if d["channel"] not in cache:
+            cache[d["channel"]] = _part_groups(conn, sid, d["channel"])
+        members = cache[d["channel"]].get(key[0]) or []
         if len(members) < 2:
             keep.append(d)
             continue
