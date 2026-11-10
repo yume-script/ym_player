@@ -194,3 +194,63 @@ def test_reading_api(data, monkeypatch):
         finally:
             await c.close()
     asyncio.run(main())
+
+
+class _Resp:
+    def __init__(self, status, body=b"", location=None, charset="utf-8"):
+        self.status, self._body, self.charset = status, body, charset
+        self.headers = {"Location": location} if location else {}
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def text(self, encoding="utf-8", errors="strict"):
+        return self._body.decode(encoding, errors)
+
+    async def read(self):
+        return self._body
+
+
+class _Http:
+    def __init__(self, routes):
+        self.routes, self.asked = routes, []
+
+    def get(self, url, **kw):
+        assert kw.get("allow_redirects") is False   # 리다이렉트는 직접 (주소 확인하며)
+        self.asked.append(url)
+        return self.routes[url]
+
+
+def test_redirects_followed_only_inside_the_site():
+    url = brunch.list_url("MONDAY", "")
+    moved = brunch.API_URL + "?dayOfWeek=MONDAY&moved=1"
+    http = _Http({url: _Resp(302, location=moved), moved: _Resp(200, json.dumps(LIST_BODY).encode())})
+    d = asyncio.run(brunch.Brunch(lambda: http).list("MONDAY"))
+    assert d["items"][0]["title"] == "3화 첫눈" and http.asked == [url, moved]
+    out = _Http({url: _Resp(302, location="https://login.example.com/?next=x")})
+    with pytest.raises(brunch.BrunchError, match="다른 곳으로"):
+        asyncio.run(brunch.Brunch(lambda: out).list("MONDAY"))
+    # 레시피: 리다이렉트 + EUC-KR 페이지, 목록이 비면 받은 페이지를 알려 준다
+    rank = recipe.list_url()
+    page = RANK_PAGE.encode("cp949", "replace")
+    http = _Http({rank: _Resp(301, location="/ranking/home_new.html?rtype=r&dtype=d&x=1"),
+                  recipe.BASE + "/ranking/home_new.html?rtype=r&dtype=d&x=1": _Resp(200, page, charset="euc-kr")})
+    items = asyncio.run(recipe.Recipes(lambda: http).list())
+    assert items[0]["title"].startswith("백종원 김치찌개")
+    empty = _Http({rank: _Resp(200, "<html><title>점검 중</title><body>잠시 후</body></html>".encode())})
+    with pytest.raises(recipe.RecipeError, match="점검 중"):
+        asyncio.run(recipe.Recipes(lambda: empty).list())
+
+
+def test_recipe_list_variants():
+    """따옴표가 다르거나 게으른 그림(data-original)·자리 채움 그림이어도 읽는다"""
+    page = """<li><a href='/recipe/111?from=rank'><img src='/img/blank.gif' data-original='https://recipe1.ezmember.co.kr/x.jpg' alt='잡채'></a>
+    <p class='common_sp_caption_tit'>명절 잡채</p></li>
+    <li><a href=/recipe/222><span class="common_sp_caption_tit">사진 없는 레시피</span></a></li>
+    <li><a href="/recipe/333">그냥 링크</a></li>"""
+    items = recipe.parse_list(page)
+    assert [(x["id"], x["title"], x["image"]) for x in items] == [
+        ("111", "명절 잡채", "https://recipe1.ezmember.co.kr/x.jpg"), ("222", "사진 없는 레시피", "")]

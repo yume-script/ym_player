@@ -1784,3 +1784,20 @@ def test_private_channel_is_dropped(env, monkeypatch):
         page = await (await c.get("/api/tg/tg/videos?channel=777&limit=5")).json()
         assert len(page["items"]) == 5                        # 다른 채널은 그대로
     run(flow)
+
+
+def test_part_groups_cached_per_channel(monkeypatch, tmp_path):
+    """조각 묶음은 채널마다 한 번 훑어 기억하고, 영상이 늘면 다시 묶는다 (목록·재생 요청마다 표 전체를 훑지 않게)"""
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    telegram_src._migrated.discard(str(tmp_path))
+    telegram_src._GROUPS.clear()
+    _insert([(1, "video", "Film_0000", "Film_0000.mkv", 1), (2, "video", "Film_0001", "Film_0001.mkv", 2),
+             (3, "video", "Other", "Other.mkv", 3)])
+    assert [p["msg"] for p in telegram_src.video_parts("tg", 1, 2)] == [1, 2]
+    with telegram_src.db() as conn:
+        first = telegram_src._part_groups(conn, "tg", 1)
+        assert telegram_src._part_groups(conn, "tg", 1) is first          # 그대로면 다시 계산하지 않음
+    _insert([(4, "video", "Film_0002", "Film_0002.mkv", 4)])
+    assert [p["msg"] for p in telegram_src.video_parts("tg", 1, 1)] == [1, 2, 4]   # 새 조각이 오면 다시 묶음
+    items, total = telegram_src.query_videos("tg", [1], kind="video")
+    assert [(x["msg"], x.get("parts_count")) for x in items] == [(3, None), (1, 3)] and total == 2
