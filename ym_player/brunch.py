@@ -10,6 +10,7 @@
 - 브라우저에서 바로 부르면 CORS에 막혀서 서버가 대신 받는다. 정해진 브런치 주소만 부른다 (화면이 넘긴 다음 페이지 주소도 검사).
 비공식(화면용) API라 브런치가 바뀌면 깨질 수 있다 - 그때는 API_URL / _item() / fetch_article()만 고치면 된다.
 """
+import asyncio
 import json
 import os
 import re
@@ -258,8 +259,9 @@ class Brunch:
 
     async def _get(self, url, accept):
         from urllib.parse import urljoin, urlparse
+        start, bounced = url, 0
         try:
-            for _hop in range(5):   # 리다이렉트는 브런치 주소 안에서만 직접 따라간다
+            for _hop in range(8):   # 리다이렉트는 브런치 주소 안에서만 직접 따라간다
                 async with self.http().get(url, headers={"User-Agent": UA, "Accept": accept, "Referer": WEB_URL + "/",
                                                          "Accept-Language": "ko-KR,ko;q=0.9"},
                                            timeout=TIMEOUT, allow_redirects=False) as r:
@@ -267,6 +269,13 @@ class Brunch:
                         nxt = urljoin(url, r.headers["Location"])
                         host = urlparse(nxt).hostname or ""
                         if not (host in _HOSTS or (_TEST and nxt.startswith(_TEST))):
+                            # 처음 부를 때 가끔 카카오 로그인 확인(kauth.kakao.com)으로 넘긴다 - 그 응답이 남긴 쿠키로
+                            # 같은 주소를 다시 부르면 된다. 바깥 주소는 따라가지 않고 원래 주소로 두 번까지 다시
+                            if bounced < 2:
+                                bounced += 1
+                                url = start
+                                await asyncio.sleep(0.3 * bounced)
+                                continue
                             raise BrunchError(f"브런치가 다른 곳으로 넘겼습니다 ({host or nxt[:80]})")
                         url = nxt
                         continue

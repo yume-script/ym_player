@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 121,
+        "version": "1.1.84",
+        "date": "2026-11-11",
+        "title": "브런치: 처음 부를 때 카카오 로그인 확인(kauth.kakao.com)으로 넘기면 같은 주소를 자동으로 다시 불러서 바로 보이게"
+    },
+    {
         "pr": 120,
         "version": "1.1.83",
         "date": "2026-11-11",
