@@ -52,6 +52,14 @@ export async function renderSettings(main, _params, query, ctx) {
             h('button', { class: 'btn', on: { click: () => add({ type: 'cctv', name: '도로 CCTV', roads: ['ex', 'its'], region: 'all', cctv_type: '1', enabled: true }) } },
                 icon('video'), ' 도로 CCTV 추가')],
         '국가교통정보센터(ITS) 오픈 API의 고속도로·국도 CCTV. 영상은 서버를 거쳐 재생됩니다.'],
+        ['brunch', 'mug-hot', '브런치', () => [
+            h('button', { class: 'btn', on: { click: () => add({ type: 'brunch', name: '브런치 연재', enabled: true }) } },
+                icon('mug-hot'), ' 브런치 연재 추가')],
+        '브런치(brunch.co.kr) 브런치북 오리지널 연재를 요일별로 보고 YMPlayer 안에서 읽습니다. 멤버십 글은 앞부분만 보입니다.'],
+        ['recipe', 'utensils', '레시피', () => [
+            h('button', { class: 'btn', on: { click: () => add({ type: 'recipe', name: '만개의레시피', enabled: true }) } },
+                icon('utensils'), ' 만개의레시피 추가')],
+        '만개의레시피(10000recipe.com)의 인기 랭킹·분류·검색. 레시피를 누르면 재료와 만드는 순서를 한 페이지로 봅니다.'],
     ];
     let srcType = storeGet('yp_settings_srctype', '');
     if (!SRC_TYPES.some(([t]) => t === srcType)) srcType = (drafts[0] && drafts[0].type) || 'plex';
@@ -681,7 +689,11 @@ export async function renderSettings(main, _params, query, ctx) {
             const isRadio = src.type === 'radio';
             const isPod = src.type === 'podcast';
             const isCctv = src.type === 'cctv';
-            const fields = isCctv ? [cctvEditor(src)] : isPod ? [feedEditor(src)] : isRadio ? [stationEditor(src)] : isTg ? [
+            const isReading = src.type === 'brunch' || src.type === 'recipe';
+            const fields = isReading ? [h('p', { class: 'field-hint', text: src.type === 'brunch'
+                ? '설정할 것이 없습니다. 브런치 연재 목록과 글은 서버가 brunch.co.kr에서 받아 보여 줍니다 (서버에서 인터넷 연결 필요).'
+                : '설정할 것이 없습니다. 레시피는 서버가 www.10000recipe.com에서 받아 보여 줍니다 (서버에서 인터넷 연결 필요).' })]
+                : isCctv ? [cctvEditor(src)] : isPod ? [feedEditor(src)] : isRadio ? [stationEditor(src)] : isTg ? [
                 h('div', { class: 'row-2' },
                     field('API ID', bindInput(src, 'api_id', h('input', { class: 'input', value: src.api_id || '', placeholder: '숫자', inputmode: 'numeric' }))),
                     field('API Hash', bindInput(src, 'api_hash', h('input', {
@@ -819,7 +831,7 @@ export async function renderSettings(main, _params, query, ctx) {
     showTab((query && query.get('tab')) || storeGet('yp_settings_tab', 'sources'));
 }
 
-const TYPE_ICON = { plex: 'server', iptv: 'tower-broadcast', telegram: 'paper-plane', radio: 'radio', podcast: 'podcast', cctv: 'video' };
+const TYPE_ICON = { plex: 'server', iptv: 'tower-broadcast', telegram: 'paper-plane', radio: 'radio', podcast: 'podcast', cctv: 'video', brunch: 'mug-hot', recipe: 'utensils' };
 
 function fmtUptime(sec) {
     const d = Math.floor(sec / 86400), hh = Math.floor((sec % 86400) / 3600), mm = Math.floor((sec % 3600) / 60);

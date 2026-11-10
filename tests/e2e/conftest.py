@@ -28,6 +28,7 @@ import pytest
 import playwright.sync_api as playwright_sync  # noqa: E402  (YMP_E2E=1일 때만 이 폴더를 모은다 - tests/conftest.py)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(ROOT, "tests"))   # (가짜 사이트 페이지는 tests/test_reading.py의 것을 같이 쓴다)
 ADMIN = ("admin", "adminpw")
 
 
@@ -113,8 +114,22 @@ class Upstream:
         async def site(request):     # 채팅이 붙어 있는 사이트 첫 화면
             return web.Response(text=f'<div>영상 자리</div><iframe src="{self.base}/chat.html?token=abc"></iframe>', content_type="text/html")
 
+        async def brunch(request):   # 가짜 브런치: 연재 목록 API / 글 페이지
+            from test_reading import ARTICLE_PAGE, LIST_BODY
+            if request.match_info["tail"] == "api":
+                return web.json_response(LIST_BODY)
+            return web.Response(text=ARTICLE_PAGE, content_type="text/html")
+
+        async def recipe10000(request):   # 가짜 만개의레시피: 랭킹·목록 / 레시피 페이지
+            from test_reading import RANK_PAGE, RECIPE_PAGE
+            tail = request.match_info["tail"]
+            return web.Response(text=RECIPE_PAGE if tail.startswith("recipe/") and tail[7:].isdigit() else RANK_PAGE,
+                                content_type="text/html")
+
         async def main():
             app = web.Application()
+            app.router.add_get("/brunch/{tail:.*}", brunch)
+            app.router.add_get("/recipe10000/{tail:.*}", recipe10000)
             app.router.add_get("/feed.xml", feed)
             app.router.add_get("/a.wav", wav)
             app.router.add_get("/live.wav", live)
@@ -141,13 +156,14 @@ def upstream(tmp_path_factory):
 
 
 @pytest.fixture(scope="session")
-def server(tmp_path_factory):
+def server(tmp_path_factory, upstream):
     """실제 YMPlayer 서버 (빈 데이터 폴더). 반환: 주소 (http://127.0.0.1:포트)"""
     data = tmp_path_factory.mktemp("ymp_data")
     port = free_port()
     env = {**os.environ, "MP_HOST": "127.0.0.1", "MP_PORT": str(port), "MP_DATA_DIR": str(data),
            "MP_USER": ADMIN[0], "MP_PASSWORD": ADMIN[1], "MP_UPDATE_CHECK": "0", "PYTHONUNBUFFERED": "1",
-           "MP_CHAT_ALLOW_PRIVATE": "1"}   # (채팅 주소 찾기가 이 컴퓨터의 가짜 서버를 열 수 있게)
+           "MP_CHAT_ALLOW_PRIVATE": "1",   # (채팅 주소 찾기가 이 컴퓨터의 가짜 서버를 열 수 있게)
+           "MP_TEST_BRUNCH": f"{upstream.base}/brunch", "MP_TEST_RECIPE": f"{upstream.base}/recipe10000"}
     log = open(os.path.join(str(data), "server.log"), "w")
     proc = subprocess.Popen([sys.executable, "-m", "ym_player"], cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
     base = f"http://127.0.0.1:{port}"

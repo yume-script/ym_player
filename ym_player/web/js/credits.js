@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 118,
+        "version": "1.1.81",
+        "date": "2026-11-11",
+        "title": "새 소스: 브런치 연재(요일별 브런치북 연재를 YMPlayer 안에서 읽기)와 만개의레시피(랭킹·분류·검색, 재료·만드는 순서) - 글 읽기 화면, [듣기]"
+    },
+    {
         "pr": 117,
         "version": "1.1.80",
         "date": "2026-11-11",
