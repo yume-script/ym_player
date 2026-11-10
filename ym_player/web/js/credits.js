@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 126,
+        "version": "1.1.89",
+        "date": "2026-11-11",
+        "title": "앱 설치(PWA): 휴대폰 홈 화면에 앱처럼 설치, 화면 파일을 기기에 저장해 다음부터 바로 열기 / Plex 썸네일 일주일 기억"
+    },
+    {
         "pr": 125,
         "version": "1.1.88",
         "date": "2026-11-11",
