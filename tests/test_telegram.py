@@ -723,6 +723,71 @@ def test_split_parts_are_grouped(monkeypatch, tmp_path):
     assert telegram_src.video_parts("tg", 1, 13) == []      # 하나뿐이면 묶음이 아님
     assert telegram_src.split_part("Movie.part2.mp4") == ("movie", 2)
     assert telegram_src.split_part("Movie.2026") is None
+    # 목록에서는 조각 묶음이 하나로 (첫 조각만, 조각 표시를 뗀 제목, 길이·크기는 합쳐서)
+    items, total = telegram_src.query_videos("tg", [1], kind="video")
+    assert [(x["msg"], x["title"]) for x in items] == [(13, "Other_0001"), (12, "Hope.2026 리뷰"), (9, base)]
+    merged = items[2]
+    assert merged["parts_count"] == 3 and merged["duration"] == 180 and merged["size"] == 3 and total == 3
+    assert telegram_src.part_base_title("가능한 사랑.2026.1080p.NF.WEB-DL.x264.DDP5.1.Atmos_0001") == "가능한 사랑.2026.1080p.NF.WEB-DL.x264.DDP5.1.Atmos"
+    assert telegram_src.part_base_title("그냥 영화") == "그냥 영화"
+    assert telegram_src.looks_like_container(b"\x1a\x45\xdf\xa3" + b"\0" * 20)          # mkv
+    assert telegram_src.looks_like_container(b"\0\0\0\x20ftypisom")                   # mp4
+    assert not telegram_src.looks_like_container(b"\x8f\x13\xa2" * 100)               # 파일 중간 (크기로 자른 둘째 조각)
+
+
+def test_byte_split_parts_play_joined(env, tmp_path):
+    """크기로 자른 조각("이름_0000.mkv", "이름_0001.mkv" - 둘째부터 머리가 없음)은 이어 붙인 하나의 파일로 보낸다"""
+    import shutil
+    import subprocess
+
+    from ym_player import transcode
+    if not transcode.available():
+        pytest.skip("ffmpeg 없음")
+    src = tmp_path / "whole.mkv"
+    subprocess.run([shutil.which("ffmpeg"), "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25",
+                    "-t", "4", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(src)], check=True)
+    data = src.read_bytes()
+    cut = len(data) // 2
+    base = "가능한 사랑.2026.1080p.NF.WEB-DL"
+    for mid, piece, n in ((996, data[:cut], 0), (999, data[cut:], 1)):
+        env.msgs[mid] = video_msg(mid, size=len(piece), name=f"{base}_{n:04d}.mkv", mime="video/x-matroska")
+        env.msgs[mid].document.data = piece
+
+    async def flow(c):
+        env.authorized = True
+        listing = await (await c.get("/api/tg/tg/videos?channel=777&limit=500")).json()
+        rows = [x for x in listing["items"] if x["msg"] in (996, 999)]
+        assert [(x["msg"], x["title"], x["parts_count"]) for x in rows] == [(996, base, 2)]     # 목록에서 하나로
+        item = (await (await c.get("/api/tg/tg/video/777/999?probe=1")).json())["item"]      # 둘째 조각을 열어도
+        assert item["joined"] == 2 and item["parts"] == [] and item["title"] == base and item["size"] == len(data)
+        assert item["play"]["container"] == "mkv" and item["play"]["mode"] == "remux"          # 이어 붙인 전체를 ffprobe가 읽음
+        r = await c.get("/api/tg/tg/stream/777/996")
+        assert r.status == 200 and await r.read() == data
+        r = await c.get("/api/tg/tg/stream/777/996", headers={"Range": f"bytes={cut - 10}-{cut + 9}"})  # 조각 경계를 넘는 구간
+        assert r.status == 206 and await r.read() == data[cut - 10:cut + 10]
+        assert r.headers["Content-Range"] == f"bytes {cut - 10}-{cut + 9}/{len(data)}"
+        assert telegram_src.get_joined("tg", 777, 996) is True
+
+    run(flow)
+
+
+def test_time_split_parts_stay_separate(env):
+    """조각마다 머리가 있는 파일(시간으로 나눈 "이름 part1", "part2")은 따로 재생 - 이어서 다음 조각으로"""
+    mkv = b"\x1a\x45\xdf\xa3" + b"\x00" * 4000
+    for mid, n in ((996, 1), (999, 2)):
+        env.msgs[mid] = video_msg(mid, size=len(mkv), name=f"Hope.2026 part{n}.mkv", mime="video/x-matroska")
+        env.msgs[mid].document.data = mkv
+
+    async def flow(c):
+        env.authorized = True
+        await c.get("/api/tg/tg/videos?channel=777&limit=500")
+        item = (await (await c.get("/api/tg/tg/video/777/996")).json())["item"]
+        assert [p["msg"] for p in item["parts"]] == [996, 999] and "joined" not in item
+        from ym_player import server
+        tg = c.server.app[server.TELEGRAM]["tg"]
+        assert await server._tg_joined(tg, 777, 996) is None and telegram_src.get_joined("tg", 777, 996) is False
+
+    run(flow)
 
 
 def test_hls_transcode_for_safari(env, tmp_path):
@@ -889,9 +954,10 @@ def test_posters_are_paired_and_hidden_from_all(monkeypatch, tmp_path):
     telegram_src.link_posters("tg", 1)
     rows, total = telegram_src.query_videos("tg", [1], limit=50)
     by = {r["msg"]: r for r in rows}
-    assert {11: 10, 13: 12, 17: 16, 18: 16, 22: 21, 24: 23} == {m: r["poster"] for m, r in by.items() if r["poster"]}
-    # 포스터 사진(10,12,16,21,23)은 전체에서 빠짐
-    assert set(by) == {11, 13, 14, 15, 17, 18, 19, 20, 22, 24, 25, 26, 27, 28} and total == 14
+    assert {11: 10, 13: 12, 17: 16, 22: 21, 24: 23} == {m: r["poster"] for m, r in by.items() if r["poster"]}
+    # 포스터 사진(10,12,16,21,23)은 전체에서 빠지고, Hope 조각 둘(17, 18)은 하나로
+    assert set(by) == {11, 13, 14, 15, 17, 19, 20, 22, 24, 25, 26, 27, 28} and total == 13
+    assert telegram_src.get_video("tg", 1, 18)["poster"] == 16   # 둘째 조각도 포스터는 그대로
     photos, _ = telegram_src.query_videos("tg", [1], kind="image", limit=50)
     assert {r["msg"] for r in photos} == {10, 12, 14, 16, 19, 21, 23, 25, 27}   # 사진 보기에는 다 나옴
     assert telegram_src.get_video("tg", 1, 13)["poster"] == 12

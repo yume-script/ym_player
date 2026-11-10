@@ -1444,7 +1444,9 @@ def query_videos(sid, channels, offset=0, limit=40, q="", sort="latest", user=""
         posters = _poster_map(conn, sid, rows)
         series = _series_map(conn, sid, rows, user) if group else {}
         plex = _plex_posters(conn, sid, [(r["channel"], r["msg"]) for r in rows])
-    out = [_row(r, prog, posters) for r in rows]
+        out = [_row(r, prog, posters) for r in rows]
+        if kind != "image":   # 나눠 올린 조각들은 목록에서 하나로
+            total -= _merge_parts(conn, sid, out)
     for d in out:
         s = series.get((d["channel"], d["msg"]))
         if s:
@@ -1498,8 +1500,80 @@ def video_parts(sid, channel, msg, user=""):
     for i, num in enumerate(sorted(best)):
         d = _row(best[num], prog)
         out.append({"msg": d["msg"], "part": i + 1, "title": d["title"], "duration": d["duration"],
-                    "position": d["position"], "watched": d["watched"]})
+                    "position": d["position"], "watched": d["watched"], "size": int(d.get("size") or 0),
+                    "mime": d.get("mime") or ""})
     return out
+
+
+def part_base_title(title):
+    """"가능한 사랑.2026.1080p_0001" -> "가능한 사랑.2026.1080p" (조각 표시를 뗀 이름, 조각이 아니면 그대로)"""
+    stem = (title or "").strip()
+    root, ext = os.path.splitext(stem)
+    if ext.lower() in _VIDEO_EXT:
+        stem = root
+    m = _PART_RE.match(stem)
+    return m.group(1).rstrip(" ._-") if m and len(m.group(1)) >= 3 else (title or "")
+
+
+def _merge_parts(conn, sid, out):
+    """목록에서 나눠 올린 조각들을 하나로: 첫 조각만 남기고(제목은 조각 표시를 떼고, 길이·크기는 합쳐서) 나머지는 뺀다.
+    돌려주는 값: 뺀 개수"""
+    groups, dropped, keep = {}, 0, []
+    for d in out:
+        key = d.get("kind") == "video" and _part_key(d)
+        if not key:
+            keep.append(d)
+            continue
+        gk = (d["channel"], key[0])
+        if gk not in groups:
+            like = key[0].replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            rows = conn.execute(
+                "SELECT msg, file_name, title, duration, size FROM videos WHERE source=? AND channel=? AND kind='video' "
+                "AND (file_name LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\') ORDER BY msg LIMIT 300",
+                (sid, d["channel"], like, like)).fetchall()
+            best = {}
+            for r in rows:
+                k = _part_key(r)
+                if k and k[0] == key[0]:
+                    best[k[1]] = r
+            groups[gk] = [best[n] for n in sorted(best)]
+        members = groups[gk]
+        if len(members) < 2:
+            keep.append(d)
+            continue
+        if int(members[0]["msg"]) != int(d["msg"]):
+            dropped += 1
+            continue
+        d["title"] = part_base_title(d["title"])
+        d["duration"] = sum(int(m["duration"] or 0) for m in members)
+        d["size"] = sum(int(m["size"] or 0) for m in members)
+        d["parts_count"] = len(members)
+        keep.append(d)
+    out[:] = keep
+    return dropped
+
+
+# 컨테이너 머리 (파일 처음 몇 바이트). 나눈 조각의 둘째 조각이 이걸로 시작하면 조각마다 따로 재생되는 파일이고,
+# 아니면 파일을 크기로 자른 것(바이트 조각) - 이어 붙여야 재생된다
+def looks_like_container(head):
+    head = bytes(head or b"")
+    return (head[:4] == b"\x1a\x45\xdf\xa3" or head[4:8] in (b"ftyp", b"moov", b"free", b"mdat", b"wide", b"skip")
+            or head[:4] == b"RIFF" or head[:3] == b"FLV" or head[:4] == b"\x00\x00\x01\xba"
+            or head[:4] == b"\x30\x26\xb2\x75" or (len(head) > 188 and head[0] == 0x47 and head[188] == 0x47)
+            or (len(head) > 196 and head[4] == 0x47 and head[196] == 0x47))   # (마지막 둘: MPEG-TS / M2TS 패킷)
+
+
+def get_joined(sid, channel, first_msg):
+    """나눈 조각 묶음이 바이트 조각(이어 붙여야 재생)인지 알아낸 결과 (모르면 None). probes 표에 -첫 메시지로 둔다"""
+    with db() as conn:
+        r = conn.execute("SELECT data FROM probes WHERE source=? AND channel=? AND msg=?", (sid, channel, -int(first_msg))).fetchone()
+    return json.loads(r[0]).get("joined") if r else None
+
+
+def save_joined(sid, channel, first_msg, joined):
+    with db() as conn:
+        conn.execute("INSERT OR REPLACE INTO probes(source,channel,msg,data) VALUES(?,?,?,?)",
+                     (sid, channel, -int(first_msg), json.dumps({"joined": bool(joined)})))
 
 
 def random_video(sid, channels, user="", unwatched=False, exclude=(), kinds=None):

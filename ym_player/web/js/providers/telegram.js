@@ -196,8 +196,9 @@ export class TelegramProvider {
                 raw: v,
             };
         }
-        const sub = [this.channelTitle(v.channel), (v.date || '').slice(0, 10), v.duration ? fmtDuration(v.duration * 1000) : '']
-            .filter(Boolean).join(' · ');
+        // 나눠 올린 조각 묶음은 서버가 목록에서 하나로 합쳐 준다 (parts_count개 파일)
+        const sub = [this.channelTitle(v.channel), (v.date || '').slice(0, 10), v.duration ? fmtDuration(v.duration * 1000) : '',
+            v.parts_count > 1 ? `${v.parts_count}개 파일` : ''].filter(Boolean).join(' · ');
         return {
             pid: this.id,
             id,
@@ -213,7 +214,7 @@ export class TelegramProvider {
             ts: v.updated || 0,
             isNew: !!(seenBefore() && v.date && v.date > seenBefore() && !v.watched && !(v.position > 0)),
             posterImg,
-            fileName: v.file_name || '',
+            fileName: (v.file_name || '') + (v.parts_count > 1 ? ` 외 ${v.parts_count - 1}개` : ''),
             raw: v,
         };
     }

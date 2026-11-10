@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 117,
+        "version": "1.1.80",
+        "date": "2026-11-11",
+        "title": "텔레그램: 나눠 올린 조각(이름_0000, _0001…)을 목록에서 하나로, 크기로 자른 조각은 이어 붙여 한 영상으로 재생"
+    },
+    {
         "pr": 116,
         "version": "1.1.79",
         "date": "2026-11-11",
