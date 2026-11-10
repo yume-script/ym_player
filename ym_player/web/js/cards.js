@@ -3,7 +3,8 @@ import { h, icon, fmtDuration } from './util.js';
 import { player } from './player.js';
 import { registry } from './providers/index.js';
 import { channelHealth } from './providers/iptv.js';
-import { openViewer } from './viewer.js';
+// 사진 보기는 열 때 받는다
+const openViewer = (...a) => import('./viewer.js').then((m) => m.openViewer(...a));
 
 const PLAYABLE = new Set(['movie', 'episode', 'track', 'clip']);
 

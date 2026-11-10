@@ -869,6 +869,8 @@ async function renderStatus(pane) {
         h('div', { class: 'src-card status-list' }, rows.length ? rows : h('p', { class: 'muted', text: '소스가 없습니다.' })),
         h('h3', { class: 'pane-title', text: '서버' }),
         h('div', { class: 'src-card facts' }, facts.map(([k, v]) => h('div', { class: 'fact' }, h('span', { text: k }), h('b', { text: v })))),
+        h('h3', { class: 'pane-title', text: '느린 요청 TOP 10' }),
+        slowBox(st.slow || [], st.slow_since),
         h('h3', { class: 'pane-title', text: '업데이트 (GitHub)' }),
         updateBox(),
         h('h3', { class: 'pane-title', text: `최근 경고 (${st.warnings.length})` }),
@@ -877,6 +879,21 @@ async function renderStatus(pane) {
                 h('span', { class: 'warn-time', text: new Date(w.time * 1000).toLocaleString() }),
                 h('span', { class: 'warn-msg', text: w.message, title: w.logger })))
             : h('p', { class: 'muted', text: '서버를 켠 뒤로 경고가 없습니다.' }))));
+}
+
+/** 서버가 응답을 만드는 데 오래 걸린 요청 (경로마다 평균이 큰 순, 서버를 켠 뒤로 - 영상·그림·화면 파일은 빼고) */
+function slowBox(rows, since) {
+    const fmt = (ms) => (ms >= 1000 ? `${(ms / 1000).toFixed(1)}초` : `${ms}ms`);
+    return h('div', { class: 'src-card slow-list' },
+        rows.length ? [
+            h('div', { class: 'slow-row slow-head' }, h('span', { text: '경로' }), h('span', { text: '평균' }), h('span', { text: '최대' }),
+                h('span', { text: '횟수' }), h('span', { text: '1초 넘음' })),
+            ...rows.map((r) => h('div', { class: `slow-row${r.avg_ms >= 1000 ? ' bad' : r.avg_ms >= 300 ? ' warn' : ''}` },
+                h('span', { class: 'slow-route', text: r.route, title: r.route }), h('span', { text: fmt(r.avg_ms) }),
+                h('span', { text: fmt(r.max_ms), title: r.max_at ? new Date(r.max_at * 1000).toLocaleString() : '' }),
+                h('span', { text: String(r.count) }), h('span', { text: String(r.slow) }))),
+            h('p', { class: 'field-hint', text: `${since ? new Date(since * 1000).toLocaleString() : '서버를 켠'} 뒤로 모은 것 · 재생 스트림·그림·화면 파일은 빼고 서버가 응답을 만드는 데 걸린 시간` }),
+        ] : h('p', { class: 'muted', text: '아직 모은 것이 없습니다.' }));
 }
 
 /** GitHub에 새 버전이 있는지 (서버가 6시간마다 확인, [지금 확인]으로 바로) */

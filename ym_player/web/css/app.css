@@ -1252,3 +1252,11 @@ body.docpip { margin: 0; background: #000; overflow: hidden; }
 .page-head h1 .crumb-sep { color: var(--muted); font-weight: 400; }
 .page-head h1 .crumb-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 600px) { .page-head h1 .crumb-src, .page-head h1 .crumb-sep { font-size: 0.75em; } }
+/* 설정 > 상태: 느린 요청 */
+.slow-row { display: grid; grid-template-columns: minmax(0, 1fr) 4.5rem 4.5rem 3.5rem 4rem; gap: 0.5rem; padding: 0.3rem 0;
+    border-top: 1px solid var(--border); font-size: 0.85rem; }
+.slow-row.slow-head { border-top: none; color: var(--muted); font-size: 0.75rem; font-weight: 600; }
+.slow-route { font-family: ui-monospace, Menlo, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slow-row.warn span:nth-child(2) { color: #e0b85a; }
+.slow-row.bad span:nth-child(2) { color: var(--danger); font-weight: 700; }
+@media (max-width: 600px) { .slow-row { grid-template-columns: minmax(0, 1fr) 4rem 4rem; } .slow-row > :nth-child(n+4) { display: none; } }
