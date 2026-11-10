@@ -59,6 +59,87 @@ def rclone_path():
     return shutil.which(os.environ.get("MP_RCLONE") or "rclone")
 
 
+def rclone_config():
+    """rclone 설정 파일 - 서버가 rclone 설정을 만든 사용자와 다른 계정(systemd 서비스 등)으로 돌 때도 원격을 쓰게 찾아 둔다.
+    MP_RCLONE_CONFIG > RCLONE_CONFIG > 내 ~/.config/rclone > 읽을 수 있는 /root·/home/*의 rclone.conf. 없으면 "" (rclone 기본값)"""
+    import glob
+    cands = [os.environ.get("MP_RCLONE_CONFIG"), os.environ.get("RCLONE_CONFIG"),
+             os.path.expanduser("~/.config/rclone/rclone.conf"), "/root/.config/rclone/rclone.conf",
+             *sorted(glob.glob("/home/*/.config/rclone/rclone.conf")), "/etc/rclone/rclone.conf", "/etc/rclone.conf"]
+    for c in cands:
+        if c and os.path.isfile(c) and os.access(c, os.R_OK):
+            return c
+    return ""
+
+
+def rclone_cmd(*args):
+    """[rclone, (--config 파일), *args]"""
+    cfg = rclone_config()
+    return [rclone_path(), *(["--config", cfg] if cfg else []), *args]
+
+
+def rclone_mounts(mounts_file="/proc/mounts"):
+    """이 컴퓨터에 rclone mount로 붙인 드라이브 [{"remote": "gdrive:", "path": "/mnt/gdrive"}]"""
+    out = []
+    try:
+        with open(mounts_file, encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        parts = line.split()
+        if len(parts) >= 3 and "rclone" in parts[2]:
+            unq = lambda v: re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), v)   # /proc/mounts의 \040(빈칸) 등
+            out.append({"remote": unq(parts[0]), "path": unq(parts[1])})
+    return out
+
+
+async def list_remotes():
+    """rclone 원격 이름들 ["gdrive:", ...] 과 안내 (rclone이 없거나 원격이 없으면 왜인지)"""
+    if not rclone_path():
+        return [], "서버에서 rclone을 찾지 못했습니다 (PATH에 없음 - MP_RCLONE에 실행 파일 경로를 적을 수 있습니다)."
+    try:
+        code, out, err = await _run(*rclone_cmd("listremotes"), timeout=20)
+    except FolderError as e:
+        return [], str(e)
+    if code != 0:
+        return [], f"rclone listremotes 실패: {err.strip()[-200:]}"
+    remotes = [x.strip() for x in out.decode("utf-8", "replace").splitlines() if x.strip().endswith(":")][:50]
+    if not remotes:
+        return [], ("rclone 원격이 없습니다. 이 서버가 도는 계정에서 rclone 설정 파일을 읽을 수 없으면 "
+                    "MP_RCLONE_CONFIG에 rclone.conf 경로를 적어 주세요 (rclone config file 로 위치 확인).")
+    return remotes, ""
+
+
+async def list_dirs(path):
+    """폴더 고르기: path 아래의 하위 폴더 이름들 (이 컴퓨터 폴더 또는 rclone 원격)"""
+    if is_remote(path):
+        rows = await _lsjson_dirs(path)
+        return sorted(str(r.get("Name") or r.get("Path") or "") for r in rows if not str(r.get("Name") or "").startswith("."))[:1000]
+    if not path.startswith("/"):
+        raise FolderError("폴더는 /로 시작해야 합니다.")
+    def scan_dirs():
+        try:
+            with os.scandir(path) as it:
+                return sorted(e.name for e in it if not e.name.startswith(".") and e.is_dir())[:1000]
+        except OSError as e:
+            raise FolderError(f"폴더를 열 수 없습니다: {e.strerror or e}")
+    return await asyncio.to_thread(scan_dirs)
+
+
+async def _lsjson_dirs(target):
+    if not rclone_path():
+        raise FolderError("서버에 rclone이 없습니다.")
+    code, out, err = await _run(*rclone_cmd("lsjson", "--dirs-only", "--no-mimetype", "--", target), timeout=120)
+    if code != 0:
+        raise FolderError(f"rclone 목록을 못 받았습니다: {err.strip()[-300:]}")
+    try:
+        rows = json.loads(out.decode("utf-8", "replace") or "[]")
+    except ValueError:
+        raise FolderError("rclone 목록을 읽지 못했습니다.")
+    return rows if isinstance(rows, list) else []
+
+
 def _join_remote(folder, rel):
     return f"{folder.rstrip('/')}/{rel}" if not folder.endswith(":") else f"{folder}{rel}"
 
@@ -118,7 +199,7 @@ async def _lsjson(target, recursive=True):
     rc = rclone_path()
     if not rc:
         raise FolderError("서버에 rclone이 없습니다 (rclone 원격을 쓰려면 rclone을 설치·설정해 주세요).")
-    args = [rc, "lsjson", "--files-only", "--no-mimetype"] + (["-R"] if recursive else []) + ["--", target]
+    args = rclone_cmd("lsjson", "--files-only", "--no-mimetype", *(["-R"] if recursive else []), "--", target)
     code, out, err = await _run(*args, timeout=900)
     if code != 0:
         raise FolderError(f"rclone 목록을 못 받았습니다: {err.strip()[-300:]}")
@@ -170,7 +251,7 @@ async def fetch(folder, key, dest, progress=None):
     rc = rclone_path()
     if not rc:
         raise FolderError("서버에 rclone이 없습니다.")
-    proc = await asyncio.create_subprocess_exec(rc, "copyto", "--", _join_remote(folder, key), dest,
+    proc = await asyncio.create_subprocess_exec(*rclone_cmd("copyto", "--", _join_remote(folder, key), dest),
                                                 stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
     task = asyncio.ensure_future(proc.communicate())
     folder_of = os.path.dirname(dest)
@@ -194,7 +275,7 @@ async def fetch_head(folder, key, dest, count=32 * 1024 * 1024):
     if not rc:
         return False
     try:
-        code, out, _err = await _run(rc, "cat", "--count", str(count), "--", _join_remote(folder, key), timeout=600)
+        code, out, _err = await _run(*rclone_cmd("cat", "--count", str(count), "--", _join_remote(folder, key)), timeout=600)
     except FolderError:
         return False
     if code != 0 or not out:

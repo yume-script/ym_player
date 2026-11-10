@@ -1202,6 +1202,59 @@ async function renderDiscord(pane) {
                 + '③ 위에 토큰과 채널 ID를 넣고 저장. 켠 뒤에 올라온 글부터 보입니다 (예전 글은 흘리지 않음).' })));
 }
 
+/** 자동 올리기 폴더 고르기: rclone mount 폴더·rclone 원격에서 시작해 하위 폴더로 들어가 [이 폴더로] */
+function folderParent(path) {
+    if (!path || path === '/') return '';
+    const colon = path.indexOf(':');
+    if (!path.startsWith('/') && colon >= 0) {
+        const rest = path.slice(colon + 1).replace(/\/+$/, '');
+        if (!rest) return '';
+        const cut = rest.lastIndexOf('/');
+        return path.slice(0, colon + 1) + (cut > 0 ? rest.slice(0, cut) : '');
+    }
+    const cut = path.replace(/\/+$/, '').lastIndexOf('/');
+    return cut > 0 ? path.slice(0, cut) : '/';
+}
+
+function folderJoin(path, name) {
+    return path.endsWith(':') || path.endsWith('/') ? path + name : `${path}/${name}`;
+}
+
+function pickFolder(input) {
+    const body = h('div', { class: 'folder-pick' });
+    const useBtn = h('button', { class: 'btn btn-accent' }, icon('check'), ' 이 폴더로');
+    const m = modal('폴더 고르기', body, [useBtn]);
+    let current = '';
+    useBtn.addEventListener('click', () => { if (current) { input.value = current; m.close(); } });
+    const entry = (ic, text, sub, go) => h('button', { class: 'folder-pick-item', type: 'button', on: { click: go } },
+        icon(ic), h('span', { text }), sub ? h('span', { class: 'muted', text: ` ${sub}` }) : null);
+    async function show(path) {
+        current = path;
+        useBtn.disabled = !path;
+        clear(body).append(h('div', { class: 'loading' }, icon('circle-notch', 'fa-spin'), h('span', { text: '불러오는 중...' })));
+        let d;
+        try { d = await api(`/api/admin/plex-tg/folders?path=${encodeURIComponent(path)}`); } catch (e) {
+            clear(body).append(h('p', { class: 'muted error', text: e.message }), entry('arrow-up', '위로', '', () => show(folderParent(path))));
+            return;
+        }
+        clear(body);
+        if (!path) {
+            const items = [
+                ...d.mounts.map((x) => entry('hard-drive', x.path, `rclone ${x.remote}`, () => show(x.path))),
+                ...d.remotes.map((x) => entry('cloud', x, 'rclone 원격', () => show(x))),
+                entry('folder', '/mnt', '이 컴퓨터', () => show('/mnt')), entry('folder', '/', '이 컴퓨터', () => show('/'))];
+            body.append(h('p', { class: 'field-hint', text: d.mounts.length || d.remotes.length
+                ? 'rclone 드라이브를 고른 뒤 올릴 하위 폴더로 들어가 [이 폴더로]를 누르세요.' : (d.note || 'rclone 드라이브를 찾지 못했습니다.') }), ...items);
+            return;
+        }
+        body.append(h('p', { class: 'folder-pick-path', text: path }), entry('arrow-up', '위로', '', () => show(folderParent(path))),
+            ...d.dirs.map((n) => entry('folder', n, '', () => show(folderJoin(path, n)))));
+        if (!d.dirs.length) body.append(h('p', { class: 'muted', text: '하위 폴더가 없습니다.' }));
+    }
+    const start = input.value.trim();
+    show(start);
+}
+
 /** Plex 라이브러리에 새로 들어온 동영상을 텔레그램 채널에 자동으로 올리기 (서버: plex_to_tg.py) */
 async function renderMirror(pane) {
     clear(pane).appendChild(h('div', { class: 'loading' }, icon('circle-notch', 'fa-spin'), h('span', { text: '불러오는 중...' })));
@@ -1224,9 +1277,8 @@ async function renderMirror(pane) {
         const enabledIn = h('input', { type: 'checkbox', checked: r.enabled !== false });
         const kindSel = h('select', { class: 'select mirror-kind' }, opt('plex', 'Plex 라이브러리', r.kind !== 'folder'),
             opt('folder', 'rclone 드라이브 · 폴더', r.kind === 'folder'));
-        const listId = `mirror-remotes-${Math.random().toString(36).slice(2, 8)}`;
-        const folderIn = h('input', { class: 'input mirror-folder', placeholder: opts.rclone ? '/mnt/gdrive/영화 또는 gdrive:영화' : '/mnt/gdrive/영화', value: r.folder || '', list: listId });
-        const remoteList = h('datalist', { id: listId }, (opts.remotes || []).map((x) => h('option', { value: x })));
+        const folderIn = h('input', { class: 'input mirror-folder', placeholder: '/mnt/gdrive/영화 또는 gdrive:영화', value: r.folder || '' });
+        const pickBtn = h('button', { class: 'btn mirror-pick-folder', type: 'button', on: { click: () => pickFolder(folderIn) } }, icon('folder-open'), ' 고르기');
         const shrinkIn = h('input', { class: 'input input-sm mirror-days', type: 'number', min: '0', max: '100', value: String(r.shrink_gb ?? 2) });
         const heightSel = h('select', { class: 'select mirror-height' }, [[720, '720p'], [480, '480p'], [1080, '1080p'], [0, '줄이지 않음']].map(([v, t]) =>
             h('option', { value: String(v), text: t, selected: (r.height ?? 720) === v })));
@@ -1257,9 +1309,9 @@ async function renderMirror(pane) {
         } } }, icon('paper-plane'), ' 가장 최근 것 하나 올려 보기');
         const del = h('button', { class: 'btn btn-sm', on: { click: () => { rows.splice(rows.indexOf(row), 1); card.remove(); } } }, icon('trash'), ' 지우기');
         const plexField = field('Plex 라이브러리', plexSel);
-        const folderField = field('폴더', h('div', {}, folderIn, remoteList),
-            opts.rclone ? 'rclone mount로 붙인 폴더(/로 시작) 또는 rclone 원격 "이름:경로". 하위 폴더까지 봅니다.'
-                : '이 컴퓨터의 폴더(/로 시작, rclone mount로 붙인 드라이브). rclone 원격 "이름:경로"를 쓰려면 서버에 rclone을 설치하세요.');
+        const folderField = field('폴더', h('div', { class: 'toolbar mirror-folder-row' }, folderIn, pickBtn),
+            '[고르기]에서 rclone 드라이브를 고르거나, rclone mount로 붙인 폴더(/로 시작) 또는 rclone 원격 "이름:경로"를 적으세요. 하위 폴더까지 봅니다.'
+            + (opts.rclone_note ? ` (${opts.rclone_note})` : ''));
         const encBox = h('div', { class: 'mirror-wait mirror-enc' },
             h('span', { class: 'muted', text: '텔레그램에서 바로 재생되게 H.264/AAC mp4로 올림 (이미 그 모양이면 그대로) · 파일이' }), shrinkIn,
             h('span', { class: 'muted', text: 'GB보다 크면' }), heightSel, h('span', { class: 'muted', text: '로 줄여 인코딩 (0GB면 늘)' }));

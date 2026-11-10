@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 111,
+        "version": "1.1.74",
+        "date": "2026-11-10",
+        "title": "자동 올리기: 폴더 [고르기] - rclone mount 드라이브·rclone 원격 목록에서 폴더 고르기, 다른 계정의 rclone 설정도 찾아 씀"
+    },
+    {
         "pr": 110,
         "version": "1.1.73",
         "date": "2026-11-10",
