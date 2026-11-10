@@ -367,3 +367,25 @@ def test_hw_encoder_failure_falls_back_to_cpu(data, tmp_path, monkeypatch):
     folder_watch._HW_OK.pop("vaapi", None)
     v = [s for s in _probe(tg.sent[0]["body"], tmp_path)["streams"] if s["codec_type"] == "video"][0]
     assert v["height"] == 720
+
+
+def test_encode_pauses_while_someone_plays(data, tmp_path, monkeypatch):
+    """누가 서버 변환으로 재생하는 동안(아이폰 Safari 등) 올리기 인코딩은 멈췄다가 끝나면 잇는다"""
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg 없음")
+    src = tmp_path / "a.mkv"
+    _make(src, seconds=2)
+    playing = {"on": True}
+    mirror = plex_to_tg.Mirror(None, None, None, lambda: None, lambda: playing["on"])
+    monkeypatch.setattr(plex_to_tg, "PAUSE_CHECK_SEC", 0.05)
+    out = tmp_path / "out.mp4"
+
+    async def main():
+        task = asyncio.ensure_future(mirror._encode(str(src), ["-c:v", "libx264", "-preset", "ultrafast"], str(out), 2, "t",
+                                                    "인코딩 중", str(tmp_path)))
+        await asyncio.sleep(1.5)
+        assert not task.done() and mirror.current["phase"].startswith("재생 중이라 잠시 멈춤")   # 멈춰 있다
+        playing["on"] = False
+        await asyncio.wait_for(task, 60)                                        # 재생이 끝나면 이어서 끝까지
+        assert out.exists() and mirror.current["phase"] == "인코딩 중"
+    asyncio.run(main())

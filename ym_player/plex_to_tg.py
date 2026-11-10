@@ -61,6 +61,28 @@ PART_LIMIT = 1000 * 1024 * 1024   # 텔레그램 한도 1GB 단위 (2GB = 2000Mi
 
 
 _KO_FONT = None
+PAUSE_CHECK_SEC = 2   # 재생 중인지 이만큼마다 보고 인코딩을 멈추거나 잇는다
+
+
+def _lowest_priority():
+    """(ffmpeg 자식 프로세스에서) CPU 우선순위를 가장 낮게"""
+    try:
+        os.nice(19)
+    except OSError:
+        pass
+
+
+def _signal(proc, name):
+    import signal
+    sig = getattr(signal, name, None)
+    if sig is None or proc.returncode is not None:
+        return False
+    try:
+        proc.send_signal(sig)
+        return True
+    except (ProcessLookupError, OSError):
+        return False
+
 
 
 def has_korean_font():
@@ -347,9 +369,11 @@ def shift_ass(text, start, dur):
 # 돌리기
 # ---------------------------------------------------------------------------
 class Mirror:
-    def __init__(self, plex_json, plex_src, tg_for, http):
-        """plex_json(src, path, params) -> dict, plex_src(id) -> (cfg, src), tg_for(id) -> TelegramSource, http() -> ClientSession"""
+    def __init__(self, plex_json, plex_src, tg_for, http, playing=None):
+        """plex_json(src, path, params) -> dict, plex_src(id) -> (cfg, src), tg_for(id) -> TelegramSource, http() -> ClientSession,
+        playing() -> 지금 누가 서버 변환(재생)으로 보고 있나 - 그동안은 올리기 인코딩을 멈춰 재생이 끊기지 않게"""
         self.plex_json, self.plex_src, self.tg_for, self.http = plex_json, plex_src, tg_for, http
+        self.playing = playing or (lambda: False)
         self.queue = []          # [{rule, key, title, tries}]
         self.current = None      # {title, phase, done, total}
         self.current_job = None  # {rule, key} - 지금 올리는 것
@@ -1051,8 +1075,14 @@ class Mirror:
         cmd = [transcode.ffmpeg_path(), "-v", "error", "-y", "-nostats", "-progress", "pipe:1", *pre, "-i", os.path.abspath(src_path),
                *args, os.path.abspath(out)]
         self.current = {"title": title, "phase": phase, "done": 0, "total": int(duration * 1000) or 0}
-        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=cwd)
+        # 올리기 인코딩은 뒤 작업 - CPU·디스크를 가장 낮은 우선순위로 (재생용 서버 변환이 먼저)
+        ionice = shutil.which("ionice")
+        if ionice:
+            cmd = [ionice, "-c", "3", *cmd]
+        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=cwd,
+                                                    preexec_fn=_lowest_priority)
         errs = []
+        pause_task = asyncio.ensure_future(self._pause_while_playing(proc, phase))
 
         async def read_err():
             async for line in proc.stderr:
@@ -1068,12 +1098,30 @@ class Mirror:
                     self.current["speed"] = v.strip()
             await proc.wait()
         finally:
+            pause_task.cancel()
             if proc.returncode is None:   # 취소됨 (서버 끄기 등) - ffmpeg를 남기지 않는다
+                _signal(proc, "SIGCONT")
                 proc.kill()
                 await proc.wait()
         await err_task
         if proc.returncode != 0 or not os.path.exists(out):
             raise RuntimeError(f"{phase.replace(' 중', '')} 실패: {''.join(errs).strip()[-300:]}")
+
+    async def _pause_while_playing(self, proc, phase):
+        """누가 서버 변환으로 재생하는 동안(아이폰·아이패드 Safari는 mkv·HEVC 등을 서버 변환으로 본다) 인코딩 ffmpeg를 잠시 멈춘다.
+        CPU를 다 쓰는 인코딩이 돌면 재생용 변환이 첫 조각을 제때 못 만들어 재생이 실패한다"""
+        paused = False
+        try:
+            while proc.returncode is None:
+                busy = bool(self.playing())
+                if busy != paused and _signal(proc, "SIGSTOP" if busy else "SIGCONT"):
+                    paused = busy
+                    if self.current:
+                        self.current["phase"] = "재생 중이라 잠시 멈춤 (재생이 끝나면 이어서)" if busy else phase
+                await asyncio.sleep(PAUSE_CHECK_SEC)
+        finally:
+            if paused:
+                _signal(proc, "SIGCONT")
 
     async def _split(self, src_path, base, ext, duration, limit, title):
         """시간으로 n조각 [(경로, 시작초, 길이초)]. 한도의 몇 배인지만큼 같은 길이로 나눈다 - 한도의 2배까지는 반씩(50%),

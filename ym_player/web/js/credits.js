@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 114,
+        "version": "1.1.77",
+        "date": "2026-11-10",
+        "title": "자동 올리기 인코딩이 재생을 막지 않게: 가장 낮은 우선순위로, 누가 서버 변환으로 볼 때(아이폰·아이패드)는 잠시 멈춤"
+    },
+    {
         "pr": 113,
         "version": "1.1.76",
         "date": "2026-11-10",
