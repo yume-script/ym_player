@@ -258,3 +258,34 @@ def test_mirror_folder_rule(page, server):
     assert rule.locator(".mirror-folder").input_value() == "/tmp"
     rule.locator(".mirror-kind").select_option("plex")
     assert rule.locator(".mirror-folder").is_hidden()
+
+
+def test_brunch_and_recipe_reader(page, server):
+    """브런치 연재·만개의레시피 소스: 홈 카드 -> 글 읽기 화면 (본문, 앞 회차, 원문 링크), 레시피 재료·순서"""
+    set_sources(page, server, [{"type": "brunch", "name": "브런치 연재", "enabled": True},
+                               {"type": "recipe", "name": "만개의레시피", "enabled": True}])
+    page.goto(server + "/#/home")
+    page.wait_for_selector(".card:has-text('고양이와 살기')", timeout=15000)
+    page.click(".card:has-text('고양이와 살기')")
+    page.wait_for_selector(".article-reader .article-title")
+    assert page.inner_text(".article-title") == "3화 첫눈"
+    body = page.inner_text(".article-body")
+    assert "왔다" in body and "alert" not in body and "null" not in page.inner_text(".article-page")
+    assert page.locator(".article-reader script").count() == 0
+    assert page.locator(".article-nav-btn:has-text('이전')").count() == 1        # 2화로
+    assert page.get_attribute(".article-reader .doc-tools a", "href").endswith("/@@a1B2/17")
+    page.keyboard.press("Escape")
+    page.wait_for_selector(".article-reader", state="detached")
+    # 레시피
+    page.wait_for_selector(".card:has-text('백종원 김치찌개')")
+    page.click(".card:has-text('백종원 김치찌개')")
+    page.wait_for_selector(".article-reader .recipe-step")
+    assert page.locator(".recipe-ing li").all_inner_texts() == ["김치 1/4포기", "돼지고기 200g"]
+    assert page.locator(".recipe-step").count() == 2 and "2인분" in page.inner_text(".article-meta")
+    assert "null" not in page.inner_text(".article-page")
+    page.click(".article-reader .reader-bar .icon-btn")
+    page.wait_for_selector(".article-reader", state="detached")
+    # 라이브러리: 분류 칩 대신 [분류] 고르기
+    page.goto(server + "/#/library/" + page.evaluate("fetch('/api/config').then(r => r.json()).then(c => c.sources.find(s => s.type === 'recipe').id)") + "/recipes")
+    page.wait_for_selector(".page.library .card")
+    assert "밑반찬" in page.inner_text(".page.library select")

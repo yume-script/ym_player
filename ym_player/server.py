@@ -44,7 +44,7 @@ from urllib.parse import quote, urlencode
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
 from yarl import URL
 
-from . import __version__, activity, auth, cctv, chatfind, config_store, discord_feed, folder_watch, iptv, mcp, media_cache, plex_to_tg, podcast, prefs, radio, subtitles, telegram_src, tmdb, transcode, updates
+from . import __version__, activity, auth, brunch, cctv, chatfind, config_store, discord_feed, folder_watch, iptv, mcp, media_cache, plex_to_tg, podcast, prefs, radio, recipe, subtitles, telegram_src, tmdb, transcode, updates
 
 log = logging.getLogger("ym_player")
 
@@ -829,6 +829,8 @@ async def _check_podcast(request, src):
 # ---------------------------------------------------------------------------
 # 도로 CCTV (cctv.py) - 국가교통정보센터 오픈 API
 # ---------------------------------------------------------------------------
+BRUNCH = web.AppKey("brunch", brunch.Brunch)          # 브런치 연재 목록·글 (잠시 기억)
+RECIPES = web.AppKey("recipes", recipe.Recipes)       # 만개의레시피 목록·레시피 (잠시 기억)
 CCTV_CACHE = web.AppKey("cctv_cache", dict)   # 소스 id -> {"at", "key", "cams", "error"}
 CCTV_LOCKS = web.AppKey("cctv_locks", dict)
 CCTV_TTL = 5 * 60        # 영상 주소에 만료되는 값이 붙는 곳이 있어서 짧게
@@ -911,6 +913,78 @@ async def cctv_live(request):
     if cam is None:
         return _json_error(404, "이 CCTV를 찾을 수 없습니다 (목록에서 빠졌을 수 있습니다).")
     raise web.HTTPFound(iptv.stream_proxy_url(cam["url"], "", ""), headers={"Cache-Control": "no-store"})
+
+
+# ---------------------------------------------------------------------------
+# 읽을거리: 브런치 연재 / 만개의레시피 (정해진 사이트의 공개 목록만 서버가 받아 넘긴다)
+# ---------------------------------------------------------------------------
+async def brunch_list(request):
+    """GET /api/brunch/{sid}/list?day=MONDAY..SUNDAY|COMPLETE&sort=PUBLISH_TIME|...&next=(직전 next_url)"""
+    _source_or_404(request.match_info["sid"], "brunch", request)
+    q = request.query
+    try:
+        data = await request.app[BRUNCH].list(q.get("day", ""), q.get("sort", ""), q.get("next") or None)
+    except ValueError as e:
+        return _json_error(400, str(e))
+    except brunch.BrunchError as e:
+        return _json_error(502, str(e))
+    return web.json_response({"success": True, **data})
+
+
+async def brunch_article(request):
+    """GET /api/brunch/{sid}/article/{user}/{no} -> 글 (본문은 허용한 태그만 남긴 HTML)"""
+    _source_or_404(request.match_info["sid"], "brunch", request)
+    try:
+        data = await request.app[BRUNCH].article(request.match_info["user"], request.match_info["no"])
+    except ValueError as e:
+        return _json_error(400, str(e))
+    except brunch.BrunchError as e:
+        return _json_error(502, str(e))
+    return web.json_response({"success": True, "article": data})
+
+
+async def recipe_list(request):
+    """GET /api/recipe/{sid}/list?cat=(분류 번호)&q=(검색어)&page= -> 레시피 카드들 (둘 다 없으면 오늘의 랭킹)"""
+    _source_or_404(request.match_info["sid"], "recipe", request)
+    q = request.query
+    try:
+        items = await request.app[RECIPES].list(q.get("cat", ""), q.get("q", "").strip(), int(q.get("page") or 1))
+    except ValueError as e:
+        return _json_error(400, str(e))
+    except recipe.RecipeError as e:
+        return _json_error(502, str(e))
+    return web.json_response({"success": True, "items": items,
+                              "categories": [name for name, _ in recipe.CATEGORIES]})
+
+
+async def recipe_item(request):
+    """GET /api/recipe/{sid}/item/{rid} -> 레시피 (재료, 만드는 순서 - 글자만)"""
+    _source_or_404(request.match_info["sid"], "recipe", request)
+    try:
+        data = await request.app[RECIPES].recipe(request.match_info["rid"])
+    except ValueError as e:
+        return _json_error(400, str(e))
+    except recipe.RecipeError as e:
+        return _json_error(502, str(e))
+    return web.json_response({"success": True, "recipe": data})
+
+
+async def _check_brunch(request, src):
+    import datetime
+    day = brunch.DAYS[datetime.datetime.now().weekday()]
+    try:
+        data = await request.app[BRUNCH].list(day)
+    except Exception as e:
+        return False, str(e)
+    return True, f"오늘 연재 {len(data['items'])}편"
+
+
+async def _check_recipe(request, src):
+    try:
+        items = await request.app[RECIPES].list()
+    except Exception as e:
+        return False, str(e)
+    return bool(items), f"인기 레시피 {len(items)}개" if items else "레시피를 읽지 못했습니다 (사이트 구조가 바뀌었을 수 있음)"
 
 
 async def _check_cctv(request, src):
@@ -2803,6 +2877,10 @@ async def admin_status(request):
             coro = _check_podcast(request, src)
         elif src["type"] == "cctv":
             coro = _check_cctv(request, src)
+        elif src["type"] == "brunch":
+            coro = _check_brunch(request, src)
+        elif src["type"] == "recipe":
+            coro = _check_recipe(request, src)
         else:
             coro = _check_telegram(request, src)
         ok, detail, ms = await _timed(coro)
@@ -3435,6 +3513,8 @@ def create_app(require_auth=True):
     app[PODCAST] = podcast.FeedCache()
     app[PODCAST_LOCKS] = {}
     app[CCTV_CACHE] = {}
+    app[BRUNCH] = brunch.Brunch(lambda: app[HTTP])
+    app[RECIPES] = recipe.Recipes(lambda: app[HTTP])
     app[CHAT_FINDER] = chatfind.ChatFinder()
     app[CCTV_LOCKS] = {}
     app[PLEX_FILES] = {}
@@ -3501,6 +3581,10 @@ def create_app(require_auth=True):
     app.router.add_get("/api/radio/{sid}/now", radio_now)
     app.router.add_get("/api/podcast/{sid}/shows", podcast_shows)
     app.router.add_get("/api/cctv/{sid}/cams", cctv_cams)
+    app.router.add_get("/api/brunch/{sid}/list", brunch_list)
+    app.router.add_get(r"/api/brunch/{sid}/article/{user:[A-Za-z0-9]{1,40}}/{no:\d{1,10}}", brunch_article)
+    app.router.add_get("/api/recipe/{sid}/list", recipe_list)
+    app.router.add_get(r"/api/recipe/{sid}/item/{rid:\d{1,12}}", recipe_item)
     app.router.add_get(r"/api/cctv/{sid}/live/{cid:[0-9a-f]{10}}", cctv_live)
     app.router.add_get("/api/podcast/{sid}/home", podcast_home)
     app.router.add_get(r"/api/podcast/{sid}/show/{fid:[0-9a-f]{10}}", podcast_show)

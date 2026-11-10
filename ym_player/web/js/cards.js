@@ -10,7 +10,8 @@ const PLAYABLE = new Set(['movie', 'episode', 'track', 'clip']);
 function img(src, cls, fallbackIcon) {
     const box = h('div', { class: cls });
     if (src) {
-        const im = h('img', { src, alt: '', loading: 'lazy', decoding: 'async' });
+        // 다른 사이트 그림(브런치·만개의레시피 등)은 우리 주소를 알리지 않고 받는다 (퍼 가기 막는 곳이 있어서)
+        const im = h('img', { src, alt: '', loading: 'lazy', decoding: 'async', referrerpolicy: /^https?:/i.test(src) ? 'no-referrer' : null });
         im.addEventListener('error', () => { im.remove(); box.appendChild(icon(fallbackIcon, 'card-fallback')); });
         box.appendChild(im);
     } else {
@@ -28,7 +29,7 @@ export function progressBar(ratio) {
 export function posterCard(item, { wide = false } = {}) {
     const provider = registry.byId(item.pid);
     const shape = wide ? 'wide' : item.shape;
-    const fallback = { movie: 'film', show: 'tv', season: 'tv', episode: 'tv', artist: 'music', album: 'compact-disc', track: 'music', photo: 'image', book: 'book-open' }[item.type] || 'photo-film';
+    const fallback = { movie: 'film', show: 'tv', season: 'tv', episode: 'tv', artist: 'music', album: 'compact-disc', track: 'music', photo: 'image', book: 'book-open', article: 'newspaper' }[item.type] || 'photo-film';
     const art = img(wide ? item.wideThumb : item.thumb, `card-art shape-${shape}`, fallback);
 
     if (item.isNew) art.appendChild(h('span', { class: 'card-new', title: '지난번에 본 뒤 새로 올라옴', text: 'NEW' }));
