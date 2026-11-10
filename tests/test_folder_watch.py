@@ -312,3 +312,58 @@ def test_rclone_mounts_and_config(tmp_path, monkeypatch):
     monkeypatch.setenv("MP_RCLONE_CONFIG", str(conf))
     monkeypatch.setenv("MP_RCLONE", sys.executable)
     assert folder_watch.rclone_cmd("listremotes") == [sys.executable, "--config", str(conf), "listremotes"]
+
+
+def test_encoders_and_fallback(data, tmp_path, monkeypatch):
+    st = plex_to_tg.clean_settings({})
+    assert st["encoder"] == "auto" and st["cpu_preset"] == "superfast"
+    assert plex_to_tg.clean_settings({"encoder": "nvenc", "cpu_preset": "ultrafast"})["encoder"] == "nvenc"
+    assert plex_to_tg.clean_settings({"encoder": "rm -rf", "cpu_preset": "slow"})["encoder"] == "auto"
+    _pre, vf, codec = folder_watch.video_encoder({"name": "nvenc"}, 23, ["scale=-2:720"])
+    assert codec[codec.index("-c:v") + 1] == "h264_nvenc" and vf[-1] == "format=yuv420p"
+    pre, vf, codec = folder_watch.video_encoder({"name": "vaapi"}, 23, ["scale=-2:720"])
+    assert pre[0] == "-vaapi_device" and vf[-1] == "hwupload" and "h264_vaapi" in codec
+    pre, _vf, codec = folder_watch.video_encoder({"name": "qsv"}, 23, [])
+    assert "-init_hw_device" in pre and "h264_qsv" in codec
+    _pre, _vf, codec = folder_watch.video_encoder({"name": "cpu", "preset": "ultrafast"}, 23, [])
+    assert codec[codec.index("-preset") + 1] == "ultrafast"
+    p = folder_watch.encode_plan(_info(), ".mp4", 720, None, {"name": "nvenc"})
+    assert p.encoder == "nvenc" and "h264_nvenc" in p[0]
+    assert folder_watch.encode_plan(_info(height=720), ".mkv", 720, None, {"name": "nvenc"}).encoder == "copy"   # 다시 담기만은 인코더 안 씀
+
+    async def works(name):
+        return name == "vaapi"
+    monkeypatch.setattr(folder_watch, "hw_works", works)
+    assert asyncio.run(folder_watch.pick_encoder("auto"))["name"] == "vaapi"     # 되는 것을 골라
+    assert asyncio.run(folder_watch.pick_encoder("nvenc"))["name"] == "cpu"      # 안 되면 CPU
+    assert asyncio.run(folder_watch.pick_encoder("cpu", "veryfast")) == {"name": "cpu", "preset": "veryfast"}
+
+
+def test_hw_encoder_failure_falls_back_to_cpu(data, tmp_path, monkeypatch):
+    """하드웨어 인코더가 실제로 실패하면 CPU로 다시 해서 올린다"""
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg 없음")
+    drive = tmp_path / "drive"
+    drive.mkdir()
+    _make(drive / "Wide.mkv", size="1280x960", seconds=1)
+    tg = FakeTg()
+    mirror = plex_to_tg.Mirror(None, None, lambda sid: tg, lambda: None)
+    rule = plex_to_tg.clean_settings({"rules": [{"id": "w", "kind": "folder", "folder": str(drive), "tg": "tg", "channel": "-1",
+                                                  "wait_subs": False}]})["rules"][0]
+
+    async def fake_pick(setting="auto", preset="superfast"):
+        return {"name": "vaapi", "preset": preset, "device": str(tmp_path / "없는장치")}
+    monkeypatch.setattr(folder_watch, "pick_encoder", fake_pick)
+    seen = []
+    real = mirror._encode
+
+    async def spy(*a, **kw):
+        seen.append(dict(mirror.current or {}))
+        return await real(*a, **kw)
+    monkeypatch.setattr(mirror, "_encode", spy)
+    note = asyncio.run(mirror.upload(rule, "Wide.mkv", 2))
+    assert "인코더 CPU" in note and "720p로 줄임" in note
+    assert len(seen) == 2 and folder_watch._HW_OK.get("vaapi") is False
+    folder_watch._HW_OK.pop("vaapi", None)
+    v = [s for s in _probe(tg.sent[0]["body"], tmp_path)["streams"] if s["codec_type"] == "video"][0]
+    assert v["height"] == 720

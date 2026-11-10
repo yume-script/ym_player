@@ -370,10 +370,72 @@ def duration(info):
     return 0.0
 
 
-def encode_plan(info, ext, height_cap, burn_sub=None):
+ENCODERS = ("auto", "cpu", "nvenc", "qsv", "vaapi")
+ENCODER_NAMES = {"cpu": "CPU", "nvenc": "NVIDIA", "qsv": "Intel Quick Sync", "vaapi": "VAAPI"}
+CPU_PRESETS = ("veryfast", "superfast", "ultrafast")
+VAAPI_DEVICE = "/dev/dri/renderD128"
+
+
+class Plan(tuple):
+    """encode_plan 결과: (인자, 설명들) + pre(입력 앞에 둘 하드웨어 장치 인자), encoder(쓴 인코더)"""
+    def __new__(cls, args, notes, pre=(), encoder="cpu"):
+        obj = super().__new__(cls, (args, notes))
+        obj.pre, obj.encoder = list(pre), encoder
+        return obj
+
+
+def video_encoder(enc, crf, vf):
+    """인코더별 (입력 앞 인자, -vf 필터 목록, 코덱 인자). 필터(줄이기·자막)는 CPU에서 하고 인코딩만 하드웨어로"""
+    name = (enc or {}).get("name", "cpu")
+    q = str(crf + 2)
+    if name == "nvenc":
+        return [], vf + ["format=yuv420p"], ["-c:v", "h264_nvenc", "-preset", "fast", "-rc", "vbr", "-cq", q, "-b:v", "0",
+                                              "-profile:v", "high", "-pix_fmt", "yuv420p"]
+    if name == "qsv":
+        return (["-init_hw_device", "qsv=hw", "-filter_hw_device", "hw"], vf + ["format=nv12", "hwupload=extra_hw_frames=64"],
+                ["-c:v", "h264_qsv", "-preset", "faster", "-global_quality", q, "-profile:v", "high"])
+    if name == "vaapi":
+        return ["-vaapi_device", (enc or {}).get("device") or VAAPI_DEVICE], vf + ["format=nv12", "hwupload"], \
+            ["-c:v", "h264_vaapi", "-qp", q, "-profile:v", "high"]
+    preset = (enc or {}).get("preset") or "superfast"
+    return [], vf, ["-c:v", "libx264", "-preset", preset if preset in CPU_PRESETS else "superfast", "-crf", str(crf),
+                    "-profile:v", "high", "-level:v", "4.1", "-pix_fmt", "yuv420p"]
+
+
+_HW_OK = {}
+
+
+async def hw_works(name):
+    """이 서버에서 그 하드웨어 인코더로 짧은 영상을 실제로 만들 수 있나 (한 번 해 보고 기억)"""
+    if name in _HW_OK:
+        return _HW_OK[name]
+    ok = False
+    ff = transcode.ffmpeg_path()
+    if ff and (name != "vaapi" or os.path.exists(VAAPI_DEVICE)):
+        pre, vf, codec = video_encoder({"name": name}, 23, ["scale=-2:144"])
+        try:
+            code, _out, _err = await _run(ff, "-v", "error", "-y", *pre, "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=1",
+                                          "-vf", ",".join(vf), *codec, "-f", "null", "-", timeout=60)
+            ok = code == 0
+        except (FolderError, OSError):
+            ok = False
+    _HW_OK[name] = ok
+    return ok
+
+
+async def pick_encoder(setting="auto", preset="superfast"):
+    """설정(auto/cpu/nvenc/qsv/vaapi) -> 쓸 인코더 {"name", "preset"}. auto는 되는 하드웨어(NVIDIA > Intel > VAAPI), 없으면 CPU"""
+    names = ("nvenc", "qsv", "vaapi") if setting == "auto" else (setting,) if setting in ENCODERS[2:] else ()
+    for n in names:
+        if await hw_works(n):
+            return {"name": n, "preset": preset}
+    return {"name": "cpu", "preset": preset}
+
+
+def encode_plan(info, ext, height_cap, burn_sub=None, enc=None):
     """텔레그램에서 바로 재생되게 할 ffmpeg 인자 (출력 파일 앞까지) - 손댈 것이 없으면 None.
     height_cap보다 높은 영상은 용량과 상관없이 그 높이로 줄인다 (0이면 줄이지 않음). burn_sub: 화면에 입힐 자막 파일 이름
-    (ffmpeg를 그 폴더에서 돌린다). 돌려주는 값: (인자, 설명들)"""
+    (ffmpeg를 그 폴더에서 돌린다). enc: pick_encoder 결과 (없으면 CPU). 돌려주는 값: Plan((인자, 설명들), pre, encoder)"""
     v = (streams(info, "video") or [None])[0]
     a = (streams(info, "audio") or [None])[0]
     if not v:
@@ -386,7 +448,7 @@ def encode_plan(info, ext, height_cap, burn_sub=None):
     a_ok = a is None or str(a.get("codec_name")) in ("aac", "mp3")
     if v_ok and a_ok and ext.lower() in (".mp4", ".m4v"):
         return None
-    notes = []
+    notes, pre = [], []
     args = ["-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn"]
     if v_ok:
         args += ["-c:v", "copy"]
@@ -400,9 +462,8 @@ def encode_plan(info, ext, height_cap, burn_sub=None):
             notes.append("자막 입힘")
         if not scale and not burn_sub:
             notes.append("H.264로 인코딩")
-        args += (["-vf", ",".join(vf)] if vf else []) + [
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23" if scale else "21", "-profile:v", "high", "-level:v", "4.1",
-            "-pix_fmt", "yuv420p"]
+        pre, vf, codec = video_encoder(enc, 23 if scale else 21, vf)
+        args += (["-vf", ",".join(vf)] if vf else []) + codec
     if a is None:
         pass
     elif a_ok:
@@ -412,4 +473,4 @@ def encode_plan(info, ext, height_cap, burn_sub=None):
         notes.append("소리 AAC로")
     if v_ok and a_ok:
         notes.append("mp4로 다시 담음")
-    return args + ["-movflags", "+faststart"], notes
+    return Plan(args + ["-movflags", "+faststart"], notes, pre, "copy" if v_ok else (enc or {}).get("name", "cpu"))

@@ -2822,7 +2822,9 @@ async def admin_mirror_options(request):
     # 폴더 규칙에 고를 것: rclone mount로 붙인 폴더들 + rclone 원격 이름들 (못 찾으면 왜인지)
     remotes, note = await folder_watch.list_remotes()
     mounts = folder_watch.rclone_mounts()
-    return web.json_response({"success": True, "plex": plex, "telegram": tgs, "rclone": bool(folder_watch.rclone_path()),
+    # 이 서버에서 되는 그래픽 인코더 (처음 한 번 짧게 시험 인코딩해 보고 기억)
+    encoders = {n: await folder_watch.hw_works(n) for n in ("nvenc", "qsv", "vaapi")}
+    return web.json_response({"success": True, "plex": plex, "telegram": tgs, "rclone": bool(folder_watch.rclone_path()), "encoders": encoders,
                               "remotes": remotes, "mounts": mounts, "rclone_note": "" if remotes or mounts else note})
 
 
