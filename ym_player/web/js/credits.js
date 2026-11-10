@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 110,
+        "version": "1.1.73",
+        "date": "2026-11-10",
+        "title": "자동 올리기: rclone 드라이브·폴더 규칙 - 새로 올라온 영상을 텔레그램에서 바로 재생되는 mp4로(큰 파일은 720p, SRT 자막은 화면에 입혀) 올리기"
+    },
+    {
         "pr": 109,
         "version": "1.1.72",
         "date": "2026-11-05",
