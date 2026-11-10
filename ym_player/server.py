@@ -1508,7 +1508,18 @@ async def tg_video(request, tg):
     row = telegram_src.get_video(tg.sid, channel, msg, user=username(request))
     if not row:
         return _json_error(404, "색인에 없는 영상입니다.")
-    row = {**row, "parts": telegram_src.video_parts(tg.sid, channel, msg, user=username(request)),
+    parts = telegram_src.video_parts(tg.sid, channel, msg, user=username(request))
+    if len(parts) > 1 and (request.query.get("probe") or telegram_src.get_joined(tg.sid, channel, parts[0]["msg"]) is not None):
+        await tg.authorized_client()
+        if await _tg_joined(tg, channel, msg):
+            # 크기로 자른 조각 묶음: 첫 조각 하나가 전체 영상 (이어 붙여 보낸다) - 다음 조각으로 넘기지 않는다
+            if msg != parts[0]["msg"]:
+                msg = parts[0]["msg"]
+                row = telegram_src.get_video(tg.sid, channel, msg, user=username(request)) or row
+            row = {**row, "joined": len(parts), "title": telegram_src.part_base_title(row["title"]),
+                   "size": sum(p["size"] for p in parts), "duration": sum(int(p["duration"] or 0) for p in parts)}
+            parts = []
+    row = {**row, "parts": parts,
            "subs": telegram_src.video_subs(tg.sid, channel, msg),
            "series": telegram_src.series_of(tg.sid, channel, msg)}
     if request.query.get("probe"):
@@ -1765,11 +1776,64 @@ def _tg_err_text(e):
     return f"텔레그램에서 받지 못했습니다: {text}"[:300]
 
 
+JOIN_HEAD_BYTES = 256
+
+
+async def _tg_joined(tg, channel, msg):
+    """이 영상이 크기로 자른 조각 묶음("이름_0000", "이름_0001"…, 둘째 조각부터는 머리가 없어 따로 재생 안 됨)이면
+    조각들 [{msg, size, ...}] (번호순), 아니면 None. 둘째 조각의 처음 몇 바이트로 한 번 알아내고 기억한다"""
+    parts = telegram_src.video_parts(tg.sid, channel, msg)
+    if len(parts) < 2 or not all(p["size"] for p in parts):
+        return None
+    first = parts[0]["msg"]
+    joined = telegram_src.get_joined(tg.sid, channel, first)
+    if joined is None:
+        second = parts[1]
+        head = b""
+        try:
+            async def read():
+                nonlocal head
+                async for chunk in tg.iter_cached(channel, second["msg"], 0, min(JOIN_HEAD_BYTES, second["size"]), second["size"]):
+                    head += chunk
+            await asyncio.wait_for(read(), 30)
+        except Exception as e:   # 이번엔 모름 - 따로따로 (다음에 다시 본다)
+            log.info("telegram %s/%s 조각 확인 실패: %s", channel, second["msg"], e)
+            return None
+        joined = not telegram_src.looks_like_container(head)
+        telegram_src.save_joined(tg.sid, channel, first, joined)
+        log.info("telegram %s/%s 조각 %d개: %s", channel, first, len(parts),
+                 "크기로 자른 파일 - 이어 붙여 재생" if joined else "조각마다 따로 재생되는 파일")
+    return parts if joined else None
+
+
+def _joined_range(tg, channel, parts):
+    """조각들을 이어 붙인 하나의 파일처럼 Range 읽기"""
+    async def open_range(start, length):
+        pos = 0
+        for p in parts:
+            psz = int(p["size"])
+            if length > 0 and start < pos + psz:
+                off = start - pos
+                n = min(psz - off, length)
+                async for chunk in tg.iter_cached(channel, p["msg"], off, n, psz, duration=p.get("duration") or 0):
+                    yield chunk
+                start += n
+                length -= n
+            pos += psz
+    return open_range
+
+
 async def _tg_range_response(request, tg, channel, msg, on_error=None):
     row = telegram_src.get_video(tg.sid, channel, msg)
     if not row or not row["size"]:
         return _json_error(404, "색인에 없는 영상입니다.")
     await tg.authorized_client()  # 로그인 안 됐으면 응답을 시작하기 전에 JSON 오류로
+    joined = await _tg_joined(tg, channel, msg)
+    if joined:   # 크기로 자른 조각 묶음 - 어느 조각을 열어도 이어 붙인 전체를
+        return await _range_response(
+            request, sum(int(p["size"]) for p in joined), telegram_src.browser_mime(joined[0]["mime"] or row["mime"]),
+            _joined_range(tg, channel, joined), f"telegram 스트림 {channel}/{joined[0]['msg']} (조각 {len(joined)}개 이어서)",
+            on_error=on_error, err_text=_tg_err_text)
     size = int(row["size"])
     return await _range_response(
         request, size, telegram_src.browser_mime(row["mime"]),
