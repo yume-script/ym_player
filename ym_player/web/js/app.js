@@ -13,8 +13,10 @@ import { renderLibrary } from './views/library.js';
 import { renderDetail } from './views/detail.js';
 import { renderLive } from './views/live.js';
 import { renderSearch } from './views/search.js';
-import { renderSettings } from './views/settings.js';
-import { renderChatSet } from './views/chatset.js';
+// 자주 안 여는 화면(설정 116KB 등)은 그 화면을 열 때 받는다 (처음 열 때 받는 양을 줄이려고)
+const lazyView = (load, name) => async (...args) => (await load())[name](...args);
+const renderSettings = lazyView(() => import('./views/settings.js'), 'renderSettings');
+const renderChatSet = lazyView(() => import('./views/chatset.js'), 'renderChatSet');
 
 const ROUTES = [
     [/^\/home$/, renderHome, 'home'],

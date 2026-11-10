@@ -44,7 +44,7 @@ from urllib.parse import quote, urlencode
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
 from yarl import URL
 
-from . import __version__, activity, auth, brunch, cctv, chatfind, config_store, discord_feed, folder_watch, iptv, mcp, media_cache, plex_to_tg, podcast, prefs, radio, recipe, subtitles, telegram_src, tmdb, transcode, updates
+from . import __version__, activity, auth, brunch, perf, cctv, chatfind, config_store, discord_feed, folder_watch, iptv, mcp, media_cache, plex_to_tg, podcast, prefs, radio, recipe, subtitles, telegram_src, tmdb, transcode, updates
 
 log = logging.getLogger("ym_player")
 
@@ -2896,7 +2896,8 @@ async def admin_status(request):
         "cryptg": telegram_src.fast_crypto(), "telethon": telegram_src.available(),
         "cache": {**await asyncio.to_thread(media_cache.STORE.stats), "enabled": media_cache.STORE.enabled},
         "ffmpeg": transcode.available(), "transcoding": sum(p.returncode is None for p in request.app[TRANSCODES].values()),
-    }, "sources": sources, "warnings": list(reversed(RECENT.items))})
+    }, "sources": sources, "warnings": list(reversed(RECENT.items)),
+        "slow": request.app[TIMINGS].top(10), "slow_since": int(request.app[TIMINGS].since)})
 
 
 @admin_only
@@ -3389,6 +3390,7 @@ def static_token():
 
 
 STATIC_TOKEN = web.AppKey("static_token", str)
+TIMINGS = web.AppKey("timings", perf.Timings)   # 라우트마다 걸린 시간 (설정 > 상태의 느린 요청)
 
 
 async def versioned_static(request):
@@ -3399,8 +3401,9 @@ async def versioned_static(request):
     if not path.startswith(os.path.realpath(WEB_DIR) + os.sep) or not os.path.isfile(path):
         return web.Response(status=404)
     current = request.match_info["token"] == request.app[STATIC_TOKEN]
-    return web.FileResponse(path, headers={
-        "Cache-Control": "public, max-age=31536000, immutable" if current else "no-cache"})
+    headers = {"Cache-Control": "public, max-age=31536000, immutable" if current else "no-cache"}
+    # JS·CSS는 압축본을 한 번 만들어 기억해 두고 (요청마다 압축하지 않게)
+    return perf.static_gzip(request, path, headers) or web.FileResponse(path, headers=headers)
 
 
 async def _static_no_cache(request, response):
@@ -3488,10 +3491,13 @@ async def _on_cleanup(app):
 def create_app(require_auth=True):
     """require_auth=False는 테스트용 (모든 요청을 관리자로 본다)."""
     tracker = activity.Activity()
-    # 재생 현황은 로그인한 다음에 센다 (누가 = 사용자 이름, 로그인을 안 쓰면 접속 주소)
-    app = web.Application(middlewares=[auth_middleware, activity.middleware(tracker, lambda r: username(r) or (r.remote or ""))],
+    timings = perf.Timings()
+    # 맨 바깥: 응답 압축(gzip)과 걸린 시간 재기 / 재생 현황은 로그인한 다음에 센다 (누가 = 사용자 이름, 로그인을 안 쓰면 접속 주소)
+    app = web.Application(middlewares=[perf.middleware(timings), auth_middleware,
+                                       activity.middleware(tracker, lambda r: username(r) or (r.remote or ""))],
                           client_max_size=8 * 1024 * 1024)
     app[ACTIVITY] = tracker
+    app[TIMINGS] = timings
     root = logging.getLogger()
     if RECENT not in root.handlers:
         root.addHandler(RECENT)

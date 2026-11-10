@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 124,
+        "version": "1.1.87",
+        "date": "2026-11-11",
+        "title": "빠르게: 응답 압축(gzip), 설정·책·웹툰·글 읽기 화면은 열 때 받기 (처음 받는 양 약 78% 감소), 설정 > 상태에 느린 요청 TOP 10"
+    },
+    {
         "pr": 123,
         "version": "1.1.86",
         "date": "2026-11-11",

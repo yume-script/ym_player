@@ -2,8 +2,9 @@
 // 설정에서 고른 채널 하나하나가 라이브러리처럼 보인다. 항목 id는 "채널id:메시지id".
 import { api, fmtDuration, h, modal, storeGet, storeSet, IS_SAFARI } from '../util.js';
 import { registry } from './index.js';
-import { openReader } from '../reader.js';
-import { openDocReader } from '../docreader.js';
+// 웹툰·책 보기는 열 때 받는다 (처음 화면을 가볍게)
+const openReader = (...a) => import('../reader.js').then((m) => m.openReader(...a));
+const openDocReader = (...a) => import('../docreader.js').then((m) => m.openDocReader(...a));
 
 // "새로 올라온 영상"의 NEW: 지난번 방문(서버 설정 tg_seen) 뒤 올라왔고 아직 안 본 영상.
 // 이번 방문 동안은 같은 기준을 쓰도록 처음 값을 세션에 붙잡아 둔다 (홈을 다시 열어도 NEW가 바로 사라지지 않게)

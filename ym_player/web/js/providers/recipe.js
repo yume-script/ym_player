@@ -1,7 +1,8 @@
 // 만개의레시피 (10000recipe.com). 추천·분류·검색과 레시피는 서버(/api/recipe/{id}, recipe.py)가 읽어 글자만 넘긴다.
 // 카드를 누르면 글 읽기 화면(article.js)에서 재료·만드는 순서를 한 페이지로 ([듣기]로 순서를 소리 내어).
 import { api, h } from '../util.js';
-import { openArticle } from '../article.js';
+// 글 읽기 화면은 열 때 받는다
+const openArticle = (...a) => import('../article.js').then((m) => m.openArticle(...a));
 
 const HOME_MAX = 12;
 const CATEGORIES = ['밑반찬', '메인반찬', '국/탕', '찌개', '밥/죽/떡', '면/만두', '초스피드', '도시락', '야식', '디저트', '다이어트'];

@@ -1,7 +1,8 @@
 // 브런치 연재 (brunch.co.kr 브런치북 오리지널 연재, 요일별). 목록·글은 서버(/api/brunch/{id}, brunch.py)가 받아 넘긴다.
 // 카드를 누르면 글 읽기 화면(article.js)에서 바로 읽는다 - 같은 브런치북의 앞뒤 회차로 이어서, [듣기]로 소리 내어.
 import { api } from '../util.js';
-import { openArticle } from '../article.js';
+// 글 읽기 화면은 열 때 받는다
+const openArticle = (...a) => import('../article.js').then((m) => m.openArticle(...a));
 
 const DAYS = [['MONDAY', '월'], ['TUESDAY', '화'], ['WEDNESDAY', '수'], ['THURSDAY', '목'], ['FRIDAY', '금'], ['SATURDAY', '토'], ['SUNDAY', '일']];
 const HOME_MAX = 12;
