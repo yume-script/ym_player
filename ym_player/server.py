@@ -2776,7 +2776,9 @@ def _make_mirror(app):
 
     async def plex_json(cfg, src, path, params=None):
         return await _plex_json(app, cfg, src, path, params)
-    return plex_to_tg.Mirror(plex_json, plex_src, tg_for, lambda: app[HTTP])
+    def playing():   # 재생용 서버 변환(스트림·HLS)이 돌고 있나 - 그동안 자동 올리기 인코딩은 멈춘다
+        return any(p.returncode is None for p in app[TRANSCODES].values())
+    return plex_to_tg.Mirror(plex_json, plex_src, tg_for, lambda: app[HTTP], playing)
 
 
 def _mirror_state(request):
