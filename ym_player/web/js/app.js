@@ -203,8 +203,17 @@ async function buildNav() {
         const group = h('div', { class: 'nav-group', dataset: { pid: p.id } }, head, items);
         group.insertBefore(moveButtons(group), items);   // 제목 줄 오른쪽 (순서 바꾸기 중에만 보임)
         nav.appendChild(group);
+        // 메뉴가 하나뿐인 소스는 펼치지 않고 소스 이름을 누르면 바로 그 화면으로 (두 번 누르지 않게)
+        const single = (href, iconName) => {
+            const a = navLink(href, iconName, p.name);
+            a.classList.add('nav-head', 'nav-single-link');
+            a.title = p.name;
+            group.replaceChild(a, group.querySelector('.nav-head'));
+            group.classList.add('nav-single');
+        };
         if (p.kind === 'iptv') {
             items.appendChild(navLink(`#/live/${p.id}`, 'list', '채널 편성표'));
+            single(`#/live/${p.id}`, 'tower-broadcast');
             continue;
         }
         const spinner = h('div', { class: 'nav-loading' }, icon('circle-notch', 'fa-spin'));
@@ -218,6 +227,7 @@ async function buildNav() {
                 if (document.body.classList.contains('nav-editing')) a.appendChild(moveButtons(a));
                 items.appendChild(a);
             });
+            if (libs.length === 1) single(`#/library/${p.id}/${libs[0].id}`, libs[0].icon || 'film');
             highlightNav();
         }).catch((e) => {
             spinner.remove();
