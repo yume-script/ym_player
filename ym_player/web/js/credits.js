@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 115,
+        "version": "1.1.78",
+        "date": "2026-11-10",
+        "title": "아이폰·아이패드: 형식을 모르는 텔레그램 영상은 바로 서버 변환으로, 원본·서버 변환이 둘 다 실패하면 \"The operation is not supported\" 대신 서버 쪽 이유를 보여 줌"
+    },
+    {
         "pr": 114,
         "version": "1.1.77",
         "date": "2026-11-10",
