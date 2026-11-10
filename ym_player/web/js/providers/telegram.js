@@ -45,8 +45,11 @@ const TRANSCODE_NOTE = { remux: '서버 변환(포장만)', audio: '서버 변�
 // Safari는 길이를 모르는 변환 스트림을 못 열어서 서버 변환을 HLS로 받는다. 원본으로 보낼 형식도 좁게 본다 (util.js IS_SAFARI).
 
 /** 서버가 "원본 그대로(direct)"라고 한 영상을 Safari에서 어떻게 볼지. 원본으로 못 믿을 조합은 미리 서버 변환으로 */
-function safariMode(play) {
-    if (play.mode !== 'direct' || !play.available || !play.container) return play.mode;
+function safariMode(play, fileName = '') {
+    if (play.mode !== 'direct' || !play.available) return play.mode;
+    // 서버가 형식을 알아내지 못했으면(ffprobe 실패) mp4가 아닌 한 원본으로 시도하지 않고 바로 서버 변환으로
+    // (Safari는 mkv 등을 받으면 "The operation is not supported"로 실패한다)
+    if (!play.container) return /\.(mp4|m4v|mov)$/i.test(fileName) ? 'direct' : 'transcode';
     const video = String(play.video || '').split(' ')[0];
     if (play.container !== 'mp4' || video !== 'h264') return 'transcode';  // WebM, VP9, AV1 등
     if (play.audio && play.audio !== 'aac') return 'audio';                // MP3, Opus, FLAC 등 -> 소리만 AAC로
@@ -682,7 +685,7 @@ export class TelegramProvider {
         const v = await this._video(id, true);
         const [channel, msg] = String(id).split(':');
         const play = v.play || { mode: 'direct' };
-        if (IS_SAFARI) play.mode = safariMode(play);
+        if (IS_SAFARI) play.mode = safariMode(play, v.file_name || '');
         const resumable = v.position > 30 && (!v.duration || v.position < v.duration * 0.95);
         const begin = startAt != null ? startAt : (!fromStart && resumable ? v.position : 0);
         const report = (position, duration) => fetch(`${this.base}/progress`, {

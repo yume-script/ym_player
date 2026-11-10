@@ -431,12 +431,18 @@ class Player {
             if (!pb.proxyUrl && pb.fallback) {
                 console.warn('[Player] 원본 재생 실패, 서버 변환으로 다시 시도:', e1.message);
                 this._showMsg('브라우저가 못 여는 형식이라 서버 변환으로 다시 여는 중...', { spinner: true });
+                let e3 = null;
                 try {
                     const next = await pb.fallback(pb.startTime || 0);
                     if (token !== this.token) return;
                     if (next) return this.start(next, null, { auto: true });
-                } catch (e3) { console.warn('[Player] 서버 변환 실패:', e3.message); }
+                } catch (e) { e3 = e; console.warn('[Player] 서버 변환 실패:', e.message); }
                 if (token !== this.token) return;
+                if (e3) {
+                    // 브라우저가 원본을 못 열고(예: Safari "The operation is not supported") 서버 변환도 실패 - 진짜 이유는 서버 쪽
+                    const err = new Error(`브라우저가 이 형식을 바로 열지 못했고 서버 변환도 실패했습니다: ${e3.message}`);
+                    return this._failedOrAlternate(pb, err, token);
+                }
             }
             if (!pb.proxyUrl) return this._failedOrAlternate(pb, e1, token);
             console.warn('[Player] 직접 재생 실패, 서버 중계로 다시 시도:', e1.message);
