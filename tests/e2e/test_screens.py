@@ -318,3 +318,27 @@ def test_nav_head_icons_and_library_crumb(page, server, upstream):
     page.click(".nav-single-link:has-text('만개의레시피')")
     page.wait_for_selector(".page.library h1 .crumb-title:has-text('만개의레시피')")
     assert page.locator(".page.library h1 .crumb-src").count() == 0           # 소스 이름과 같으면 한 번만
+
+
+def test_home_sources_hide_and_lazy(page, server, upstream):
+    """홈에 보일 소스 고르기: 끈 소스는 홈에 줄이 없고 요청도 안 함 (사이드바에는 그대로). 다시 켜면 돌아온다"""
+    set_sources(page, server, [{"type": "brunch", "name": "브런치 연재", "enabled": True},
+                               {"type": "recipe", "name": "만개의레시피", "enabled": True}])
+    asked = []
+    page.on("request", lambda r: asked.append(r.url) if "/api/brunch/" in r.url else None)
+    page.goto(server + "/#/home")
+    page.wait_for_selector(".card:has-text('고양이와 살기')")
+    page.click(".home-foot button")
+    page.locator(".home-src-row:has-text('브런치 연재') input").uncheck()
+    page.click(".modal button:has-text('저장')")
+    page.wait_for_selector(".home-foot button:has-text('1개 숨김')")
+    asked.clear()
+    page.reload()
+    page.wait_for_selector(".card:has-text('백종원 김치찌개')")
+    page.wait_for_timeout(500)
+    assert page.locator(".home-slot .card:has-text('고양이와 살기')").count() == 0 and not asked   # 요청도 안 함
+    assert page.locator(".nav-single-link:has-text('브런치 연재')").count() == 1                     # 사이드바에는 그대로
+    page.click(".home-foot button")
+    page.locator(".home-src-row:has-text('브런치 연재') input").check()
+    page.click(".modal button:has-text('저장')")
+    page.wait_for_selector(".home-slot .card:has-text('고양이와 살기')")

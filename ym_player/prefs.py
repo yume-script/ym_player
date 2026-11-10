@@ -71,7 +71,8 @@ def _nav_order(value):
 
 # 받아 주는 키와 검사 함수
 KEYS = {"fav_channels": _str_list, "theme": _choice(THEMES), "accent": _choice(ACCENTS), "seen_version": _version, "tg_seen": _iso_time,
-        "nav_order": _nav_order}
+        "nav_order": _nav_order,
+        "home_hidden": lambda v: _str_list(v)[:200]}   # 홈에 안 보일 소스 id들 (사이드바에서는 그대로)
 
 
 def _path():

@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 125,
+        "version": "1.1.88",
+        "date": "2026-11-11",
+        "title": "홈 가볍게: 위쪽 소스만 바로, 나머지는 스크롤할 때 불러오기, 돌아오면 기억한 줄을 바로 보여 주기, [홈에 보일 소스] 고르기"
+    },
+    {
         "pr": 124,
         "version": "1.1.87",
         "date": "2026-11-11",

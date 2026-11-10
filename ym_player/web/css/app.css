@@ -1260,3 +1260,7 @@ body.docpip { margin: 0; background: #000; overflow: hidden; }
 .slow-row.warn span:nth-child(2) { color: #e0b85a; }
 .slow-row.bad span:nth-child(2) { color: var(--danger); font-weight: 700; }
 @media (max-width: 600px) { .slow-row { grid-template-columns: minmax(0, 1fr) 4rem 4rem; } .slow-row > :nth-child(n+4) { display: none; } }
+/* 홈: 아래쪽 [홈에 보일 소스], 이어보기만 있던 소스 자리 */
+.home-foot { display: flex; justify-content: center; margin: 1.5rem 0 0.5rem; }
+.home-slot-empty { display: none; }
+.home-src-list { display: flex; flex-direction: column; gap: 0.4rem; min-width: min(360px, 80vw); }
