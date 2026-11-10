@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 113,
+        "version": "1.1.76",
+        "date": "2026-11-10",
+        "title": "자동 올리기: 인코딩 빠르게 - 그래픽 카드(NVIDIA·Intel·VAAPI) 인코더 자동 사용, CPU는 superfast, 상태에 인코딩 속도"
+    },
+    {
         "pr": 112,
         "version": "1.1.75",
         "date": "2026-11-10",

@@ -173,7 +173,12 @@ def clean_settings(raw):
     max_gb = num(raw.get("max_gb"), 0, 4, 0)
     if max_gb not in (0, 2, 4) or (max_gb == 2 and not raw.get("max_gb_v")):
         max_gb = 0
-    return {"interval": num(raw.get("interval"), 2, 1440, 10), "max_gb": max_gb, "max_gb_v": 1, "rules": rules}
+    # 인코더: auto(되는 하드웨어 인코더 NVIDIA > Intel > VAAPI, 없으면 CPU) / cpu / nvenc / qsv / vaapi.
+    # cpu_preset: CPU(libx264)로 할 때 빠르기 - 빠를수록 같은 화질에 파일이 조금 커진다
+    encoder = raw.get("encoder") if raw.get("encoder") in folder_watch.ENCODERS else "auto"
+    preset = raw.get("cpu_preset") if raw.get("cpu_preset") in folder_watch.CPU_PRESETS else "superfast"
+    return {"interval": num(raw.get("interval"), 2, 1440, 10), "max_gb": max_gb, "max_gb_v": 1, "encoder": encoder,
+            "cpu_preset": preset, "rules": rules}
 
 
 def load_settings():
@@ -768,11 +773,12 @@ class Mirror:
             vh = int(((folder_watch.streams(info, "video") or [{}])[0]).get("height") or 0)
             scale = bool(rule["height"] and vh > rule["height"])
             width, height = int(media.get("width") or 0), int(media.get("height") or 0)
+            enc_used = ""
             if burn_name or scale:
-                args, enc_notes = folder_watch.encode_plan(info, ".mkv", rule["height"], burn_name)
                 out = os.path.join(tmp, f"{stem}.enc.mp4")
-                phase = "자막 입혀 인코딩 중" if burn_name and not scale else "인코딩 중 (" + ", ".join(enc_notes) + ")"
-                await self._encode(local, args, out, duration, fields["name"], phase, tmp)
+                plan = await self._encode_plan(local, lambda enc: folder_watch.encode_plan(info, ".mkv", rule["height"], burn_name, enc),
+                                               out, duration, fields["name"], tmp)
+                enc_used = folder_watch.ENCODER_NAMES.get(plan.encoder, "")
                 local, name, ext = out, f"{stem}.mp4", ".mp4"
                 burned, scaled = bool(burn_name), scale
                 v = (folder_watch.streams(await folder_watch.probe(local), "video") or [{}])[0]
@@ -801,6 +807,8 @@ class Mirror:
             notes.append("자막 입혀 인코딩")
         if scaled:
             notes.append(f"{rule['height']}p로 줄임")
+        if enc_used:
+            notes.append(f"인코더 {enc_used}")
         if burn_skip:
             notes.append(burn_skip)
         if len(msgs) > 1:
@@ -891,13 +899,12 @@ class Mirror:
                     else:
                         log.info("자동 올리기: 파일 안의 자막을 꺼내지 못했습니다 (%s): %s", fields["name"], err.strip()[-200:])
             # 4) 인코딩 (필요할 때만)
-            plan = folder_watch.encode_plan(info, ext, rule["height"], burn)
+            out = os.path.join(tmp, f"{stem}.mp4")
+            plan = await self._encode_plan(local, lambda enc: folder_watch.encode_plan(info, ext, rule["height"], burn, enc),
+                                           out, duration, fields["name"], tmp)
             notes = []
             if plan:
-                args, notes = plan
-                out = os.path.join(tmp, f"{stem}.mp4")
-                await self._encode(local, args, out, duration, fields["name"],
-                                   "인코딩 중" + (f" ({', '.join(notes)})" if notes else ""), tmp)
+                notes = list(plan[1]) + ([f"인코더 {folder_watch.ENCODER_NAMES[plan.encoder]}"] if plan.encoder in folder_watch.ENCODER_NAMES else [])
                 if remote:   # 받은 원본은 바로 지운다 (디스크)
                     os.remove(local)
                 local, name, ext = out, f"{stem}.mp4", ".mp4"
@@ -1019,9 +1026,29 @@ class Mirror:
             f.write(text)
         return dest
 
-    async def _encode(self, src_path, args, out, duration, title, phase, cwd):
-        """ffmpeg -i src args out (진행률은 ffmpeg -progress로 self.current에)"""
-        cmd = [transcode.ffmpeg_path(), "-v", "error", "-y", "-nostats", "-progress", "pipe:1", "-i", os.path.abspath(src_path),
+    async def _encode_plan(self, src_path, make, out, duration, title, cwd):
+        """make(인코더) -> folder_watch.Plan 대로 인코딩 (손댈 것이 없으면 None). 설정의 인코더(자동이면 되는 하드웨어)로 하고,
+        하드웨어 인코더가 실패하면 그 인코더는 빼고 CPU로 한 번 더"""
+        st = load_settings()
+        enc = await folder_watch.pick_encoder(st["encoder"], st["cpu_preset"])
+        plan = make(enc)
+        if plan is None:
+            return None
+        for attempt in (1, 2):
+            label = ", ".join(plan[1]) + (f" · {folder_watch.ENCODER_NAMES[plan.encoder]}" if plan.encoder in folder_watch.ENCODER_NAMES else "")
+            try:
+                await self._encode(src_path, plan[0], out, duration, title, f"인코딩 중 ({label})", cwd, pre=plan.pre)
+                return plan
+            except RuntimeError as e:
+                if attempt == 2 or plan.encoder in ("cpu", "copy"):
+                    raise
+                log.warning("자동 올리기: %s 인코더 실패 - CPU로 다시 합니다: %s", plan.encoder, e)
+                folder_watch._HW_OK[plan.encoder] = False
+                plan = make({"name": "cpu", "preset": st["cpu_preset"]})
+
+    async def _encode(self, src_path, args, out, duration, title, phase, cwd, pre=()):
+        """ffmpeg (pre) -i src args out (진행률·속도는 ffmpeg -progress로 self.current에)"""
+        cmd = [transcode.ffmpeg_path(), "-v", "error", "-y", "-nostats", "-progress", "pipe:1", *pre, "-i", os.path.abspath(src_path),
                *args, os.path.abspath(out)]
         self.current = {"title": title, "phase": phase, "done": 0, "total": int(duration * 1000) or 0}
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=cwd)
@@ -1037,6 +1064,8 @@ class Mirror:
                 k, _, v = line.decode("utf-8", "replace").strip().partition("=")
                 if k == "out_time_ms" and v.isdigit() and self.current:
                     self.current["done"] = int(v) // 1000
+                elif k == "speed" and self.current and v.strip() not in ("", "N/A"):   # "2.35x" - 재생 속도의 몇 배로 인코딩하는지
+                    self.current["speed"] = v.strip()
             await proc.wait()
         finally:
             if proc.returncode is None:   # 취소됨 (서버 끄기 등) - ffmpeg를 남기지 않는다
