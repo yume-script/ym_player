@@ -17,8 +17,11 @@
 - 올린 영상마다 Plex의 작품 정보(포스터·배경·줄거리·장르·출연·회차 제목/줄거리/스틸)를 텔레그램 색인에 같이 남겨
   (telegram_src.plex_meta_put) YMPlayer의 텔레그램 화면이 TMDB 없이도 Plex처럼 보인다.
 
+- 폴더 규칙(kind "folder"): Plex 대신 rclone 드라이브(mount 폴더 또는 rclone 원격)에 새로 올라온 파일을 올린다 (folder_watch.py) -
+  텔레그램에서 바로 재생되는 H.264/AAC mp4로(필요할 때만 인코딩), 큰 파일은 720p로 줄이고, 자막 파일은 화면에 입힌다.
+
 설정은 config.json의 "plex_to_tg": {interval, max_gb, rules: [{id, enabled, plex, section, section_title, tg, channel,
-channel_title, caption, wait_subs, wait_hours, burn_subs}]}
+channel_title, caption, wait_subs, wait_hours, burn_subs, kind, folder, shrink_gb, height}]}
 (예전 wait_days는 읽을 때 wait_hours = wait_days x 24로 바꾼다)
 """
 import asyncio
@@ -36,7 +39,7 @@ import urllib.parse
 
 from aiohttp import ClientTimeout
 
-from . import config_store, telegram_src, transcode
+from . import config_store, folder_watch, telegram_src, transcode
 
 log = logging.getLogger("ym_player.plex_to_tg")
 
@@ -145,8 +148,21 @@ def clean_settings(raw):
                 # 자막을 몇 시간까지 기다릴지 (0이면 계속). 예전 설정의 일 단위(wait_days)는 시간으로 바꿔 읽는다
                 "wait_hours": num(r["wait_hours"] if "wait_hours" in r else
                                   (int(r.get("wait_days") or 0) * 24 if "wait_days" in r else DEFAULT_WAIT_HOURS), 0, 8760, DEFAULT_WAIT_HOURS),
-                "burn_subs": bool(r.get("burn_subs", True))}
-        if not (rule["plex"] and rule["section"] and rule["tg"] and re.fullmatch(r"-?\d+", rule["channel"])):
+                "burn_subs": bool(r.get("burn_subs", True)),
+                # 폴더 규칙 (rclone 드라이브 등): kind "folder", folder = 절대 경로 또는 rclone "원격:경로"
+                "kind": "folder" if r.get("kind") == "folder" else "plex",
+                "folder": str(r.get("folder") or "").strip()[:500],
+                # 파일이 shrink_gb보다 크면 height보다 높은 영상을 height로 줄인다 (0GB면 늘, height 0이면 줄이지 않음)
+                "shrink_gb": num(r.get("shrink_gb"), 0, 100, 2), "height": num(r.get("height"), 0, 2160, 720)}
+        if rule["height"] not in (0, 480, 720, 1080):
+            rule["height"] = 720
+        if rule["kind"] == "folder":
+            rule["folder"] = folder_watch.clean_folder(rule["folder"])
+            rule["plex"], rule["section"] = "", ""
+            rule["section_title"] = rule["folder"].rstrip("/").rsplit("/", 1)[-1].rsplit(":", 1)[-1] or rule["folder"]
+            if not (rule["tg"] and re.fullmatch(r"-?\d+", rule["channel"])):
+                raise ValueError("규칙마다 텔레그램 채널을 골라 주세요.")
+        elif not (rule["plex"] and rule["section"] and rule["tg"] and re.fullmatch(r"-?\d+", rule["channel"])):
             raise ValueError("규칙마다 Plex 라이브러리와 텔레그램 채널을 골라 주세요.")
         rules.append(rule)
     if len(rules) > MAX_RULES:
@@ -337,6 +353,7 @@ class Mirror:
         self._wake = asyncio.Event()
         self._shot_task = None
         self._gb_cache = {}      # 텔레그램 소스 id -> (시각, 파일 한도 GB) - 프리미엄 계정인지
+        self._head_info = {}     # (rclone 원격, 파일) -> 앞부분 ffprobe 결과 (자막 트랙 확인용)
         self._shot_fail = {}     # (규칙, 항목) -> (시각, 오류) - 장면 뽑기에 실패한 것 (SHOT_RETRY_SEC 뒤에 다시)
 
     def wake(self):
@@ -426,15 +443,28 @@ class Mirror:
         st = st or load_settings()
         state = load_state()
         queued = {(j["rule"], j["key"]) for j in self.queue}
+        errors = []
         for rule in st["rules"]:
             if not rule["enabled"]:
                 continue
-            items = await self._recent(rule)
             rs = state["rules"].setdefault(rule["id"], {"done": [], "fails": {}})
-            newest = max((int(m.get("addedAt") or 0) for m in items), default=0)
-            if "baseline" not in rs:          # 처음: 지금 있는 것은 올리지 않는다
-                rs["baseline"] = newest or int(time.time())
-                continue
+            if rule["kind"] == "folder":
+                try:
+                    files = await folder_watch.scan(rule["folder"])
+                except folder_watch.FolderError as e:   # 이 폴더만 못 봄 - 다른 규칙은 계속
+                    errors.append(f"{rule['section_title']}: {e}")
+                    continue
+                if "baseline" not in rs:      # 처음: 지금 있는 파일은 올리지 않는다 (이름을 기억해 둠)
+                    rs["baseline"] = int(time.time())
+                    rs["known"] = [folder_watch.key_hash(f["key"]) for f in files]
+                    rs["sizes"] = {}
+                    continue
+            else:
+                items = await self._recent(rule)
+                newest = max((int(m.get("addedAt") or 0) for m in items), default=0)
+                if "baseline" not in rs:          # 처음: 지금 있는 것은 올리지 않는다
+                    rs["baseline"] = newest or int(time.time())
+                    continue
             done = set(rs.get("done", []))
             for key, w in list(rs.get("waiting", {}).items()):   # 자막을 기다리던 것 (목록 앞쪽에서 밀려났어도)
                 if key in done:
@@ -449,6 +479,9 @@ class Mirror:
                 elif r.get("at", 0) <= now and (rule["id"], key) not in queued:
                     self.queue.append({"rule": rule["id"], "key": key, "title": r.get("title", key)})
                     queued.add((rule["id"], key))
+            if rule["kind"] == "folder":
+                self._queue_files(rule, rs, files, done, queued)
+                continue
             for m in sorted(items, key=lambda x: int(x.get("addedAt") or 0)):
                 key = str(m["ratingKey"])
                 if int(m.get("addedAt") or 0) <= rs["baseline"] or key in done or (rule["id"], key) in queued:
@@ -459,12 +492,41 @@ class Mirror:
                 queued.add((rule["id"], key))
         self.last_check = int(time.time())
         save_state(state)
+        if errors:
+            raise RuntimeError(" / ".join(errors))
+
+    def _queue_files(self, rule, rs, files, done, queued):
+        """폴더 규칙: 처음 보는 파일 중 다 올라온 것(크기가 그대로이거나 수정한 지 STABLE_SEC 지남)을 줄에"""
+        known = set(rs.get("known") or [])
+        sizes, now, fresh = rs.setdefault("sizes", {}), time.time(), {}
+        for f in sorted(files, key=lambda x: x["mtime"]):
+            key = f["key"]
+            if folder_watch.key_hash(key) in known or key in done or (rule["id"], key) in queued or key in rs.get("fails", {}):
+                continue
+            if sizes.get(key) == f["size"] or now - f["mtime"] >= folder_watch.STABLE_SEC:
+                self.queue.append({"rule": rule["id"], "key": key, "title": folder_watch.file_fields(key)["name"]})
+                queued.add((rule["id"], key))
+            else:   # 아직 올라오는 중일 수 있다 - 다음 확인 때 크기가 같으면
+                fresh[key] = f["size"]
+        rs["sizes"] = fresh
 
     async def test_latest(self, rule_id):
         """규칙 시험: 가장 최근 항목 하나를 (올린 적이 있어도) 올린다"""
         rule = next((r for r in load_settings()["rules"] if r["id"] == rule_id), None)
         if not rule:
             raise ValueError("없는 규칙입니다. 먼저 저장해 주세요.")
+        if rule["kind"] == "folder":
+            try:
+                files = await folder_watch.scan(rule["folder"])
+            except folder_watch.FolderError as e:
+                raise ValueError(str(e))
+            if not files:
+                raise ValueError("이 폴더에 동영상이 없습니다.")
+            f = max(files, key=lambda x: x["mtime"])
+            title = folder_watch.file_fields(f["key"])["name"]
+            self.queue.append({"rule": rule["id"], "key": f["key"], "title": title, "test": True})
+            self.wake()
+            return title
         items = await self._recent(rule)
         if not items:
             raise ValueError("이 라이브러리에 동영상이 없습니다.")
@@ -483,6 +545,13 @@ class Mirror:
         rule = next((r for r in load_settings()["rules"] if r["id"] == rule_id), None)
         if not rule or not transcode.ffmpeg_path():
             raise ValueError("장면을 뽑을 수 없습니다 (규칙이 없거나 서버에 ffmpeg가 없음).")
+        if rule["kind"] == "folder":
+            if folder_watch.is_remote(rule["folder"]):
+                raise ValueError("rclone 원격 파일은 장면을 뽑지 않습니다 (드라이브를 mount해서 폴더로 적으면 됩니다).")
+            local = folder_watch.local_path(rule["folder"], key)
+            dur = folder_watch.duration(await folder_watch.probe(local))
+            at = SHOT_AT if not dur or dur > SHOT_AT + 5 else dur / 2
+            return await self._grab(["-ss", f"{at:.0f}", "-i", local], path)
         cfg, src = self.plex_src(rule["plex"])
         if not src:
             raise ValueError("Plex 소스를 찾을 수 없습니다.")
@@ -502,6 +571,9 @@ class Mirror:
             args += ["-headers", f"X-Plex-Token: {src.get('token', '')}\r\n", "-i", f"{src['url']}{part['key']}"]
         else:
             raise ValueError("Plex 항목에 파일 정보가 없습니다.")
+        return await self._grab(args, path)
+
+    async def _grab(self, args, path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         ok, err = await self._ffmpeg(*args, "-frames:v", "1", "-vf", "scale='min(960,iw)':-2", "-q:v", "4", path + ".tmp.jpg")
         if not ok or not os.path.exists(path + ".tmp.jpg"):
@@ -581,6 +653,8 @@ class Mirror:
                 retry.pop(job["key"], None)
             elif ok:
                 rs["done"] = [*rs.get("done", []), job["key"]][-KEEP_DONE:]
+                if (rule or {}).get("kind") == "folder":   # 폴더 규칙은 올린 파일 이름을 따로 끝까지 기억 (done은 최근 것만)
+                    rs.setdefault("known", []).append(folder_watch.key_hash(job["key"]))
                 fails.pop(job["key"], None)
                 retry.pop(job["key"], None)
             elif not job.get("test"):
@@ -613,6 +687,8 @@ class Mirror:
         return gb
 
     async def upload(self, rule, key, max_gb, test=False):
+        if rule.get("kind") == "folder":
+            return await self.upload_file(rule, key, max_gb, test)
         cfg, src = self.plex_src(rule["plex"])
         data = await self.plex_json(cfg, src, f"/library/metadata/{key}")
         m = ((data.get("MediaContainer") or {}).get("Metadata") or [None])[0]
@@ -688,7 +764,6 @@ class Mirror:
                 await self._burn(local, best[0], out, duration, fields["name"])
                 local, name, ext, burned = out, f"{stem}.mp4", ".mp4", True
                 sub_files = []   # 화면에 들어갔으니 따로 올리지 않는다
-            sent_subs = 0
             thumb = await self._art(cfg, src, m.get("thumb") or m.get("grandparentThumb") or m.get("parentThumb"), 320, tmp)
             thumb = thumb if thumb and os.path.getsize(thumb) <= 200 * 1024 else None
             # 나누기 (각 조각이 따로 재생되게 시간으로)
@@ -696,37 +771,8 @@ class Mirror:
             if os.path.getsize(local) > limit:
                 pieces = await self._split(local, os.path.join(tmp, stem), ext, duration, limit, fields["name"])
             caption = make_caption(rule["caption"], fields)
-            from telethon.tl.types import DocumentAttributeFilename, DocumentAttributeVideo
-            stream = ext.lower() in STREAMABLE
-            for i, (path, start, dur) in enumerate(pieces, 1):
-                many = len(pieces) > 1
-                vname = f"{stem} part{i}{ext}" if many else name
-                cap = caption
-                if many:   # 첫 줄(제목)은 그대로 두고 그 아래에 (1/2)
-                    first, _, rest = caption.partition("\n")
-                    cap = f"{first}\n({i}/{len(pieces)})" + (f"\n{rest}" if rest else "")
-                attrs = [DocumentAttributeVideo(duration=int(dur), w=int(media.get("width") or 0), h=int(media.get("height") or 0),
-                                                supports_streaming=stream),
-                         DocumentAttributeFilename(vname)]
-                self.current = {"title": fields["name"] + (f" ({i}/{len(pieces)})" if many else ""),
-                                "phase": "텔레그램에 올리는 중", "done": 0, "total": os.path.getsize(path)}
-
-                def progress(done, total):
-                    if self.current:
-                        self.current.update(done=int(done), total=int(total))
-                sent = await client.send_file(peer, path, caption=cap[:1024], thumb=thumb, attributes=attrs,
-                                              supports_streaming=stream, force_document=False, progress_callback=progress)
-                msgs.append(getattr(sent, "id", None))
-                for spath, lang, sext in sub_files:   # 그 조각의 자막 (나눴으면 조각 시간만큼 잘라서)
-                    out = spath
-                    if many:
-                        out = await self._cut_sub(spath, os.path.join(tmp, f"cut{i}_{os.path.splitext(os.path.basename(spath))[0]}"),
-                                                  start, dur, sext)
-                        if not out:
-                            continue
-                    sname = f"{os.path.splitext(vname)[0]}{'.' + lang if lang else ''}.{'srt' if many and sext == 'smi' else sext}"
-                    await client.send_file(peer, out, force_document=True, attributes=[DocumentAttributeFilename(sname)])
-                    sent_subs += 1
+            sent_subs = await self._send_pieces(client, peer, pieces, name, caption, int(media.get("width") or 0),
+                                                int(media.get("height") or 0), thumb, sub_files, fields["name"], tmp, msgs)
             await self._save_meta(rule, cfg, src, m, [x for x in msgs if x], tmp)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
@@ -749,6 +795,165 @@ class Mirror:
         if not subs and not side and not soft:
             notes.append("자막 없음")
         return ", ".join(notes)
+
+    async def upload_file(self, rule, key, max_gb, test=False):
+        """폴더 규칙(rclone 드라이브 등)의 파일 하나: 텔레그램에서 바로 재생되게 H.264/AAC mp4로 (필요할 때만 인코딩),
+        크면 720p로 줄이고, 자막 파일이 있으면 화면에 입혀서 올린다"""
+        if not transcode.ffmpeg_path():
+            raise RuntimeError("서버에 ffmpeg가 없어 인코딩할 수 없습니다.")
+        folder = rule["folder"]
+        remote = folder_watch.is_remote(folder)
+        fields = folder_watch.file_fields(key, rule["section_title"])
+        name = re.sub(r'[\\/:*?"<>|]', "_", os.path.basename(key)) or "video.mp4"
+        stem, ext = os.path.splitext(name)
+        self.current = {"title": fields["name"], "phase": "준비 중", "done": 0, "total": 0}
+        tmp = os.path.join(config_store.DATA_DIR, "plex_to_tg_tmp", secrets.token_hex(6))
+        os.makedirs(tmp, exist_ok=True)
+        msgs = []
+        try:
+            # 1) 자막: 옆 자막 파일, 없으면 파일 안의 자막 트랙 (원격이면 앞부분만 받아 본다)
+            if remote:
+                side = await folder_watch.remote_subs(folder, key)
+                info = self._head_info.get((folder, key))
+                if info is None:   # 자막을 기다리는 동안 확인할 때마다 다시 받지 않게 기억 (파일 안의 트랙은 바뀌지 않는다)
+                    head = os.path.join(tmp, "head" + ext)
+                    info = await folder_watch.probe(head) if await folder_watch.fetch_head(folder, key, head) else {}
+                    self._head_info = {**dict(list(self._head_info.items())[-200:]), (folder, key): info}
+                size = 0
+            else:
+                local = folder_watch.local_path(folder, key)
+                if not os.path.isfile(local):
+                    raise RuntimeError("파일이 없습니다 (지워졌거나 옮겨짐).")
+                side = sidecar_subs(local)
+                info = await folder_watch.probe(local)
+                size = os.path.getsize(local)
+            any_inside = bool(folder_watch.streams(info, "subtitle"))
+            if rule["wait_subs"] and not side and not any_inside and not test:
+                w = (load_state()["rules"].get(rule["id"], {}).get("waiting") or {}).get(key)
+                if not rule["wait_hours"] or not w or time.time() - w.get("since", time.time()) < rule["wait_hours"] * 3600:
+                    raise Waiting()
+            tg = self.tg_for(rule["tg"])
+            client = await tg.authorized_client()
+            max_gb = max_gb or await self._account_gb(rule["tg"], client)
+            limit = int(max_gb * PART_LIMIT * 0.97)
+            peer = await tg.peer(int(rule["channel"]))
+            # 2) 원격이면 통째로 받기 (자막 파일도)
+            sub_files = []
+            if remote:
+                local = os.path.join(tmp, name)
+                self.current = {"title": fields["name"], "phase": "rclone에서 받는 중", "done": 0, "total": 0}
+
+                def got(n):
+                    if self.current:
+                        self.current["done"] = n
+                await folder_watch.fetch(folder, key, local, got)
+                size = os.path.getsize(local)
+                info = await folder_watch.probe(local)
+                for i, (rel, lang, sext) in enumerate(side):
+                    dest = os.path.join(tmp, f"side{i}.{sext}")
+                    await folder_watch.fetch(folder, rel, dest)
+                    sub_files.append((dest, sub_lang(lang), sext))
+            else:
+                sub_files = [(pth, lang, sext) for pth, lang, sext in side]
+            if not info:
+                raise RuntimeError("영상 정보를 읽지 못했습니다 (ffprobe).")
+            duration = folder_watch.duration(info)
+            # 3) 화면에 입힐 자막: 옆 자막 파일(한국어 먼저), 없으면 파일 안의 글자 자막 트랙
+            burn, burn_skip, inside = None, "", folder_watch.text_subs(info)
+            if rule["burn_subs"] and (sub_files or inside):
+                if not has_korean_font():
+                    burn_skip = "한글 글꼴이 없어 자막을 입히지 않고 파일로 올림 (sudo apt install fonts-nanum)"
+                elif sub_files:
+                    best = next((f for f in sub_files if f[1].lower() in ("kor", "ko", "ko-kr")), sub_files[0])
+                    burn = os.path.basename(self.utf8_sub(best[0], os.path.join(tmp, f"burn.{best[2]}")))
+                else:
+                    idx, _lang, sext = inside[0]
+                    raw = os.path.join(tmp, f"inside.{sext}")
+                    ok, err = await self._ffmpeg("-i", local, "-map", f"0:{idx}", "-c:s", "ass" if sext == "ass" else "srt", raw)
+                    if ok and os.path.getsize(raw) > 0:
+                        burn = os.path.basename(self.utf8_sub(raw, os.path.join(tmp, f"burn.{sext}")))
+                    else:
+                        log.info("자동 올리기: 파일 안의 자막을 꺼내지 못했습니다 (%s): %s", fields["name"], err.strip()[-200:])
+            # 4) 인코딩 (필요할 때만)
+            plan = folder_watch.encode_plan(info, size, ext, rule["shrink_gb"] * 1024 ** 3, rule["height"], burn)
+            notes = []
+            if plan:
+                args, notes = plan
+                out = os.path.join(tmp, f"{stem}.mp4")
+                await self._encode(local, args, out, duration, fields["name"],
+                                   "인코딩 중" + (f" ({', '.join(notes)})" if notes else ""), tmp)
+                if remote:   # 받은 원본은 바로 지운다 (디스크)
+                    os.remove(local)
+                local, name, ext = out, f"{stem}.mp4", ".mp4"
+                info = await folder_watch.probe(local) or info
+            if burn:
+                sub_files = []   # 화면에 들어갔으니 따로 올리지 않는다
+            v = (folder_watch.streams(info, "video") or [{}])[0]
+            # 5) 나누기·미리보기 그림
+            pieces = [(local, 0, duration)]
+            if os.path.getsize(local) > limit:
+                if duration <= 0:
+                    raise RuntimeError("파일이 한도보다 큰데 길이를 몰라 나눌 수 없습니다.")
+                pieces = await self._split(local, os.path.join(tmp, stem), ext, duration, limit, fields["name"])
+            thumb = os.path.join(tmp, "thumb.jpg")
+            ok, _err = await self._ffmpeg("-ss", f"{min(60.0, duration * 0.1):.1f}", "-i", local, "-frames:v", "1",
+                                          "-vf", "scale=320:-2", "-q:v", "5", thumb)
+            thumb = thumb if ok and os.path.exists(thumb) and os.path.getsize(thumb) <= 200 * 1024 else None
+            caption = make_caption(rule["caption"], fields)
+            sent_subs = await self._send_pieces(client, peer, pieces, name, caption, int(v.get("width") or 0), int(v.get("height") or 0),
+                                                thumb, sub_files, fields["name"], tmp, msgs)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        log.info("자동 올리기(폴더): %s -> %s", key, rule["channel_title"] or rule["channel"])
+        self.subs_label = "화면에 입힘" if burn else f"파일 {sent_subs}개" if sent_subs else "없음"
+        if not plan:
+            notes = ["그대로 올림 (바로 재생되는 mp4)"]
+        if burn_skip:
+            notes.append(burn_skip)
+        if len(msgs) > 1:
+            notes.append(f"{len(msgs)}개로 나눠 올림 ({max_gb}GB 한도)")
+        if sent_subs:
+            notes.append(f"자막 파일 {sent_subs}개 첨부")
+        if not side and not any_inside:
+            notes.append("자막 없음")
+        return ", ".join(notes)
+
+    async def _send_pieces(self, client, peer, pieces, name, caption, width, height, thumb, sub_files, title, tmp, msgs):
+        """영상 조각들을 차례로 올리고(나눴으면 이름에 partN, 캡션에 (i/n)) 그 뒤에 자막 파일. 올린 메시지 id는 msgs에.
+        돌려주는 값: 올린 자막 파일 수"""
+        from telethon.tl.types import DocumentAttributeFilename, DocumentAttributeVideo
+        stem, ext = os.path.splitext(name)
+        stream = ext.lower() in STREAMABLE
+        sent_subs = 0
+        for i, (path, start, dur) in enumerate(pieces, 1):
+            many = len(pieces) > 1
+            vname = f"{stem} part{i}{ext}" if many else name
+            cap = caption
+            if many:   # 첫 줄(제목)은 그대로 두고 그 아래에 (1/2)
+                first, _, rest = caption.partition("\n")
+                cap = f"{first}\n({i}/{len(pieces)})" + (f"\n{rest}" if rest else "")
+            attrs = [DocumentAttributeVideo(duration=int(dur), w=width, h=height, supports_streaming=stream),
+                     DocumentAttributeFilename(vname)]
+            self.current = {"title": title + (f" ({i}/{len(pieces)})" if many else ""),
+                            "phase": "텔레그램에 올리는 중", "done": 0, "total": os.path.getsize(path)}
+
+            def progress(done, total):
+                if self.current:
+                    self.current.update(done=int(done), total=int(total))
+            sent = await client.send_file(peer, path, caption=cap[:1024], thumb=thumb, attributes=attrs,
+                                          supports_streaming=stream, force_document=False, progress_callback=progress)
+            msgs.append(getattr(sent, "id", None))
+            for spath, lang, sext in sub_files:   # 그 조각의 자막 (나눴으면 조각 시간만큼 잘라서)
+                out = spath
+                if many:
+                    out = await self._cut_sub(spath, os.path.join(tmp, f"cut{i}_{os.path.splitext(os.path.basename(spath))[0]}"),
+                                              start, dur, sext)
+                    if not out:
+                        continue
+                sname = f"{os.path.splitext(vname)[0]}{'.' + lang if lang else ''}.{'srt' if many and sext == 'smi' else sext}"
+                await client.send_file(peer, out, force_document=True, attributes=[DocumentAttributeFilename(sname)])
+                sent_subs += 1
+        return sent_subs
 
     async def _probe_subs(self, target, token=None):
         """파일 안의 자막 트랙 [{codec, lang}] (없으면 []). ffprobe가 없거나 못 열면 None"""
@@ -781,9 +986,10 @@ class Mirror:
         _out, err = await proc.communicate()
         return proc.returncode == 0, err.decode("utf-8", "replace")[-300:]
 
-    async def _burn(self, src_path, sub_path, out, duration, title):
-        """자막을 화면에 입혀 H.264/AAC mp4로 (진행률은 ffmpeg -progress로)"""
-        with open(sub_path, "rb") as f:   # 우리말 자막은 CP949인 경우가 많다 -> UTF-8로 맞춰 둔다 (libass는 UTF-8을 기대)
+    @staticmethod
+    def utf8_sub(sub_path, dest):
+        """자막 파일을 UTF-8로 맞춰 dest에 (우리말 자막은 CP949인 경우가 많은데 libass는 UTF-8을 기대)"""
+        with open(sub_path, "rb") as f:
             raw = f.read()
         for enc in ("utf-8-sig", "cp949", "utf-16"):
             try:
@@ -793,17 +999,25 @@ class Mirror:
                 continue
         else:
             text = raw.decode("utf-8", "replace")
-        sub_utf8 = os.path.splitext(sub_path)[0] + ".utf8" + os.path.splitext(sub_path)[1]
-        with open(sub_utf8, "w", encoding="utf-8") as f:
+        with open(dest, "w", encoding="utf-8") as f:
             f.write(text)
-        args = [transcode.ffmpeg_path(), "-v", "error", "-y", "-nostats", "-progress", "pipe:1", "-i", os.path.abspath(src_path),
-                "-map", "0:v:0", "-map", "0:a?", "-vf", f"subtitles=filename={os.path.basename(sub_utf8)}",
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
-                "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", os.path.abspath(out)]
-        self.current = {"title": title, "phase": "자막 입혀 인코딩 중", "done": 0, "total": int(duration * 1000) or 0}
+        return dest
+
+    async def _burn(self, src_path, sub_path, out, duration, title):
+        """자막을 화면에 입혀 H.264/AAC mp4로"""
+        sub_utf8 = self.utf8_sub(sub_path, os.path.splitext(sub_path)[0] + ".utf8" + os.path.splitext(sub_path)[1])
         # 자막 파일은 그 폴더에서 이름만으로 (필터 안에서 경로의 : ' 등을 이스케이프하지 않게 - 이름은 subN.utf8.srt 꼴)
-        proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                                                    cwd=os.path.dirname(sub_utf8))
+        await self._encode(src_path, ["-map", "0:v:0", "-map", "0:a?", "-vf", f"subtitles=filename={os.path.basename(sub_utf8)}",
+                                      "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
+                                      "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"],
+                           out, duration, title, "자막 입혀 인코딩 중", os.path.dirname(sub_utf8))
+
+    async def _encode(self, src_path, args, out, duration, title, phase, cwd):
+        """ffmpeg -i src args out (진행률은 ffmpeg -progress로 self.current에)"""
+        cmd = [transcode.ffmpeg_path(), "-v", "error", "-y", "-nostats", "-progress", "pipe:1", "-i", os.path.abspath(src_path),
+               *args, os.path.abspath(out)]
+        self.current = {"title": title, "phase": phase, "done": 0, "total": int(duration * 1000) or 0}
+        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=cwd)
         errs = []
 
         async def read_err():
@@ -811,14 +1025,19 @@ class Mirror:
                 errs.append(line.decode("utf-8", "replace"))
                 del errs[:-20]
         err_task = asyncio.ensure_future(read_err())
-        async for line in proc.stdout:   # out_time_ms=12345678 (이름과 달리 마이크로초)
-            k, _, v = line.decode("utf-8", "replace").strip().partition("=")
-            if k == "out_time_ms" and v.isdigit() and self.current:
-                self.current["done"] = int(v) // 1000
-        await proc.wait()
+        try:
+            async for line in proc.stdout:   # out_time_ms=12345678 (이름과 달리 마이크로초)
+                k, _, v = line.decode("utf-8", "replace").strip().partition("=")
+                if k == "out_time_ms" and v.isdigit() and self.current:
+                    self.current["done"] = int(v) // 1000
+            await proc.wait()
+        finally:
+            if proc.returncode is None:   # 취소됨 (서버 끄기 등) - ffmpeg를 남기지 않는다
+                proc.kill()
+                await proc.wait()
         await err_task
         if proc.returncode != 0 or not os.path.exists(out):
-            raise RuntimeError(f"자막 입혀 인코딩 실패: {''.join(errs).strip()[-300:]}")
+            raise RuntimeError(f"{phase.replace(' 중', '')} 실패: {''.join(errs).strip()[-300:]}")
 
     async def _split(self, src_path, base, ext, duration, limit, title):
         """시간으로 n조각 [(경로, 시작초, 길이초)]. 한도의 몇 배인지만큼 같은 길이로 나눈다 - 한도의 2배까지는 반씩(50%),

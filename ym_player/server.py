@@ -44,7 +44,7 @@ from urllib.parse import quote, urlencode
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
 from yarl import URL
 
-from . import __version__, activity, auth, cctv, chatfind, config_store, discord_feed, iptv, mcp, media_cache, plex_to_tg, podcast, prefs, radio, subtitles, telegram_src, tmdb, transcode, updates
+from . import __version__, activity, auth, cctv, chatfind, config_store, discord_feed, folder_watch, iptv, mcp, media_cache, plex_to_tg, podcast, prefs, radio, subtitles, telegram_src, tmdb, transcode, updates
 
 log = logging.getLogger("ym_player")
 
@@ -2819,7 +2819,16 @@ async def admin_mirror_options(request):
             plex.append(item)
         elif src.get("type") == "telegram":
             tgs.append({"id": src["id"], "name": src.get("name", "")})
-    return web.json_response({"success": True, "plex": plex, "telegram": tgs})
+    # 폴더 규칙에 적을 rclone 원격 이름들 (rclone이 있으면)
+    remotes, rc = [], folder_watch.rclone_path()
+    if rc:
+        try:
+            proc = await asyncio.create_subprocess_exec(rc, "listremotes", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            out, _err = await asyncio.wait_for(proc.communicate(), 20)
+            remotes = [x.strip() for x in out.decode("utf-8", "replace").splitlines() if x.strip().endswith(":")][:50]
+        except (OSError, asyncio.TimeoutError):
+            pass
+    return web.json_response({"success": True, "plex": plex, "telegram": tgs, "rclone": bool(rc), "remotes": remotes})
 
 
 @admin_only

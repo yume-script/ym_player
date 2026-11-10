@@ -1222,6 +1222,14 @@ async function renderMirror(pane) {
 
     const addRule = (r = {}) => {
         const enabledIn = h('input', { type: 'checkbox', checked: r.enabled !== false });
+        const kindSel = h('select', { class: 'select mirror-kind' }, opt('plex', 'Plex 라이브러리', r.kind !== 'folder'),
+            opt('folder', 'rclone 드라이브 · 폴더', r.kind === 'folder'));
+        const listId = `mirror-remotes-${Math.random().toString(36).slice(2, 8)}`;
+        const folderIn = h('input', { class: 'input mirror-folder', placeholder: opts.rclone ? '/mnt/gdrive/영화 또는 gdrive:영화' : '/mnt/gdrive/영화', value: r.folder || '', list: listId });
+        const remoteList = h('datalist', { id: listId }, (opts.remotes || []).map((x) => h('option', { value: x })));
+        const shrinkIn = h('input', { class: 'input input-sm mirror-days', type: 'number', min: '0', max: '100', value: String(r.shrink_gb ?? 2) });
+        const heightSel = h('select', { class: 'select mirror-height' }, [[720, '720p'], [480, '480p'], [1080, '1080p'], [0, '줄이지 않음']].map(([v, t]) =>
+            h('option', { value: String(v), text: t, selected: (r.height ?? 720) === v })));
         const plexSel = h('select', { class: 'select' }, opt('', 'Plex 라이브러리 고르기', !r.section),
             ...opts.plex.flatMap((p) => p.sections.map((sec) => opt(`${p.id}|${sec.key}`, `${p.name} · ${sec.title} (${sec.type === 'show' ? 'TV' : '영화'})`,
                 r.plex === p.id && r.section === sec.key, sec.title))));
@@ -1248,18 +1256,37 @@ async function renderMirror(pane) {
             catch (e) { toast(e.message, 'error', 6000); }
         } } }, icon('paper-plane'), ' 가장 최근 것 하나 올려 보기');
         const del = h('button', { class: 'btn btn-sm', on: { click: () => { rows.splice(rows.indexOf(row), 1); card.remove(); } } }, icon('trash'), ' 지우기');
+        const plexField = field('Plex 라이브러리', plexSel);
+        const folderField = field('폴더', h('div', {}, folderIn, remoteList),
+            opts.rclone ? 'rclone mount로 붙인 폴더(/로 시작) 또는 rclone 원격 "이름:경로". 하위 폴더까지 봅니다.'
+                : '이 컴퓨터의 폴더(/로 시작, rclone mount로 붙인 드라이브). rclone 원격 "이름:경로"를 쓰려면 서버에 rclone을 설치하세요.');
+        const encBox = h('div', { class: 'mirror-wait mirror-enc' },
+            h('span', { class: 'muted', text: '텔레그램에서 바로 재생되게 H.264/AAC mp4로 올림 (이미 그 모양이면 그대로) · 파일이' }), shrinkIn,
+            h('span', { class: 'muted', text: 'GB보다 크면' }), heightSel, h('span', { class: 'muted', text: '로 줄여 인코딩 (0GB면 늘)' }));
+        const syncKind = () => {
+            const folder = kindSel.value === 'folder';
+            plexField.classList.toggle('hidden', folder);
+            folderField.classList.toggle('hidden', !folder);
+            encBox.classList.toggle('hidden', !folder);
+            burnText.textContent = folder ? ' 자막 파일(SRT 등)이나 파일 안의 자막을 화면에 입혀 인코딩 (텔레그램 앱에서도 자막이 보임)'
+                : ' 영상 안에 자막이 없으면 외부 자막을 화면에 입혀 다시 인코딩 (텔레그램 앱에서도 자막이 보임)';
+        };
+        const burnText = h('span', {});
+        kindSel.addEventListener('change', syncKind);
         const card = h('div', { class: 'mirror-rule' },
-            h('label', { class: 'check' }, enabledIn, ' 켜기'),
-            h('div', { class: 'row-2 mirror-pick' }, field('Plex 라이브러리', plexSel), field('올릴 텔레그램', h('div', { class: 'toolbar' }, tgSel, chSel))),
+            h('div', { class: 'toolbar' }, h('label', { class: 'check' }, enabledIn, ' 켜기'), kindSel),
+            h('div', { class: 'row-2 mirror-pick' }, plexField, folderField, field('올릴 텔레그램', h('div', { class: 'toolbar' }, tgSel, chSel))),
+            encBox,
             h('div', { class: 'mirror-wait' }, h('label', { class: 'check' }, waitIn, ' 자막이 생길 때까지 기다렸다가 올리기'),
                 h('span', { class: 'muted', text: ' 최대' }), hoursIn, h('span', { class: 'muted', text: '시간 (0이면 계속 기다림, 하드섭은 상태 표에서 [지금 올리기])' })),
-            h('label', { class: 'check', title: '영상 안에 자막이 없고 외부 자막만 있을 때. 다시 인코딩하느라 시간이 걸립니다.' }, burnIn,
-                ' 영상 안에 자막이 없으면 외부 자막을 화면에 입혀 다시 인코딩 (텔레그램 앱에서도 자막이 보임)'),
+            h('label', { class: 'check', title: '다시 인코딩하느라 시간이 걸립니다.' }, burnIn, burnText),
             field('캡션', capIn, '{name} 제목(영화 "제목 (연도)", 에피소드 "작품 S01E02 - 제목") · {summary} 줄거리 · {title} {year} {show} {season} {episode} {code} {genres} {tags}(#장르) {library} {filename}'),
             h('div', { class: 'toolbar' }, test, del));
+        syncKind();
         const row = { id: r.id, get: () => {
             const [plex, section] = plexSel.value.split('|');
-            return { id: row.id, enabled: enabledIn.checked, plex, section, section_title: ((plexSel.selectedOptions[0] || {}).dataset || {}).name || '',
+            return { id: row.id, enabled: enabledIn.checked, kind: kindSel.value, folder: folderIn.value.trim(), shrink_gb: Number(shrinkIn.value) || 0,
+                height: Number(heightSel.value), plex, section, section_title: ((plexSel.selectedOptions[0] || {}).dataset || {}).name || '',
                 tg: tgSel.value, channel: chSel.value, channel_title: ((chSel.selectedOptions[0] || {}).dataset || {}).name || '', caption: capIn.value,
                 wait_subs: waitIn.checked, wait_hours: Number(hoursIn.value) || 0, burn_subs: burnIn.checked };
         } };
@@ -1364,12 +1391,14 @@ async function renderMirror(pane) {
     const plexErr = opts.plex.filter((p) => p.error).map((p) => h('p', { class: 'muted error', text: `${p.name}: ${p.error}` }));
     clear(pane).append(
         h('div', { class: 'src-card' },
-            h('h3', { class: 'pane-title' }, icon('cloud-arrow-up'), ' Plex → 텔레그램 자동 올리기'),
+            h('h3', { class: 'pane-title' }, icon('cloud-arrow-up'), ' 텔레그램 자동 올리기 (Plex · rclone 드라이브)'),
             h('p', { text: '고른 Plex 라이브러리에 새 동영상(영화·에피소드)이 들어오면, 로그인해 둔 텔레그램 계정으로 고른 채널에 파일을 올립니다. '
                 + '규칙을 처음 저장할 때 이미 있던 것은 올리지 않고 그 뒤에 들어온 것부터 올립니다. 한 번에 하나씩 올리고, 실패하면 다음 확인 때 다시(3번까지). '
                 + '한도를 넘는 파일은 ffmpeg로 시간을 나눠 "이름 part1", "part2"…로 올리고(YMPlayer에서 이어서 재생), 외부 자막 파일도 같이 올립니다. '
-                + 'Plex의 포스터·줄거리·장르·출연·회차 정보를 같이 남겨 텔레그램 화면에서 Plex처럼 보입니다.' }),
-            ...(opts.plex.length && opts.telegram.length ? [] : [h('p', { class: 'muted error', text: 'Plex 소스와 텔레그램 소스(로그인까지)가 둘 다 있어야 합니다.' })]),
+                + 'Plex의 포스터·줄거리·장르·출연·회차 정보를 같이 남겨 텔레그램 화면에서 Plex처럼 보입니다. '
+                + '규칙을 "rclone 드라이브 · 폴더"로 바꾸면 그 폴더에 새로 올라온 동영상을 텔레그램에서 바로 재생되는 mp4(H.264/AAC)로 바꿔 올립니다 '
+                + '(큰 파일은 720p로 줄이고, 같은 이름의 SRT 자막이 있으면 화면에 입힘).' }),
+            ...(opts.telegram.length ? [] : [h('p', { class: 'muted error', text: '텔레그램 소스(로그인까지)가 있어야 합니다.' })]),
             ...plexErr,
             h('div', { class: 'row-2' }, field('확인 간격 (분)', intervalIn, '2~1440'), field('파일 크기 한도', maxSel, '넘는 파일은 한도의 몇 배인지만큼 같은 길이로 나눠 올립니다 (2배까지는 반씩, 서버에 ffmpeg 필요). 자동은 규칙마다 올리는 텔레그램 계정을 봅니다.')),
             rulesBox,

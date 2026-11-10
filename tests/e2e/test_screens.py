@@ -232,3 +232,19 @@ def test_chat_bookmarklet(page, server, upstream):
     page.wait_for_selector(".chat-panel:not(.hidden)", timeout=10000)
     assert page.frame_locator(".chat-frame").locator("#hello").inner_text(timeout=10000) == "채팅 페이지"
     page.evaluate("window._pl.stop()")
+
+
+def test_mirror_folder_rule(page, server):
+    """자동 올리기: 규칙을 "rclone 드라이브 · 폴더"로 바꾸면 폴더 칸과 720p 줄이기 칸이 보이고 Plex 칸은 숨는다"""
+    page.goto(server + "/#/settings")
+    page.wait_for_selector(".src-tabs")
+    page.click(".tabs:not(.src-tabs) > .tab:has-text('자동 올리기')")
+    page.click("button:has-text('규칙 추가')")
+    rule = page.locator(".mirror-rule").last
+    assert rule.locator(".mirror-folder").is_hidden() and rule.locator(".mirror-enc").is_hidden()
+    rule.locator(".mirror-kind").select_option("folder")
+    assert rule.locator(".mirror-folder").is_visible() and rule.locator(".mirror-enc").is_visible()
+    assert rule.locator(".mirror-height").input_value() == "720"
+    assert "자막 파일(SRT 등)" in rule.inner_text()
+    rule.locator(".mirror-kind").select_option("plex")
+    assert rule.locator(".mirror-folder").is_hidden()
