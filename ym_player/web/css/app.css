@@ -1239,3 +1239,7 @@ body.docpip { margin: 0; background: #000; overflow: hidden; }
 .recipe-step-body { flex: 1; min-width: 0; }
 .recipe-step-body p { margin: 0 0 0.5rem; }
 .recipe-step-body img { max-width: 100%; border-radius: 6px; }
+/* 메뉴가 하나뿐인 소스: 소스 이름 줄이 바로 그 화면으로 가는 링크 (펼칠 하위 메뉴 없음) */
+.nav-group.nav-single .nav-items { display: none; }
+.nav-group.nav-single { margin-top: 0.35rem; }
+.nav-head.nav-single-link { padding: 0.55rem 0.9rem; font-size: inherit; font-weight: 500; text-transform: none; letter-spacing: normal; }

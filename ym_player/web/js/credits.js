@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 122,
+        "version": "1.1.85",
+        "date": "2026-11-11",
+        "title": "사이드바: 메뉴가 하나뿐인 소스(레시피·브런치·CCTV·IPTV 등)는 소스 이름을 한 번 누르면 바로 들어가게"
+    },
+    {
         "pr": 121,
         "version": "1.1.84",
         "date": "2026-11-11",

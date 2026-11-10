@@ -289,3 +289,18 @@ def test_brunch_and_recipe_reader(page, server):
     page.goto(server + "/#/library/" + page.evaluate("fetch('/api/config').then(r => r.json()).then(c => c.sources.find(s => s.type === 'recipe').id)") + "/recipes")
     page.wait_for_selector(".page.library .card")
     assert "밑반찬" in page.inner_text(".page.library select")
+
+
+def test_single_library_source_opens_from_nav(page, server):
+    """메뉴가 하나뿐인 소스(레시피·브런치·IPTV 등)는 사이드바에서 소스 이름을 한 번 누르면 바로 그 화면"""
+    set_sources(page, server, [{"type": "brunch", "name": "브런치 연재", "enabled": True},
+                               {"type": "recipe", "name": "만개의레시피", "enabled": True}])
+    page.goto(server + "/#/home")
+    page.wait_for_selector(".nav-group.nav-single .nav-single-link:has-text('만개의레시피')")
+    assert page.locator(".nav-group .nav-toggle").count() == 0          # 펼치는 머리줄 없음
+    page.click(".nav-single-link:has-text('만개의레시피')")
+    page.wait_for_selector(".page.library h1:has-text('만개의레시피')")
+    assert "/recipes" in page.url
+    assert page.locator(".nav-single-link.active:has-text('만개의레시피')").count() == 1
+    page.click(".nav-single-link:has-text('브런치 연재')")
+    page.wait_for_selector(".page.library h1:has-text('브런치 연재')")
