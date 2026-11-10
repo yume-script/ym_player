@@ -2819,16 +2819,28 @@ async def admin_mirror_options(request):
             plex.append(item)
         elif src.get("type") == "telegram":
             tgs.append({"id": src["id"], "name": src.get("name", "")})
-    # 폴더 규칙에 적을 rclone 원격 이름들 (rclone이 있으면)
-    remotes, rc = [], folder_watch.rclone_path()
-    if rc:
-        try:
-            proc = await asyncio.create_subprocess_exec(rc, "listremotes", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
-            out, _err = await asyncio.wait_for(proc.communicate(), 20)
-            remotes = [x.strip() for x in out.decode("utf-8", "replace").splitlines() if x.strip().endswith(":")][:50]
-        except (OSError, asyncio.TimeoutError):
-            pass
-    return web.json_response({"success": True, "plex": plex, "telegram": tgs, "rclone": bool(rc), "remotes": remotes})
+    # 폴더 규칙에 고를 것: rclone mount로 붙인 폴더들 + rclone 원격 이름들 (못 찾으면 왜인지)
+    remotes, note = await folder_watch.list_remotes()
+    mounts = folder_watch.rclone_mounts()
+    return web.json_response({"success": True, "plex": plex, "telegram": tgs, "rclone": bool(folder_watch.rclone_path()),
+                              "remotes": remotes, "mounts": mounts, "rclone_note": "" if remotes or mounts else note})
+
+
+@admin_only
+async def admin_mirror_folders(request):
+    """폴더 고르기: GET /api/admin/plex-tg/folders?path= (비우면 rclone mount 폴더·원격 목록, 아니면 그 아래 하위 폴더)"""
+    path = request.query.get("path", "").strip()
+    if not path:
+        remotes, note = await folder_watch.list_remotes()
+        mounts = folder_watch.rclone_mounts()
+        return web.json_response({"success": True, "path": "", "mounts": mounts, "remotes": remotes,
+                                  "note": "" if remotes or mounts else note})
+    try:
+        path = folder_watch.clean_folder(path)
+        dirs = await folder_watch.list_dirs(path)
+    except (ValueError, folder_watch.FolderError) as e:
+        return _json_error(400, str(e))
+    return web.json_response({"success": True, "path": path, "dirs": dirs})
 
 
 @admin_only
@@ -3350,6 +3362,7 @@ def create_app(require_auth=True):
     app.router.add_get("/api/admin/plex-tg", admin_mirror_get)
     app.router.add_put("/api/admin/plex-tg", admin_mirror_put)
     app.router.add_get("/api/admin/plex-tg/options", admin_mirror_options)
+    app.router.add_get("/api/admin/plex-tg/folders", admin_mirror_folders)
     app.router.add_post("/api/admin/plex-tg/check", admin_mirror_check)
     app.router.add_post("/api/admin/plex-tg/test", admin_mirror_test)
     app.router.add_post("/api/admin/plex-tg/item", admin_mirror_item)

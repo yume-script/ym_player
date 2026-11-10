@@ -182,6 +182,11 @@ FAKE_RCLONE = r'''
 import json, os, shutil, sys
 root = os.environ["FAKE_RCLONE_ROOT"]
 args = [a for a in sys.argv[1:] if a != "--"]
+if "--config" in args:
+    i = args.index("--config")
+    with open(os.environ["FAKE_RCLONE_LOG"], "a") as f:
+        f.write(args[i + 1] + "\n")
+    del args[i:i + 2]
 def real(remote):
     assert remote.startswith("fake:"), remote
     return os.path.join(root, remote[5:].lstrip("/"))
@@ -193,6 +198,9 @@ elif cmd == "lsjson":
     rec = "-R" in args
     out = []
     for dp, dn, fn in os.walk(target):
+        if "--dirs-only" in args:
+            print(json.dumps([{"Path": d, "Name": d, "IsDir": True} for d in sorted(dn)]))
+            sys.exit(0)
         for n in fn:
             p = os.path.join(dp, n)
             out.append({"Path": os.path.relpath(p, target), "Name": n, "Size": os.path.getsize(p),
@@ -220,6 +228,7 @@ def test_rclone_remote(data, tmp_path, monkeypatch):
     script.chmod(0o755)
     monkeypatch.setenv("MP_RCLONE", str(script))
     monkeypatch.setenv("FAKE_RCLONE_ROOT", str(root))
+    monkeypatch.setenv("FAKE_RCLONE_LOG", str(tmp_path / "rclone.log"))
     _make(root / "영화" / "Old.mkv")
     cfg = config_store.load()
     cfg["plex_to_tg"] = plex_to_tg.clean_settings({"rules": [{"id": "r", "kind": "folder", "folder": "fake:영화", "tg": "tg", "channel": "-1"}]})
@@ -256,6 +265,12 @@ def test_options_lists_remotes(data, monkeypatch, tmp_path):
     script.chmod(0o755)
     monkeypatch.setenv("MP_RCLONE", str(script))
     monkeypatch.setenv("FAKE_RCLONE_ROOT", str(tmp_path))
+    conf = tmp_path / "rclone.conf"
+    conf.write_text("[fake]\ntype = local\n")
+    monkeypatch.setenv("MP_RCLONE_CONFIG", str(conf))
+    monkeypatch.setenv("FAKE_RCLONE_LOG", str(tmp_path / "rclone.log"))
+    (tmp_path / "영화" / "한국").mkdir(parents=True)
+    (tmp_path / "영화" / ".숨김").mkdir()
     monkeypatch.delenv("MP_USER", raising=False)
     monkeypatch.delenv("MP_PASSWORD", raising=False)
     monkeypatch.setenv("MP_UPDATE_CHECK", "0")
@@ -268,7 +283,16 @@ def test_options_lists_remotes(data, monkeypatch, tmp_path):
         try:
             await c.post("/api/auth/login", json={"username": "boss", "password": "secret1"})
             d = await (await c.get("/api/admin/plex-tg/options")).json()
-            assert d["rclone"] is True and d["remotes"] == ["fake:"]
+            assert d["rclone"] is True and d["remotes"] == ["fake:"] and d["rclone_note"] == ""
+            assert str(conf) in (tmp_path / "rclone.log").read_text()          # 다른 계정의 rclone 설정도 --config로
+            d = await (await c.get("/api/admin/plex-tg/folders")).json()     # 폴더 고르기: 처음은 드라이브 목록
+            assert d["remotes"] == ["fake:"] and isinstance(d["mounts"], list)
+            d = await (await c.get("/api/admin/plex-tg/folders", params={"path": "fake:영화"})).json()
+            assert d["dirs"] == ["한국"]                                       # 숨김 폴더는 빼고
+            d = await (await c.get("/api/admin/plex-tg/folders", params={"path": str(tmp_path / "영화")})).json()
+            assert d["dirs"] == ["한국"]
+            r = await c.get("/api/admin/plex-tg/folders", params={"path": str(tmp_path / "없음")})
+            assert r.status == 400 and "열 수 없습니다" in (await r.json())["error"]
             r = await c.put("/api/admin/plex-tg", json={"rules": [{"kind": "folder", "folder": "fake:영화", "tg": "t", "channel": "-1"}]})
             assert r.status == 200 and (await r.json())["settings"]["rules"][0]["kind"] == "folder"
             r = await c.put("/api/admin/plex-tg", json={"rules": [{"kind": "folder", "folder": "영화", "tg": "t", "channel": "-1"}]})
@@ -276,3 +300,19 @@ def test_options_lists_remotes(data, monkeypatch, tmp_path):
         finally:
             await c.close()
     asyncio.run(main())
+
+
+def test_rclone_mounts_and_config(tmp_path, monkeypatch):
+    mounts = tmp_path / "mounts"
+    mounts.write_text("proc /proc proc rw 0 0\n"
+                      "gdrive: /mnt/gdrive fuse.rclone rw,nosuid,nodev,user_id=0 0 0\n"
+                      "내드라이브:영화 /mnt/my\\040drive fuse.rclone rw 0 0\n"
+                      "/dev/sda1 / ext4 rw 0 0\n")
+    assert folder_watch.rclone_mounts(str(mounts)) == [{"remote": "gdrive:", "path": "/mnt/gdrive"},
+                                                         {"remote": "내드라이브:영화", "path": "/mnt/my drive"}]
+    assert folder_watch.rclone_mounts(str(tmp_path / "없음")) == []
+    conf = tmp_path / "r.conf"
+    conf.write_text("")
+    monkeypatch.setenv("MP_RCLONE_CONFIG", str(conf))
+    monkeypatch.setenv("MP_RCLONE", sys.executable)
+    assert folder_watch.rclone_cmd("listremotes") == [sys.executable, "--config", str(conf), "listremotes"]

@@ -246,5 +246,15 @@ def test_mirror_folder_rule(page, server):
     assert rule.locator(".mirror-folder").is_visible() and rule.locator(".mirror-enc").is_visible()
     assert rule.locator(".mirror-height").input_value() == "720"
     assert "자막 파일(SRT 등)" in rule.inner_text()
+    # [고르기]: 드라이브 목록(못 찾으면 이 컴퓨터 /mnt, /)에서 하위 폴더로 들어가 [이 폴더로]
+    rule.locator(".mirror-pick-folder").click()
+    page.wait_for_selector(".folder-pick-item:has-text('/')")
+    page.locator(".folder-pick-item").filter(has_text="이 컴퓨터").last.click()      # "/"
+    page.wait_for_selector(".folder-pick-path")
+    assert page.inner_text(".folder-pick-path") == "/"
+    page.locator(".folder-pick-item:has-text('tmp')").first.click()
+    page.wait_for_selector(".folder-pick-path:has-text('/tmp')")
+    page.click(".modal button:has-text('이 폴더로')")
+    assert rule.locator(".mirror-folder").input_value() == "/tmp"
     rule.locator(".mirror-kind").select_option("plex")
     assert rule.locator(".mirror-folder").is_hidden()
