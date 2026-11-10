@@ -315,6 +315,8 @@ def test_prefs_are_per_user(data):
         r = await c.put("/api/me/prefs", json={"nav_order": {"sources": ["tg", "px", "tg"], "libs": {"px": ["2", "1"], "bad": "x"}}})
         assert (await r.json())["prefs"]["nav_order"] == {"sources": ["tg", "px"], "libs": {"px": ["2", "1"]}}
         assert (await c.put("/api/me/prefs", json={"nav_order": "x"})).status == 400
+        r = await c.put("/api/me/prefs", json={"home_hidden": ["br", "rc", "br"]})        # 홈에 안 보일 소스
+        assert (await r.json())["prefs"]["home_hidden"] == ["br", "rc"]
         assert (await (await c.put("/api/me/prefs", json={"nav_order": {}})).json())["prefs"]["nav_order"] == {}
         assert "nav_order" not in prefs.get("admin")
 
