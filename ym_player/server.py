@@ -944,7 +944,7 @@ async def brunch_article(request):
 
 
 async def recipe_list(request):
-    """GET /api/recipe/{sid}/list?cat=(분류 번호)&q=(검색어)&page= -> 레시피 카드들 (둘 다 없으면 오늘의 랭킹)"""
+    """GET /api/recipe/{sid}/list?cat=(분류 번호)&q=(검색어)&page= -> 레시피 카드들 (둘 다 없으면 추천순)"""
     _source_or_404(request.match_info["sid"], "recipe", request)
     q = request.query
     try:

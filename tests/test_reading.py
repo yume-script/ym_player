@@ -101,9 +101,9 @@ RECIPE_PAGE = """<html><head><script type="application/ld+json">{"@context": "ht
 
 
 def test_recipe_urls_and_parsing():
-    assert recipe.list_url() == recipe.BASE + "/ranking/home_new.html?rtype=r&dtype=d"
+    assert recipe.list_url() == recipe.BASE + "/recipe/list.html?order=reco&page=1"   # 랭킹 페이지는 순위가 스크립트로 와서 목록 페이지로
     assert recipe.list_url("0", "", 2) == recipe.BASE + "/recipe/list.html?cat4=63&page=2"
-    assert recipe.list_url("99") == recipe.list_url()                                  # 모르는 분류는 랭킹
+    assert recipe.list_url("99") == recipe.list_url()                                  # 모르는 분류는 추천순
     assert recipe.list_url("cat4=1&x", "") == recipe.list_url()
     assert recipe.list_url("", "김치 찌개&x=1") == recipe.BASE + "/recipe/list.html?q=%EA%B9%80%EC%B9%98+%EC%B0%8C%EA%B0%9C%26x%3D1&page=1"
     items = recipe.parse_list(RANK_PAGE)
@@ -236,8 +236,8 @@ def test_redirects_followed_only_inside_the_site():
     # 레시피: 리다이렉트 + EUC-KR 페이지, 목록이 비면 받은 페이지를 알려 준다
     rank = recipe.list_url()
     page = RANK_PAGE.encode("cp949", "replace")
-    http = _Http({rank: _Resp(301, location="/ranking/home_new.html?rtype=r&dtype=d&x=1"),
-                  recipe.BASE + "/ranking/home_new.html?rtype=r&dtype=d&x=1": _Resp(200, page, charset="euc-kr")})
+    http = _Http({rank: _Resp(301, location="/recipe/list.html?order=reco&page=1&x=1"),
+                  recipe.BASE + "/recipe/list.html?order=reco&page=1&x=1": _Resp(200, page, charset="euc-kr")})
     items = asyncio.run(recipe.Recipes(lambda: http).list())
     assert items[0]["title"].startswith("백종원 김치찌개")
     empty = _Http({rank: _Resp(200, "<html><title>점검 중</title><body>잠시 후</body></html>".encode())})

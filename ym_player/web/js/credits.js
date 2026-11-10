@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 120,
+        "version": "1.1.83",
+        "date": "2026-11-11",
+        "title": "만개의레시피: 첫 목록을 랭킹 페이지(순위를 스크립트로 불러와 서버가 못 읽음) 대신 추천순 레시피 목록으로 - \"레시피 링크 0개\" 고침"
+    },
+    {
         "pr": 119,
         "version": "1.1.82",
         "date": "2026-11-11",
