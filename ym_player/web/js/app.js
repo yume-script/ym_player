@@ -110,6 +110,10 @@ function openGroup(pid) {
     storeSet(NAV_OPEN_KEY, pid);
 }
 
+/** 사이드바 머리줄의 소스 종류 아이콘 */
+const SOURCE_ICON = { plex: 'server', telegram: 'paper-plane', iptv: 'tower-broadcast', radio: 'radio', podcast: 'podcast',
+    cctv: 'video', brunch: 'mug-hot', recipe: 'utensils' };
+
 function navLink(href, iconName, label) {
     return h('a', { href, class: 'nav-link' }, icon(iconName), h('span', { text: label }));
 }
@@ -194,12 +198,14 @@ async function buildNav() {
     const libOrder = navOrder().libs || {};
     for (const p of registry.providers) {
         const items = h('div', { class: 'nav-items' });
+        // 머리줄에도 소스 종류 아이콘 (아래 메뉴 아이콘과 줄 맞춤)
+        const kindIcon = icon(SOURCE_ICON[p.kind] || 'folder', 'nav-head-icon');
         const head = accordion
             ? h('button', {
                 class: 'nav-head nav-toggle', title: `${p.name} 메뉴 펼치기/접기`,
                 on: { click: () => openGroup(group.classList.contains('collapsed') ? p.id : null) },
-            }, h('span', { text: p.name }), icon('chevron-down', 'nav-chevron'))
-            : h('div', { class: 'nav-head', text: p.name });
+            }, kindIcon, h('span', { class: 'nav-head-name', text: p.name }), icon('chevron-down', 'nav-chevron'))
+            : h('div', { class: 'nav-head' }, kindIcon, h('span', { class: 'nav-head-name', text: p.name }));
         const group = h('div', { class: 'nav-group', dataset: { pid: p.id } }, head, items);
         group.insertBefore(moveButtons(group), items);   // 제목 줄 오른쪽 (순서 바꾸기 중에만 보임)
         nav.appendChild(group);
