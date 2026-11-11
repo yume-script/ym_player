@@ -58,6 +58,11 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
     const kindOpts = p.libraryKinds ? p.libraryKinds(libId) : null;
     const kindSel = kindOpts ? h('select', { class: 'select' },
         kindOpts.map(([v, label]) => h('option', { value: v, text: label, selected: v === (pref.kind || '') }))) : null;
+    // 소스 안에서 찾기 (만개의레시피 등 - 소스가 librarySearchHint를 주면 검색창). 검색어는 주소(?q=)에도 남겨 뒤로 가기로 돌아와도 그대로
+    const searchHint = p.librarySearchHint ? p.librarySearchHint(libId) : '';
+    const searchBox = searchHint ? h('input', {
+        type: 'search', class: 'input lib-search', placeholder: searchHint, value: query.get('q') || '', enterkeyhint: 'search',
+    }) : null;
     const countEl = h('span', { class: 'muted' });
     // 고르기 귀찮을 때: 이 라이브러리(채널)에서 아무거나 틀고, 끝나면 또 아무거나 (Plex는 [안 본 것만]을 따름)
     const randomBtn = p.randomPick && (!p.canRandom || p.canRandom(libId)) ? h('button', {
@@ -97,6 +102,7 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
     body.append(
         h('div', { class: 'toolbar' },
             countEl,
+            searchBox,
             randomBtn,
             p.kind === 'plex' || p.kind === 'podcast' ? h('label', { class: 'check' }, unwatchedChk, p.kind === 'podcast' ? ' 안 들은 것만' : ' 안 본 것만') : null,
             kindSel ? h('label', { class: 'muted' }, `${p.libraryKindLabel ? p.libraryKindLabel() : '보기'} `, kindSel) : null,
@@ -111,6 +117,7 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
         try {
             const res = await p.getLibraryItems(libId, {
                 start, size: PAGE, sort: sortSel.value, unwatched: unwatchedChk.checked, kind: kindSel ? kindSel.value : '',
+                q: searchBox ? searchBox.value.trim() : '',
             });
             if (myGen !== gen || !ctx.alive()) return;
             total = res.total;
@@ -121,7 +128,8 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
             // 라디오 방송국처럼 채널이면 채널 카드 (누르면 바로 재생, 위/아래로 다른 방송국)
             loaded = loaded.concat(res.items);
             draw(res.items);
-            if (!start) grid.appendChild(emptyState('film', '항목이 없습니다'));
+            if (!start) grid.appendChild(searchBox && searchBox.value.trim()
+                ? emptyState('magnifying-glass', `"${searchBox.value.trim()}" 검색 결과가 없습니다`) : emptyState('film', '항목이 없습니다'));
         } catch (e) {
             if (myGen === gen) grid.appendChild(emptyState('triangle-exclamation', '불러오지 못했습니다', e.message));
             total = start;
@@ -140,6 +148,27 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
     sortSel.addEventListener('change', reset);
     unwatchedChk.addEventListener('change', reset);
     if (kindSel) kindSel.addEventListener('change', reset);
+    if (searchBox) {
+        // 글자를 칠 때마다가 아니라 잠깐 멈추거나 Enter를 누르면 (원본 사이트에 매번 묻지 않게)
+        let timer = 0, last = searchBox.value.trim();
+        if (kindSel) kindSel.disabled = !!last;   // 검색 중에는 분류를 쓰지 않는다
+        const go = () => {
+            clearTimeout(timer);
+            const q = searchBox.value.trim();
+            if (q === last) return;
+            last = q;
+            if (kindSel) kindSel.disabled = !!q;
+            const params = new URLSearchParams(query);
+            if (q) params.set('q', q); else params.delete('q');
+            const qs = params.toString();
+            history.replaceState(null, '', `#/library/${pid}/${libId}${qs ? `?${qs}` : ''}`);
+            reset();
+        };
+        searchBox.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(go, 600); });
+        searchBox.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
+        searchBox.addEventListener('search', go);   // (검색창의 지우기 ×)
+        ctx.onLeave(() => clearTimeout(timer));
+    }
 
     const io = new IntersectionObserver((entries) => {
         if (!ctx.alive()) return io.disconnect();

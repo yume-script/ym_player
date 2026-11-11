@@ -336,6 +336,7 @@ body.lib-route .view-mode { display: block; }
 /* ---------- 라이브 TV 편성표 ---------- */
 .live { display: flex; flex-direction: column; height: 100%; padding-bottom: 1rem; }
 .live .toolbar .input { width: 220px; }
+.lib-body .toolbar .lib-search { width: 240px; }
 .guide-scroll { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-elev); }
 .guide-inner { position: relative; }
 .guide-header { position: sticky; top: 0; z-index: 5; display: flex; height: 38px; background: var(--bg-elev2); border-bottom: 1px solid var(--border); }
@@ -575,6 +576,7 @@ body.player-open { overflow: hidden; }
     .ep-row { flex-direction: column; }
     .ep-thumb { flex-basis: auto; width: 100%; }
     .live .toolbar .input { width: 100%; }
+    .lib-body .toolbar .lib-search { width: 100%; }
     .player-top, .player-bottom { padding: 0.75rem; }
     .vol-range, .engine-badge { display: none; }
     .osd { bottom: 6.5rem; left: 0.75rem; right: 0.75rem; }

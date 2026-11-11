@@ -26,6 +26,8 @@ export class RecipeProvider {
 
     libraryKindLabel() { return '분류'; }
 
+    librarySearchHint() { return '레시피 검색 (요리·재료 이름)'; }
+
     toItem(r) {
         return {
             pid: this.id, id: r.id, type: 'article', title: r.title, subtitle: r.by || '',
@@ -36,10 +38,12 @@ export class RecipeProvider {
         };
     }
 
-    async getLibraryItems(_libId, { start = 0, kind = '' } = {}) {
-        const page = start > 0 ? (this._pages.get(kind) || 2) : 1;
-        const d = await api(`${this.base}/list?${new URLSearchParams({ cat: kind, page })}`);
-        this._pages.set(kind, page + 1);
+    // 검색어가 있으면 분류와 상관없이 사이트 검색 (만개의레시피 검색은 분류를 같이 받지 않는다)
+    async getLibraryItems(_libId, { start = 0, kind = '', q = '' } = {}) {
+        const key = q ? `q:${q}` : kind;
+        const page = start > 0 ? (this._pages.get(key) || 2) : 1;
+        const d = await api(`${this.base}/list?${new URLSearchParams(q ? { q, page } : { cat: kind, page })}`);
+        this._pages.set(key, page + 1);
         const items = d.items.map((r) => this.toItem(r));
         const more = items.length > 0;
         const shown = start + items.length;
