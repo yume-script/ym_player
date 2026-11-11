@@ -14,7 +14,8 @@
     stall   재생 중에 버퍼가 바닥나 멈춘 횟수 (처음 불러오기·탐색 직후는 빼고)
     retry   끊겨서 다시 연결한 횟수 (자동 재연결, 서버 중계로 바꾸기, 변환 다시 시작, 미디어 오류 복구)
 최근 EVENT_WINDOW(5분) 동안의 횟수를 종류별로 내보낸다.
-제목·사용자 이름·채널명은 내보내지 않는다 (숫자만).
+/api/activity는 제목·사용자 이름·채널명을 내보내지 않는다 (숫자만).
+누가 무엇을 재생하는지는 관리자 MCP 토큰의 now_watching 도구로만 (Activity.active).
 """
 import collections
 import re
@@ -101,6 +102,11 @@ class Activity:
                 q.popleft()
             out[k] = len(q)
         return out
+
+    def active(self):
+        """지금 재생 중인 스트림 [(종류, 누가, 무엇을)] - snapshot과 같은 기준"""
+        now = time.monotonic()
+        return [key for key, e in list(self.streams.items()) if e["open"] > 0 or now - e["last"] < WINDOW]
 
     def snapshot(self):
         now = time.monotonic()
