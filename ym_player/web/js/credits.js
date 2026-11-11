@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 128,
+        "version": "1.1.91",
+        "date": "2026-11-11",
+        "title": "느린 요청 고침: IPTV 채널·편성표는 받아 둔 것 먼저(재시작해도), 라디오 곡 정보는 느린 방송국을 안 기다림, 텔레그램 조회가 다른 요청을 막지 않게, 켤 때 미리 준비"
+    },
+    {
         "pr": 127,
         "version": "1.1.90",
         "date": "2026-11-11",
