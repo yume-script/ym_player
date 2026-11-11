@@ -1,7 +1,7 @@
 // 화면 테마와 강조색. <html data-theme data-accent>만 바꾸면 app.css의 변수가 따라 바뀐다.
 // 관리자 기본값은 서버가 HTML에 넣어 주고(data-default-*), 사용자가 고른 값은 서버(/api/me/prefs)에 두고
 // 다음에 열 때 깜빡이지 않게 브라우저(yp_theme)에도 적어 둔다 - index.html/login.html 머리의 짧은 스크립트가 먼저 읽는다.
-import { api, h, icon, modal, storeGet, storeSet, toast } from './util.js';
+import { api, h, icon, modal, storeGet, storeSet, toast, DATA_SAVER_KEY } from './util.js';
 import { TICKER_OFF_KEY, refreshTicker } from './ticker.js';
 
 export const THEMES = [
@@ -122,9 +122,14 @@ export function openThemeDialog() {
     const choiceSel = h('select', { class: 'select', on: { change: () => storeSet('yp_plex_tg_choice', choiceSel.value) } },
         [['ask', '매번 묻기'], ['telegram', '텔레그램으로 재생'], ['plex', 'Plex로 재생']].map(([v, label]) =>
             h('option', { value: v, text: label, selected: storeGet('yp_plex_tg_choice', 'ask') === v })));
+    const saverSel = h('select', { class: 'select', on: { change: () => storeSet(DATA_SAVER_KEY, saverSel.value) } },
+        [['auto', '자동 (휴대폰 회선·데이터 절약 모드일 때)'], ['on', '항상 켜기'], ['off', '끄기']].map(([v, label]) =>
+            h('option', { value: v, text: label, selected: storeGet(DATA_SAVER_KEY, 'auto') === v })));
     const body = h('div', {}, themePicker(),
         h('label', { class: 'check ticker-pref' }, tickerChk, ' 아래쪽에 흐르는 글(디스코드 새 글) 보기 (이 브라우저)'),
-        h('label', { class: 'field ticker-pref' }, h('span', { class: 'field-label', text: 'Plex 영상이 텔레그램에도 있을 때 (이 브라우저)' }), choiceSel));
+        h('label', { class: 'field ticker-pref' }, h('span', { class: 'field-label', text: 'Plex 영상이 텔레그램에도 있을 때 (이 브라우저)' }), choiceSel),
+        h('label', { class: 'field ticker-pref' }, h('span', { class: 'field-label', text: '데이터 절약 (이 브라우저)' }), saverSel,
+            h('span', { class: 'field-hint', text: '켜면 Plex는 720p 2Mbps(화질을 직접 고르지 않았을 때), 텔레그램 서버 변환은 720p, 다음 회차 미리 받기는 안 합니다. 자동은 브라우저가 휴대폰 회선이라고 알려 줄 때만(아이폰 Safari는 알려 주지 않아 직접 켜야 함).' })));
     const m = modal('테마', body, [h('button', { class: 'btn btn-accent', on: { click: () => m.close() } }, '닫기')]);
 }
 

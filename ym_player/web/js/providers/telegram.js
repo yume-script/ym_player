@@ -1,6 +1,6 @@
 // 텔레그램 채널 소스. 서버(/api/tg/{id}/...)가 Telethon으로 채널 영상을 색인하고 스트림을 이어 준다.
 // 설정에서 고른 채널 하나하나가 라이브러리처럼 보인다. 항목 id는 "채널id:메시지id".
-import { api, fmtDuration, h, modal, storeGet, storeSet, IS_SAFARI } from '../util.js';
+import { api, fmtDuration, h, modal, storeGet, storeSet, IS_SAFARI, dataSaver } from '../util.js';
 import { registry } from './index.js';
 // 웹툰·책 보기는 열 때 받는다 (처음 화면을 가볍게)
 const openReader = (...a) => import('../reader.js').then((m) => m.openReader(...a));
@@ -745,7 +745,7 @@ export class TelegramProvider {
         }
         const streamed = (at, mode) => withSubs({
             ...common,
-            url: `${this.base}/transcode/${channel}/${msg}?${new URLSearchParams({ start: Math.floor(at), mode })}`,
+            url: `${this.base}/transcode/${channel}/${msg}?${new URLSearchParams({ start: Math.floor(at), mode, ...(dataSaver() ? { maxh: 720 } : {}) })}`,
             kind: 'direct',
             startTime: 0,
             timeOffset: Math.floor(at),
@@ -754,7 +754,7 @@ export class TelegramProvider {
         }, at);
         // Safari: 서버가 HLS 조각을 만들기 시작하고 첫 조각이 나오면 재생목록 주소를 준다
         const viaHls = async (at, mode) => {
-            const j = await api(`${this.base}/hls/${channel}/${msg}?${new URLSearchParams({ start: Math.floor(at), mode })}`,
+            const j = await api(`${this.base}/hls/${channel}/${msg}?${new URLSearchParams({ start: Math.floor(at), mode, ...(dataSaver() ? { maxh: 720 } : {}) })}`,
                 { method: 'POST' });
             return withSubs({
                 ...common,

@@ -357,3 +357,18 @@ def test_service_worker_caches_app_files(page, server):
     page.wait_for_selector(".nav-link")
     assert any(u.endswith("/js/app.js") for u in from_sw), from_sw
     assert page.evaluate("caches.keys()")[0].startswith("ymp-")
+
+
+def test_data_saver_switch(page, server):
+    """데이터 절약 (이 브라우저): 자동/켜기/끄기 - 켜면 Plex 기본 화질 720p, 텔레그램 서버 변환 720p, 다음 회차 미리 받기 안 함"""
+    page.goto(server + "/#/home")
+    page.wait_for_selector(".nav-link")
+    base = page.evaluate("[...document.scripts].map(s => s.src).find(s => s.includes('/js/app.js')).replace('app.js', '')")
+    get = lambda: page.evaluate(f"import('{base}util.js').then(m => m.dataSaver())")
+    page.evaluate("localStorage.setItem('yp_data_saver', JSON.stringify('on'))")
+    assert get() is True
+    page.evaluate("localStorage.setItem('yp_data_saver', JSON.stringify('off'))")
+    assert get() is False
+    page.evaluate(f"import('{base}theme.js').then(m => m.openThemeDialog())")
+    page.wait_for_selector(".modal select option[value='on']", state="attached")
+    assert "데이터 절약" in page.inner_text(".modal")

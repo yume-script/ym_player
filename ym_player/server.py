@@ -2131,6 +2131,15 @@ async def _hls_sweeper(app):
                 await _hls_stop(app, job)
 
 
+def _max_height(request):
+    """?maxh=720 (화면의 데이터 절약) -> 다시 압축할 때 이 높이까지 (그대로 옮기는 변환에는 안 씀)"""
+    try:
+        h = int(request.query.get("maxh") or 0)
+    except ValueError:
+        return 0
+    return h if h in (360, 480, 720, 1080) else 0
+
+
 @telegram_api
 async def tg_hls_start(request, tg):
     """POST /api/tg/{sid}/hls/{c}/{m}?start=초&mode=remux|audio|transcode -> {"url": 재생목록 주소}."""
@@ -2163,7 +2172,7 @@ async def tg_hls_start(request, tg):
     os.makedirs(folder, exist_ok=True)
     token, url = _internal_url(request, tg, channel, msg)
     try:
-        args = transcode.build_hls_args(url, mode, start, folder)
+        args = transcode.build_hls_args(url, mode, start, folder, _max_height(request))
     except ValueError as e:
         app[TG_INTERNAL].pop(token, None)
         await asyncio.to_thread(shutil.rmtree, folder, True)
@@ -2248,7 +2257,7 @@ async def tg_transcode(request, tg):
 
     token, url = _internal_url(request, tg, channel, msg)
     try:
-        args = transcode.build_args(url, mode, start)
+        args = transcode.build_args(url, mode, start, _max_height(request))
     except ValueError as e:
         request.app[TG_INTERNAL].pop(token, None)
         return _json_error(400, str(e))

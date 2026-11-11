@@ -1801,3 +1801,15 @@ def test_part_groups_cached_per_channel(monkeypatch, tmp_path):
     assert [p["msg"] for p in telegram_src.video_parts("tg", 1, 1)] == [1, 2, 4]   # 새 조각이 오면 다시 묶음
     items, total = telegram_src.query_videos("tg", [1], kind="video")
     assert [(x["msg"], x.get("parts_count")) for x in items] == [(3, None), (1, 3)] and total == 2
+
+
+def test_transcode_max_height_for_data_saver():
+    """데이터 절약(?maxh=720): 다시 압축할 때만 높이를 줄이고, 그대로 옮기는 변환에는 안 씀"""
+    from ym_player import transcode
+    a = transcode.build_args("http://x/y", "transcode", 0, 720)
+    assert a[a.index("-vf") + 1] == "scale=-2:'min(720,ih)'"
+    a = transcode.build_hls_args("http://x/y", "transcode", 0, "/tmp/x", 720)
+    assert a[a.index("-vf") + 1] == "scale=-2:'min(720,ih)'"
+    assert "-vf" not in transcode.build_args("http://x/y", "remux", 0, 720)
+    a = transcode.build_args("http://x/y", "transcode", 0)
+    assert a[a.index("-vf") + 1] == "scale='min(1920,iw)':-2"

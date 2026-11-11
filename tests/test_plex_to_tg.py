@@ -775,3 +775,25 @@ def test_plex_rule_scales_to_720p(data, tmp_path, monkeypatch):
         await mirror.upload(rule, "9", 2)
         assert tg.sent[0]["name"] == "Tall.2026.mkv" and tg.sent[0]["body"] == src_video.read_bytes()
     asyncio.run(main())
+
+
+def test_upload_hours(data):
+    """올리기 시간대: 그 시간에만 줄을 처리 (새 항목 찾기는 늘)"""
+    import time as _t
+    assert plex_to_tg.clean_settings({"hours": "1-7"})["hours"] == "1-7"
+    for bad in ("x", "25-3", "3-3", "1-7-9"):
+        assert plex_to_tg.clean_settings({"hours": bad})["hours"] == ""
+    at = lambda hh: _t.mktime((2026, 11, 11, hh, 30, 0, 0, 0, -1))
+    assert plex_to_tg.in_hours("", at(13))
+    assert plex_to_tg.in_hours("1-7", at(3)) and not plex_to_tg.in_hours("1-7", at(7)) and not plex_to_tg.in_hours("1-7", at(0))
+    assert plex_to_tg.in_hours("22-7", at(23)) and plex_to_tg.in_hours("22-7", at(2)) and not plex_to_tg.in_hours("22-7", at(12))
+
+    async def main():
+        mirror = plex_to_tg.Mirror(None, None, None, lambda: None)
+        mirror.queue = [{"rule": "r", "key": "1", "title": "영화"}]
+        h = _t.localtime().tm_hour
+        closed = f"{(h + 1) % 24}-{(h + 2) % 24}"      # 지금이 아닌 시간대
+        await mirror.run_queue({"rules": [], "hours": closed})
+        assert len(mirror.queue) == 1 and mirror.off_hours == closed     # 처리하지 않고 남겨 둠
+        assert mirror.status()["off_hours"] == closed
+    asyncio.run(main())

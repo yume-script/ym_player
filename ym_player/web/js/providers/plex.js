@@ -6,7 +6,7 @@
 //              playable, viewOffset, duration, children[], childrenTitle, childrenStyle, parent }
 //   playback = { url, kind, live, startTime, title, subtitle, poster, audioOnly,
 //                onProgress(state, sec), onStop(sec), getNext() }
-import { api, h, icon, modal, fmtDuration, uuid, storeGet, storeSet, IS_SAFARI } from '../util.js';
+import { api, h, icon, modal, fmtDuration, uuid, storeGet, storeSet, IS_SAFARI, dataSaver } from '../util.js';
 import { registry } from './index.js';
 
 const PRODUCT = 'YMPlayer';
@@ -389,7 +389,8 @@ export class PlexProvider {
         const otherAudio = !!audio && !audio.def && audios.length > 1;
 
         if (quality !== undefined) storeSet(QUALITY_KEY, quality);
-        const q = QUALITIES.find((x) => x.id === (quality ?? storeGet(QUALITY_KEY, 'original'))) || QUALITIES[0];
+        // 화질을 직접 고른 적이 없으면 원본, 데이터 절약이 켜져 있으면 720p 2Mbps
+        const q = QUALITIES.find((x) => x.id === (quality ?? (storeGet(QUALITY_KEY, '') || (dataSaver() ? '2000' : 'original')))) || QUALITIES[0];
 
         const session = uuid();
         // 상세 화면의 [이어보기] 버튼과 같은 기준: 30초 넘게 봤고 거의 끝까지 보진 않았을 때만 이어서

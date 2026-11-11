@@ -199,8 +199,21 @@ def clean_settings(raw):
     # cpu_preset: CPU(libx264)로 할 때 빠르기 - 빠를수록 같은 화질에 파일이 조금 커진다
     encoder = raw.get("encoder") if raw.get("encoder") in folder_watch.ENCODERS else "auto"
     preset = raw.get("cpu_preset") if raw.get("cpu_preset") in folder_watch.CPU_PRESETS else "superfast"
+    # 올리기(받기·인코딩·올리기)를 할 시간대 "1-7"(1시~7시) - 비우면 언제나. 새 항목 확인은 늘 한다
+    hours = str(raw.get("hours") or "").strip()
+    m = re.fullmatch(r"(\d{1,2})-(\d{1,2})", hours)
+    hours = f"{int(m.group(1))}-{int(m.group(2))}" if m and int(m.group(1)) < 24 and int(m.group(2)) <= 24 and m.group(1) != m.group(2) else ""
     return {"interval": num(raw.get("interval"), 2, 1440, 10), "max_gb": max_gb, "max_gb_v": 1, "encoder": encoder,
-            "cpu_preset": preset, "rules": rules}
+            "cpu_preset": preset, "hours": hours, "rules": rules}
+
+
+def in_hours(hours, now=None):
+    """지금이 올리기 시간대인지 ("" = 언제나, "1-7" = 1시~7시 전, "22-6" = 밤 10시~아침 6시 전)"""
+    if not hours:
+        return True
+    a, b = (int(x) for x in hours.split("-"))
+    h = time.localtime(now).tm_hour
+    return a <= h < b if a < b else (h >= a or h < b)
 
 
 def load_settings():
@@ -380,6 +393,7 @@ class Mirror:
         self.subs_label = ""     # 마지막으로 올린 것의 자막 (기록의 "자막" 칸)
         self.last_check = 0
         self.error = ""
+        self.off_hours = ""      # 올리기 시간대가 아니라 쉬는 중이면 그 시간대 ("1-7")
         self._wake = asyncio.Event()
         self._shot_task = None
         self._gb_cache = {}      # 텔레그램 소스 id -> (시각, 파일 한도 GB) - 프리미엄 계정인지
@@ -393,7 +407,7 @@ class Mirror:
         st = load_state()
         return {"queue": [{"title": j["title"], "rule": j["rule"], "key": j["key"]} for j in self.queue],
                 "current": {**self.current, **(self.current_job or {})} if self.current else None,
-                "last_check": self.last_check, "error": self.error, "history": st["history"][:KEEP_HISTORY],
+                "last_check": self.last_check, "error": self.error, "off_hours": self.off_hours, "history": st["history"][:KEEP_HISTORY],
                 "rules": {rid: {"baseline": r.get("baseline", 0), "count": len(r.get("done", []))} for rid, r in st["rules"].items()},
                 "waiting": [{"title": w.get("title", k), "since": w.get("since", 0), "rule": rid, "key": k,
                              "shot": self._shot_mtime(rid, k), "shot_error": (self._shot_fail.get((rid, k)) or (0, ""))[1]}
@@ -446,7 +460,9 @@ class Mirror:
                 except Exception as e:
                     log.warning("자동 올리기 확인 실패: %s", e)
                     self.error = str(e)
-                await self.run_queue(st)
+                self.off_hours = "" if in_hours(st["hours"]) else st["hours"]
+                if not self.off_hours:
+                    await self.run_queue(st)
                 self.prepare_shots()   # 자막 기다리는 항목의 장면을 뒤에서 미리
             self._wake.clear()
             try:
@@ -647,6 +663,9 @@ class Mirror:
     async def run_queue(self, st):
         rules = {r["id"]: r for r in st["rules"]}
         while self.queue:
+            if not in_hours(st["hours"]):   # 정한 시간대가 끝나면 남은 것은 다음 시간대에
+                self.off_hours = st["hours"]
+                break
             job = self.queue[0]
             rule = rules.get(job["rule"])
             ok, note, waiting = False, "", False
