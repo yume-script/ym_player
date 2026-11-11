@@ -2838,6 +2838,32 @@ async def _mcp_call(request, user, name, args):
         return {"stations": [{**_mcp_station(base, src, st), "now_playing": n.get("text", ""),
                               "artist": n.get("artist", ""), "song": n.get("title", "")}
                              for (src, st), n in zip(picked, nows)]}
+    if name == "now_watching":
+        if user["role"] != "admin":
+            raise mcp.McpError(-32602, "now_watching은 관리자의 토큰으로만 쓸 수 있습니다.")
+        tg_sources = [s for s in cfg.get("sources", []) if s.get("type") == "telegram"]
+        label = {"plex": "Plex 영상", "live": "라이브 TV·라디오", "podcast": "팟캐스트", "telegram": "텔레그램 영상"}
+        known = {u["username"] for u in auth.load_users()}
+        sessions, seen = [], set()
+        for kind, who, what in app[ACTIVITY].active():
+            title, source = "", ""
+            if kind == "telegram":
+                m = re.fullmatch(r"(-?\d+)/(\d+)", what)
+                if m:   # 채널/메시지 번호 → 그 영상의 제목 (소스는 번호만으로는 몰라 차례로 찾는다)
+                    for src in tg_sources:
+                        row = await asyncio.to_thread(telegram_src.get_video, src["id"], int(m.group(1)), int(m.group(2)), who)
+                        if row:
+                            title, source = str(row.get("title") or ""), src.get("name", "")
+                            break
+                elif what.startswith("hls/"):
+                    job = app[HLS_JOBS].get(what[4:])
+                    title = str(getattr(job, "label", "") or "")
+            entry = {"user": who if who in known else "", "kind": kind, "title": title or label.get(kind, kind), "source": source}
+            if (entry["user"], entry["kind"], entry["title"]) in seen:   # 같은 영상의 직접 재생·변환이 겹치면 한 번만
+                continue
+            seen.add((entry["user"], entry["kind"], entry["title"]))
+            sessions.append(entry)
+        return {"sessions": sessions, "playing": len(sessions)}
     raise mcp.McpError(-32602, f"없는 도구입니다: {name}")
 
 

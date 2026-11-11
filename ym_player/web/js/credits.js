@@ -106,7 +106,7 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 export const CHANGELOG = [
     {
         "pr": 130,
-        "version": "1.1.93",
+        "version": "1.1.94",
         "date": "2026-11-11",
         "title": "만개의레시피 목록에 검색창 (요리·재료 이름, 주소에도 남음), 전체 검색 결과 화면 제목이 세로로 찌그러지던 것 고침"
     },

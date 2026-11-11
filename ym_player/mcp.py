@@ -151,6 +151,10 @@ TOOLS = [
      "description": "인터넷 라디오 방송국에서 지금 나오는 곡(가수 - 제목). query로 방송국 이름을 좁힐 수 있다.",
      "inputSchema": _schema({"query": {"type": "string", "description": "방송국 이름이나 분류 일부 (없으면 앞에서부터)"},
                              "limit": _LIMIT}), "annotations": {**_RO, "openWorldHint": True}},
+    {"name": "now_watching", "title": "지금 재생 중",
+     "description": "지금 누가 무엇을 재생하고 있는지 (사용자 이름, 종류, 제목). 관리자의 토큰으로만 쓸 수 있다. "
+                    "텔레그램 영상은 제목까지, Plex·라이브·팟캐스트는 종류와 소스 이름까지 알려 준다.",
+     "inputSchema": _schema(), "annotations": _RO},
 ]
 
 

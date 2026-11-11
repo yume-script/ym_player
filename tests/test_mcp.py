@@ -126,7 +126,7 @@ def test_mcp_protocol_tools_and_limits(data, monkeypatch):
         assert r.status == 202
         _, resp = await rpc(c, token, "tools/list")
         assert {t["name"] for t in resp["result"]["tools"]} == {"get_status", "list_libraries", "search", "continue_watching",
-                                                                 "recently_added", "radio_now_playing"}
+                                                                 "recently_added", "radio_now_playing", "now_watching"}
         _, resp = await rpc(c, token, "nope/x")
         assert resp["error"]["code"] == -32601
         # 주소에 토큰을 넣는 방식도
@@ -151,6 +151,19 @@ def test_mcp_protocol_tools_and_limits(data, monkeypatch):
         assert recent["items"][0]["title"] == "호프 웹툰 1화"
         _, resp = await rpc(c, token, "tools/call", {"name": "search", "arguments": {"query": ""}})
         assert resp["error"]["code"] == -32602
+
+        # 지금 재생 중: 관리자 토큰만, 텔레그램은 제목까지 / 로그인 없는 접속(주소)은 이름을 비운다
+        from ym_player import server as ymp_server
+        tr = c.server.app[ymp_server.ACTIVITY]
+        for key in (("telegram", "boss", "1/10"), ("plex", "kid", "part/42"), ("live", "10.0.0.9", "")):
+            tr.begin(key)
+        now = await tool(c, token, "now_watching")
+        assert {(x["user"], x["kind"], x["title"]) for x in now["sessions"]} == {
+            ("boss", "telegram", "호프 2026"), ("kid", "plex", "Plex 영상"), ("", "live", "라이브 TV·라디오")}
+        assert now["playing"] == 3
+        _, resp = await rpc(c, kid_token, "tools/call", {"name": "now_watching", "arguments": {}})
+        assert resp["error"]["code"] == -32602
+        tr.streams.clear()
 
         # 볼 수 있는 범위가 정해진 사용자: 텔레그램 영화 채널과 Plex 드라마만
         auth.update_user("kid", access={"sources": ["tg", "px"], "libraries": {"tg": ["1"], "px": ["2"]}}, acting="boss")
