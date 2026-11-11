@@ -342,3 +342,18 @@ def test_home_sources_hide_and_lazy(page, server, upstream):
     page.locator(".home-src-row:has-text('브런치 연재') input").check()
     page.click(".modal button:has-text('저장')")
     page.wait_for_selector(".home-slot .card:has-text('고양이와 살기')")
+
+
+def test_service_worker_caches_app_files(page, server):
+    """앱 설치(PWA): 서비스 워커가 등록되고, 다시 열면 화면 파일(/s/…)을 기기에 저장해 둔 것으로 꺼낸다"""
+    page.goto(server + "/#/home")
+    page.wait_for_function("navigator.serviceWorker && navigator.serviceWorker.controller !== undefined")
+    page.evaluate("navigator.serviceWorker.ready")
+    page.reload()                                            # 이제 서비스 워커가 이 페이지를 맡는다
+    page.wait_for_function("!!navigator.serviceWorker.controller")
+    from_sw = []
+    page.on("response", lambda r: from_sw.append(r.url) if "/s/" in r.url and r.from_service_worker else None)
+    page.reload()
+    page.wait_for_selector(".nav-link")
+    assert any(u.endswith("/js/app.js") for u in from_sw), from_sw
+    assert page.evaluate("caches.keys()")[0].startswith("ymp-")

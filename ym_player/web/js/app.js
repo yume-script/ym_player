@@ -354,6 +354,8 @@ async function boot() {
     window.addEventListener('hashchange', render);
     render();
     player.resumeAfterReload();   // 화면 속 화면으로 보다가 새로고침했으면 이어서
+    // 앱 설치(PWA)·화면 파일 저장: 다음부터 화면 코드를 기기에서 바로 꺼내 쓴다 (HTTPS나 localhost에서만 됨)
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch((e) => console.info('[PWA]', e.message));
 }
 
 boot();

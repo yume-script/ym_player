@@ -111,7 +111,8 @@ def _json_error(status, message):
 
 
 # 로그인 없이 열리는 경로 (로그인 화면과 그 화면이 쓰는 것만)
-_PUBLIC_PATHS = {"/login", "/api/auth/state", "/api/auth/login", "/api/auth/setup", "/api/branding", "/brand/icon"}
+_PUBLIC_PATHS = {"/login", "/api/auth/state", "/api/auth/login", "/api/auth/setup", "/api/branding", "/brand/icon",
+                 "/manifest.webmanifest", "/sw.js"}   # (앱 설치용 - 이름·아이콘과 화면 파일 저장 규칙뿐)
 
 
 @web.middleware
@@ -189,6 +190,9 @@ def _resp_headers(upstream):
 async def _pipe_response(request, upstream):
     """원본 응답을 버퍼링 없이 그대로 흘려보낸다 (Range 재생/라이브 스트림)."""
     headers = _resp_headers(upstream)
+    if upstream.status == 200 and request.path.endswith("/photo/:/transcode") and "image" in headers.get("Content-Type", ""):
+        # Plex 포스터·썸네일: 주소에 그림 경로(바뀌면 시각이 붙음)와 크기가 들어 있어서 일주일 기억해도 된다
+        headers["Cache-Control"] = "private, max-age=604800"
     resp = web.StreamResponse(status=upstream.status, headers=headers)
     await resp.prepare(request)
     try:
@@ -3417,15 +3421,61 @@ def _render_page(name, token=""):
     화면 파일 주소는 지문이 들어간 /s/{지문}/로 바꿔서, 업데이트하면 브라우저가 새 파일을 받게 한다."""
     with open(os.path.join(WEB_DIR, name), encoding="utf-8") as f:
         page = f.read()
+    b = branding_info()
+    page = page.replace("__APPLE_ICON__", html.escape(b["icon_url"] or "/static/img/apple-touch-icon.png"))   # (아래에서 /s/{지문}/으로)
     if token:
         page = page.replace('"/static/', f'"/s/{token}/')
-    b = branding_info()
     page = (page.replace("__BRAND_TITLE__", html.escape(b["title"]))
                 .replace("__BRAND_FAVICON__", html.escape(b["icon_url"] or DEFAULT_FAVICON))
                 .replace("__BRAND_MARK__", brand_mark_html(b["icon_url"], b["show_version"]))
                 .replace("__THEME__", b["theme"]).replace("__ACCENT__", b["accent"])
                 .replace("__VERSION__", html.escape(__version__)))
     return web.Response(text=page, content_type="text/html", headers={"Cache-Control": "no-cache"})
+
+
+async def pwa_manifest(request):
+    """앱 설치(PWA) 정보: 이름·아이콘(관리자가 올린 아이콘이 있으면 그것)·전체 화면으로 열기"""
+    b = branding_info()
+    if b["icon_url"]:
+        kind = _icon_kind(open(_brand_icon_path(), "rb").read(64)) or ("png", "image/png")
+        icons = [{"src": b["icon_url"], "sizes": "any", "type": kind[1], "purpose": "any"}]
+    else:
+        base = f"/s/{request.app[STATIC_TOKEN]}/img"
+        icons = [{"src": f"{base}/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+                 {"src": f"{base}/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+                 {"src": f"{base}/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}]
+    body = {"name": b["title"], "short_name": b["title"][:12], "start_url": "/", "scope": "/", "display": "standalone",
+            "background_color": "#141517", "theme_color": "#141517", "lang": "ko", "icons": icons}
+    return web.Response(text=json.dumps(body, ensure_ascii=False), content_type="application/manifest+json",
+                        headers={"Cache-Control": "no-cache"})
+
+
+# 화면 파일 저장(서비스 워커): 지문이 붙은 화면 파일(/s/{지문}/…)만 기기에 저장해 두고 다음부터 바로 꺼내 쓴다.
+# 화면(HTML)·API·영상·그림은 저장하지 않는다 (로그인·새 내용이 늘 서버에서 오게). 업데이트하면 지문이 바뀌어 옛 것은 지운다.
+_SW_JS = """// YMPlayer 서비스 워커 (server.py가 만듦)
+const CACHE = 'ymp-__TOKEN__';
+self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('activate', (e) => e.waitUntil(caches.keys()
+    .then((keys) => Promise.all(keys.filter((k) => k.startsWith('ymp-') && k !== CACHE).map((k) => caches.delete(k))))
+    .then(() => self.clients.claim())));
+self.addEventListener('fetch', (e) => {
+    const req = e.request;
+    const url = new URL(req.url);
+    if (req.method !== 'GET' || url.origin !== self.location.origin || !url.pathname.startsWith('/s/__TOKEN__/')) return;
+    e.respondWith(caches.open(CACHE).then(async (cache) => {
+        const hit = await cache.match(req);
+        if (hit) return hit;
+        const res = await fetch(req);
+        if (res.ok) cache.put(req, res.clone());
+        return res;
+    }));
+});
+"""
+
+
+async def service_worker(request):
+    return web.Response(text=_SW_JS.replace("__TOKEN__", request.app[STATIC_TOKEN]), content_type="application/javascript",
+                        headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"})
 
 
 async def _on_startup(app):
@@ -3541,6 +3591,8 @@ def create_app(require_auth=True):
     app.router.add_put("/api/me/prefs", prefs_put)
     app.router.add_get("/api/branding", branding_get)
     app.router.add_get("/brand/icon", brand_icon)
+    app.router.add_get("/manifest.webmanifest", pwa_manifest)
+    app.router.add_get("/sw.js", service_worker)
     app.router.add_put("/api/admin/branding", branding_put)
     app.router.add_put("/api/admin/branding/icon", branding_icon_put)
     app.router.add_delete("/api/admin/branding/icon", branding_icon_delete)

@@ -73,3 +73,39 @@ def test_compression_and_slow_list(data):
         finally:
             await c.close()
     asyncio.run(main())
+
+
+def test_pwa_manifest_and_service_worker(data):
+    """앱 설치: manifest(이름·아이콘)와 서비스 워커는 로그인 없이 열리고, 화면에 연결돼 있다"""
+    import json
+
+    from aiohttp import CookieJar
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from ym_player import server
+
+    async def main():
+        app = server.create_app(require_auth=True)
+        c = TestClient(TestServer(app), cookie_jar=CookieJar(unsafe=True))
+        await c.start_server()
+        try:
+            r = await c.get("/manifest.webmanifest")
+            m = json.loads(await r.text())
+            assert r.status == 200 and r.content_type == "application/manifest+json"
+            assert m["display"] == "standalone" and m["start_url"] == "/" and m["name"]
+            assert {i["sizes"] for i in m["icons"]} == {"192x192", "512x512"}
+            for icon in m["icons"]:
+                assert (await c.get(icon["src"])).status == 200            # 아이콘 파일이 실제로 있다
+            r = await c.get("/sw.js")
+            js = await r.text()
+            assert r.status == 200 and r.content_type == "application/javascript"
+            assert f"/s/{app[server.STATIC_TOKEN]}/" in js and "caches" in js
+            assert (await c.get("/api/config")).status == 401                   # (다른 것은 여전히 로그인 필요)
+            await c.post("/api/auth/login", json={"username": "boss", "password": "secret1"})
+            page = await (await c.get("/")).text()
+            assert 'rel="manifest"' in page and f"/s/{app[server.STATIC_TOKEN]}/img/apple-touch-icon.png" in page and "__APPLE_ICON__" not in page
+            login = await (await c.get("/login")).text()
+            assert 'rel="manifest"' in login
+        finally:
+            await c.close()
+    asyncio.run(main())
