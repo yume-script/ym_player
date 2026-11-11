@@ -3421,12 +3421,12 @@ def _render_page(name, token=""):
     화면 파일 주소는 지문이 들어간 /s/{지문}/로 바꿔서, 업데이트하면 브라우저가 새 파일을 받게 한다."""
     with open(os.path.join(WEB_DIR, name), encoding="utf-8") as f:
         page = f.read()
+    b = branding_info()
+    page = page.replace("__APPLE_ICON__", html.escape(b["icon_url"] or "/static/img/apple-touch-icon.png"))   # (아래에서 /s/{지문}/으로)
     if token:
         page = page.replace('"/static/', f'"/s/{token}/')
-    b = branding_info()
     page = (page.replace("__BRAND_TITLE__", html.escape(b["title"]))
                 .replace("__BRAND_FAVICON__", html.escape(b["icon_url"] or DEFAULT_FAVICON))
-                .replace("__APPLE_ICON__", html.escape(b["icon_url"] or "/static/img/apple-touch-icon.png"))
                 .replace("__BRAND_MARK__", brand_mark_html(b["icon_url"], b["show_version"]))
                 .replace("__THEME__", b["theme"]).replace("__ACCENT__", b["accent"])
                 .replace("__VERSION__", html.escape(__version__)))

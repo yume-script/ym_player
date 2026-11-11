@@ -103,7 +103,7 @@ def test_pwa_manifest_and_service_worker(data):
             assert (await c.get("/api/config")).status == 401                   # (다른 것은 여전히 로그인 필요)
             await c.post("/api/auth/login", json={"username": "boss", "password": "secret1"})
             page = await (await c.get("/")).text()
-            assert 'rel="manifest"' in page and "apple-touch-icon.png" in page and "__APPLE_ICON__" not in page
+            assert 'rel="manifest"' in page and f"/s/{app[server.STATIC_TOKEN]}/img/apple-touch-icon.png" in page and "__APPLE_ICON__" not in page
             login = await (await c.get("/login")).text()
             assert 'rel="manifest"' in login
         finally:
