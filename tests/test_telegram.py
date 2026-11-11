@@ -492,6 +492,15 @@ def test_download_error_reason_reaches_player(env, tmp_path, monkeypatch):
         assert r.status == 502 and "텔레그램에서 이 파일을 찾을 수 없음" in (await r.json())["error"]
         r = await c.get("/api/tg/tg/stream/777/999", headers={"Range": "bytes=0-"})
         assert r.status == 502                                  # 빈 206이 아니라 이유가 있는 오류
+        # <video>는 그 이유를 못 읽어 "미디어 오류 4"로만 알린다 -> 재생기가 물어보면 이유를 한 번 준다
+        why = (await (await c.get("/api/tg/tg/play-error/777/999")).json())["error"]
+        assert "텔레그램에서 이 파일을 찾을 수 없음" in why
+        assert (await (await c.get("/api/tg/tg/play-error/777/999")).json())["error"] == ""
+        # 서버 변환도 ffmpeg의 "Input/output error" 대신 진짜 이유를
+        r = await c.get("/api/tg/tg/transcode/777/999", params={"start": "0", "mode": "transcode"})
+        assert r.status == 502 and "텔레그램에서 이 파일을 찾을 수 없음" in (await r.json())["error"]
+        why = (await (await c.get("/api/tg/tg/play-error/777/999")).json())["error"]
+        assert "텔레그램에서 이 파일을 찾을 수 없음" in why
 
     run(flow)
 

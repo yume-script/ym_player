@@ -88,6 +88,7 @@ EPG_CACHE = web.AppKey("epg_cache", dict)
 TELEGRAM = web.AppKey("telegram", dict)
 REQUIRE_AUTH = web.AppKey("require_auth", bool)
 TG_INTERNAL = web.AppKey("tg_internal", dict)   # ffmpeg용 내부 주소 토큰 -> (소스id, 채널, 메시지, 만료)
+TG_PLAY_ERR = web.AppKey("tg_play_err", dict)   # (사용자, 소스, 채널, 메시지) -> 브라우저 재생 요청이 실패한 이유
 TG_INTERNAL_ERR = web.AppKey("tg_internal_err", dict)   # 내부 주소 토큰 -> 텔레그램에서 받다가 난 오류 (변환 실패 이유로 보여 줌)
 TRANSCODES = web.AppKey("transcodes", dict)     # 사용자명 -> 돌고 있는 ffmpeg 프로세스
 PLEX_FILES = web.AppKey("plex_files", dict)  # 캐시 키 -> (크기, Content-Type) - Plex 원본 파일
@@ -1919,6 +1920,43 @@ async def tg_subtitle(request, tg):
     return web.Response(text=vtt, content_type="text/vtt", charset="utf-8", headers={"Cache-Control": "private, max-age=3600"})
 
 
+def _play_err_key(request):
+    m = request.match_info
+    return (username(request) or "-", m.get("sid"), m.get("channel"), m.get("msg"))
+
+
+def _remember_play_error(handler):
+    """<video>는 서버가 준 오류(JSON)를 못 읽고 "미디어 오류 4"(형식 미지원)로만 알린다.
+    재생 주소(원본·서버 변환)가 오류로 답하면 그 이유를 기억해 두고, 재생기가 play-error로 물어보면 준다."""
+    async def wrapped(request):
+        resp = await handler(request)
+        if resp.status >= 400 and isinstance(getattr(resp, "body", None), (bytes, bytearray)):
+            try:
+                text = json.loads(resp.body).get("error")
+            except Exception:
+                text = None
+            if text:
+                errs = request.app[TG_PLAY_ERR]
+                errs[_play_err_key(request)] = (time.time(), str(text)[:300])
+                while len(errs) > 200:
+                    errs.pop(next(iter(errs)))
+        return resp
+    return wrapped
+
+
+PLAY_ERR_TTL = 300
+
+
+@telegram_api
+async def tg_play_error(request, tg):
+    """GET /api/tg/{sid}/play-error/{c}/{m} -> 이 영상을 방금 재생하다 서버가 낸 오류 (없으면 빈 글자)"""
+    _ids(request, tg)
+    hit = request.app[TG_PLAY_ERR].pop(_play_err_key(request), None)
+    text = hit[1] if hit and time.time() - hit[0] < PLAY_ERR_TTL else ""
+    return web.json_response({"success": True, "error": text})
+
+
+@_remember_play_error
 @telegram_api
 async def tg_stream(request, tg):
     channel, msg = _ids(request, tg)
@@ -2314,6 +2352,7 @@ async def tg_hls_file(request):
                                            "Cache-Control": "no-store"})
 
 
+@_remember_play_error
 @telegram_api
 async def tg_transcode(request, tg):
     """GET /api/tg/{sid}/transcode/{c}/{m}?start=초&mode=remux|audio|transcode -> 조각난 MP4 스트림."""
@@ -2364,7 +2403,8 @@ async def tg_transcode(request, tg):
         if not first:
             await proc.wait()
             await err_task
-            msg_ = errors[-1] if errors else f"ffmpeg 종료 코드 {proc.returncode}"
+            msg_ = request.app[TG_INTERNAL_ERR].pop(token, None) or (
+                errors[-1] if errors else f"ffmpeg 종료 코드 {proc.returncode}")
             log.warning("telegram %s/%s 서버 변환 실패: %s", channel, msg, msg_)
             return _json_error(502, f"서버 변환 실패: {msg_}")
         await resp.prepare(request)
@@ -3684,6 +3724,7 @@ def create_app(require_auth=True):
     app[PLEX_SECTIONS] = {}
     app[TG_INTERNAL] = {}
     app[TG_INTERNAL_ERR] = {}
+    app[TG_PLAY_ERR] = {}
     app[TRANSCODES] = {}
     app[PROBES] = {}
     app[HLS_JOBS] = {}
@@ -3793,6 +3834,7 @@ def create_app(require_auth=True):
     app.router.add_get(r"/api/tg/{sid}/video/{channel:-?\d+}/{msg:\d+}", tg_video)
     app.router.add_get(r"/api/tg/{sid}/stream/{channel:-?\d+}/{msg:\d+}", tg_stream)
     app.router.add_get(r"/api/tg/{sid}/transcode/{channel:-?\d+}/{msg:\d+}", tg_transcode)
+    app.router.add_get(r"/api/tg/{sid}/play-error/{channel:-?\d+}/{msg:\d+}", tg_play_error)
     app.router.add_post(r"/api/tg/{sid}/hls/{channel:-?\d+}/{msg:\d+}", tg_hls_start)
     app.router.add_get("/api/tg-hls/{job}/{name}", tg_hls_file)
     app.router.add_post(r"/api/tg/{sid}/probe/{channel:-?\d+}/{msg:\d+}", tg_probe)

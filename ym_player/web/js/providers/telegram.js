@@ -706,6 +706,8 @@ export class TelegramProvider {
             onProgress: (state, sec) => report(sec),
             onStop: (sec) => report(sec),
             getNext: null,
+            // 재생 주소가 서버 오류로 끝나면(텔레그램에서 못 받음, 변환 실패 등) 그 이유를 물어본다
+            explainError: () => api(`${this.base}/play-error/${channel}/${msg}`).then((j) => j.error || '').catch(() => ''),
         };
         // 자막 파일: 고른 것은 영상마다 기억 (처음엔 한국어, 없으면 첫 자막). 서버 변환 스트림은 요청 위치가 0초라
         // 자막 시각도 그만큼 당겨 받는다 (shift)
