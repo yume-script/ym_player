@@ -172,3 +172,14 @@ export const IS_IOS = typeof navigator !== 'undefined' && (/iPad|iPhone|iPod/.te
 
 export const IS_SAFARI = typeof navigator !== 'undefined' && /safari/i.test(navigator.userAgent)
     && !/chrome|crios|chromium|android|fxios|edg/i.test(navigator.userAgent);
+
+// 데이터 절약 (이 브라우저): 'auto'(휴대폰 회선·데이터 절약 모드면 켬) / 'on' / 'off'.
+// 켜면 Plex는 720p 2Mbps로(화질을 직접 고른 적이 없을 때), 텔레그램 서버 변환은 720p로, 다음 회차 미리 받기는 안 함
+export const DATA_SAVER_KEY = 'yp_data_saver';
+export function dataSaver() {
+    const v = storeGet(DATA_SAVER_KEY, 'auto');
+    if (v === 'on') return true;
+    if (v === 'off') return false;
+    const c = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    return !!c && (c.saveData || c.type === 'cellular' || ['slow-2g', '2g', '3g'].includes(c.effectiveType));
+}

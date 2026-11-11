@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 127,
+        "version": "1.1.90",
+        "date": "2026-11-11",
+        "title": "데이터 절약 모드(밖에서 볼 때 Plex·텔레그램 720p, 미리 받기 끄기), 자동 올리기 시간대(새벽에만 인코딩·올리기)"
+    },
+    {
         "pr": 126,
         "version": "1.1.89",
         "date": "2026-11-11",

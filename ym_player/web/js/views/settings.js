@@ -1300,6 +1300,8 @@ async function renderMirror(pane) {
     const encSel = h('select', { class: 'select mirror-encoder' }, [['auto', `자동 (${['nvenc', 'qsv', 'vaapi'].filter((n) => hw[n]).map((n) => ({ nvenc: 'NVIDIA', qsv: 'Intel Quick Sync', vaapi: 'VAAPI' })[n])[0] || '그래픽 인코더 없음 - CPU'})`],
         ['cpu', 'CPU (libx264)'], ['nvenc', `NVIDIA NVENC${hw.nvenc ? '' : ' (안 됨)'}`], ['qsv', `Intel Quick Sync${hw.qsv ? '' : ' (안 됨)'}`],
         ['vaapi', `VAAPI (Intel·AMD)${hw.vaapi ? '' : ' (안 됨)'}`]].map(([v, t]) => h('option', { value: v, text: t, selected: (st.encoder || 'auto') === v })));
+    const hoursSel = h('select', { class: 'select mirror-hours' }, [['', '언제나'], ['1-7', '새벽 1시~7시'], ['0-8', '밤 12시~아침 8시'], ['22-7', '밤 10시~아침 7시'], ['9-18', '낮 9시~6시']].map(([v, t]) =>
+        h('option', { value: v, text: t, selected: (st.hours || '') === v })));
     const presetSel = h('select', { class: 'select mirror-preset' }, [['veryfast', '보통 (veryfast)'], ['superfast', '빠르게 (superfast)'], ['ultrafast', '가장 빠르게 (ultrafast, 파일이 큼)']].map(([v, t]) =>
         h('option', { value: v, text: t, selected: (st.cpu_preset || 'superfast') === v })));
     const maxSel = h('select', { class: 'select' }, [[0, '자동 (프리미엄 계정이면 4GB, 아니면 2GB)'], [2, '2GB로 고정 (일반 계정)'], [4, '4GB로 고정 (텔레그램 프리미엄)']].map(([v, t]) =>
@@ -1386,7 +1388,7 @@ async function renderMirror(pane) {
     save.addEventListener('click', async () => {
         save.disabled = true;
         try {
-            const r = await api('/api/admin/plex-tg', { method: 'PUT', json: { interval: Number(intervalIn.value), max_gb: Number(maxSel.value), max_gb_v: 1, encoder: encSel.value, cpu_preset: presetSel.value, rules: rows.map((x) => x.get()) } });
+            const r = await api('/api/admin/plex-tg', { method: 'PUT', json: { interval: Number(intervalIn.value), max_gb: Number(maxSel.value), max_gb_v: 1, encoder: encSel.value, cpu_preset: presetSel.value, hours: hoursSel.value, rules: rows.map((x) => x.get()) } });
             r.settings.rules.forEach((x, i) => { if (rows[i]) rows[i].id = x.id; });
             toast('저장했습니다. 새 규칙은 지금 있는 것 다음부터 올립니다.', 'success', 5000);
             setTimeout(paintStatus, 1500);
@@ -1465,6 +1467,7 @@ async function renderMirror(pane) {
                 .filter(Boolean).join(' · ')));
         statusBox.replaceChildren(...[
             s.error ? h('p', { class: 'muted error', text: s.error }) : null,
+            s.off_hours ? h('p', { class: 'muted', text: `지금은 올리기 시간대(${s.off_hours.replace('-', '시~')}시)가 아니라 쉬는 중 - 줄에 쌓아 두었다가 그 시간에 올립니다.` }) : null,
             h('p', { class: 'muted', text: s.last_check ? `마지막 확인 ${new Date(s.last_check * 1000).toLocaleString()}` : '아직 확인 전' }),
             h('h4', { text: `진행 (${live.length})` }),
             live.length ? h('div', { class: 'mirror-table', role: 'table' }, head(), ...live) : h('p', { class: 'muted', text: '올릴 것이 없습니다.' }),
@@ -1489,6 +1492,7 @@ async function renderMirror(pane) {
             h('div', { class: 'row-2' }, field('확인 간격 (분)', intervalIn, '2~1440'), field('파일 크기 한도', maxSel, '넘는 파일은 한도의 몇 배인지만큼 같은 길이로 나눠 올립니다 (2배까지는 반씩, 서버에 ffmpeg 필요). 자동은 규칙마다 올리는 텔레그램 계정을 봅니다.')),
             h('div', { class: 'row-2' }, field('인코더', encSel, '그래픽 카드로 인코딩하면 CPU보다 몇 배 빠릅니다. 자동은 이 서버에서 실제로 되는 것을 골라 쓰고, 실패하면 CPU로 다시 합니다.'),
                 field('CPU 인코딩 빠르기', presetSel, 'CPU로 할 때만. 빠를수록 같은 화질에 파일이 조금 커집니다.')),
+            field('올리기 시간대', hoursSel, '받기·인코딩·올리기를 이 시간에만 합니다 (사람들이 보는 시간에 서버를 쉬게). 새 항목 찾기는 늘 하고, 줄에 쌓아 두었다가 이 시간에 올립니다. 시험 올리기도 이 시간에만.'),
             rulesBox,
             h('div', { class: 'toolbar' }, h('button', { class: 'btn', on: { click: () => addRule() } }, icon('plus'), ' 규칙 추가'), save, check),
             h('p', { class: 'field-hint', text: '올리려면 그 채널에 글을 쓸 수 있어야 합니다(채널 관리자). Plex 서버가 이 컴퓨터에 있고 원본 파일 경로가 보이면 그대로 올리고, '

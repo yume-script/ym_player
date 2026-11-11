@@ -6,7 +6,7 @@
 //   kind 'direct' -> <video src>
 // 원본 주소가 막히면(CORS/혼합콘텐츠) playback.proxyUrl(서버 중계)로 한 번 더 시도한다.
 // 시도마다 token을 올려서, 늦게 도착한 이전 채널의 콜백이 새 채널을 건드리지 못하게 한다.
-import { h, icon, clear, fmtClock, fmtHM, storeGet, storeSet, toast, IS_IOS } from './util.js';
+import { h, icon, clear, fmtClock, fmtHM, storeGet, storeSet, toast, IS_IOS, dataSaver } from './util.js';
 import { channelHealth, isFavorite, toggleFavorite } from './providers/iptv.js';
 import { registry } from './providers/index.js';
 import { MODES, Visualizer } from './visualizer.js';
@@ -1435,7 +1435,7 @@ class Player {
         }
         // 끝나기 조금 전에 다음 회차/조각을 서버가 미리 준비하게 (형식 확인 + 앞부분 받기) -> 넘어갈 때 바로 시작
         const pbNow = this.pb;
-        if (pbNow.prepareNext && !pbNow._nextPrepared && !pbNow.live && !v.paused) {
+        if (pbNow.prepareNext && !pbNow._nextPrepared && !pbNow.live && !v.paused && !dataSaver()) {   // (데이터 절약이면 미리 받지 않음)
             const d = this._duration();
             if (d > 0 && d - pos <= PREPARE_NEXT_SEC) {
                 pbNow._nextPrepared = true;
