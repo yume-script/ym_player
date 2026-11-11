@@ -5,7 +5,7 @@ import { hubRow, emptyState, loading } from '../cards.js';
 
 export async function renderSearch(main, _params, query, ctx) {
     const q = (query.get('q') || '').trim();
-    const page = h('div', { class: 'page search' }, h('div', { class: 'page-head' }, h('h1', { text: q ? `"${q}" 검색 결과` : '검색' })));
+    const page = h('div', { class: 'page search-page' }, h('div', { class: 'page-head' }, h('h1', { text: q ? `"${q}" 검색 결과` : '검색' })));
     main.appendChild(page);
     if (!q) {
         page.appendChild(emptyState('magnifying-glass', '위쪽 검색창에 찾을 제목이나 채널명을 넣어 주세요'));

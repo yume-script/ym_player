@@ -289,6 +289,23 @@ def test_brunch_and_recipe_reader(page, server):
     page.goto(server + "/#/library/" + page.evaluate("fetch('/api/config').then(r => r.json()).then(c => c.sources.find(s => s.type === 'recipe').id)") + "/recipes")
     page.wait_for_selector(".page.library .card")
     assert "밑반찬" in page.inner_text(".page.library select")
+    # 검색: 멈추거나 Enter를 누르면 사이트 검색(q=)으로 다시 받고, 주소에도 남는다. 검색 중에는 분류를 쓰지 않는다
+    with page.expect_request(lambda r: "/api/recipe/" in r.url and "q=%EA%B9%80%EC%B9%98" in r.url):
+        page.fill(".lib-search", "김치")
+        page.press(".lib-search", "Enter")
+    page.wait_for_selector(".page.library .card")
+    assert "q=%EA%B9%80%EC%B9%98" in page.url or "q=김치" in page.url
+    assert page.locator(".page.library select").first.is_disabled()
+    with page.expect_request(lambda r: "/api/recipe/" in r.url and "cat=" in r.url):
+        page.fill(".lib-search", "")
+        page.press(".lib-search", "Enter")
+    assert not page.locator(".page.library select").first.is_disabled()
+    # 전체 검색 화면: 제목이 한 줄로, 결과 줄이 그 아래 (위 검색창의 .search 모양을 물려받아 세로로 찌그러지던 것)
+    page.goto(server + "/#/search?q=" + "김치")
+    page.wait_for_selector(".search-page .card")
+    head = page.locator(".search-page .page-head h1").bounding_box()
+    row = page.locator(".search-page .card").first.bounding_box()
+    assert head["height"] < 60 and head["width"] > 100 and row["y"] > head["y"] + head["height"] - 1
 
 
 def test_single_library_source_opens_from_nav(page, server):
