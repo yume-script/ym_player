@@ -813,7 +813,17 @@ class Player {
             }
 
             // direct 또는 hls.js가 없는 Safari(네이티브 HLS)
-            const onError = () => fail(new Error(v.error ? `미디어 오류 ${v.error.code}` : '미디어 오류'));
+            // <video>는 서버가 준 오류 이유를 못 읽어서 대개 "미디어 오류 4"(형식 미지원)로만 알린다.
+            // 재생 주소를 준 쪽(pb.explainError)이 서버에 진짜 이유를 물어볼 수 있으면 그걸로 보여 준다
+            const pb = this.pb;
+            const onError = () => {
+                const code = v.error && v.error.code;
+                const plain = code === 4 ? '브라우저가 이 영상을 열지 못했습니다 (미디어 오류 4)'
+                    : code ? `미디어 오류 ${code}` : '미디어 오류';
+                if (!pb || !pb.explainError || settled) return fail(new Error(plain));
+                Promise.resolve().then(() => pb.explainError()).catch(() => '')
+                    .then((why) => fail(new Error(why || plain)));
+            };
             v.addEventListener('error', onError);
             this._detachDirect = () => v.removeEventListener('error', onError);
             // 시작 위치를 주소에도 (#t=초) - 브라우저가 처음부터 받아 두다가 옮기지 않고 그 자리부터 받는다.

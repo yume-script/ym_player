@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 129,
+        "version": "1.1.92",
+        "date": "2026-11-11",
+        "title": "텔레그램 \"미디어 오류 4\" 대신 진짜 이유를 보여 줌 (텔레그램에서 못 받음, 서버 변환 실패 등)"
+    },
+    {
         "pr": 128,
         "version": "1.1.91",
         "date": "2026-11-11",
