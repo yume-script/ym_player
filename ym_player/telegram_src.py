@@ -1501,6 +1501,13 @@ def _part_groups(conn, sid, channel):
     return groups
 
 
+def warm_part_groups(sid, channels):
+    """서버를 켤 때 채널마다 조각 묶음을 미리 계산해 둔다 (첫 목록·홈이 기다리지 않게)"""
+    with db() as conn:
+        for ch in channels:
+            _part_groups(conn, sid, int(ch))
+
+
 def video_parts(sid, channel, msg, user=""):
     """같은 채널에서 이 영상과 한 묶음인 조각들 (번호순). 조각이 아니거나 하나뿐이면 []."""
     with db() as conn:
@@ -2167,13 +2174,14 @@ class TelegramSource:
                 syncing = True
         if HIDE_BL and meta_flags_pending(self.sid, channels):
             self.background(("meta_flags",), self.scan_meta_flags)
-        rows, total = query_videos(self.sid, channels, offset, limit, q, sort, user, kind, self.kinds, group)
+        # 색인 조회는 따로 도는 스레드에서 (큰 채널은 수백 ms - 그동안 서버의 다른 요청이 멈추지 않게)
+        rows, total = await asyncio.to_thread(query_videos, self.sid, channels, offset, limit, q, sort, user, kind, self.kinds, group)
         if fill and len(channels) == 1 and not q and sort == "latest":
             ch = channels[0]
             for _ in range(OLDER_BATCHES_PER_PAGE):
                 if len(rows) >= limit or not await self.sync_older(ch):
                     break
-                rows, total = query_videos(self.sid, channels, offset, limit, q, sort, user, kind, self.kinds, group)
+                rows, total = await asyncio.to_thread(query_videos, self.sid, channels, offset, limit, q, sort, user, kind, self.kinds, group)
             ahead = total - (offset + len(rows))
             if ahead < limit * 2 and not sync_state(self.sid, ch)["complete"]:
                 self.background(("older", ch), lambda: self.sync_older(ch))

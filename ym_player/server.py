@@ -266,8 +266,7 @@ async def _save_config(request, cfg):
     for sid in old_pod - {s["id"] for s in cfg["sources"] if s.get("type") == "podcast"}:
         await asyncio.to_thread(podcast.forget_source, sid)
     request.app[PODCAST].forget_except([f["url"] for s in cfg["sources"] if s.get("type") == "podcast" for f in s.get("feeds") or []])
-    request.app[CHANNEL_CACHE].clear()
-    request.app[EPG_CACHE].clear()
+    # (채널 목록·편성표 기억은 지우지 않는다 - 주소가 열쇠에 들어 있어서 바꾸면 저절로 새로 받는다)
     # 지운 Plex 소스의 동영상 캐시는 지운다
     for sid in old_plex - {s["id"] for s in cfg["sources"] if s.get("type") == "plex"}:
         await asyncio.to_thread(media_cache.STORE.drop_prefix, f"plex:{sid}:")
@@ -305,10 +304,12 @@ def _source_or_404(source_id, stype, request=None):
 # IPTV
 # ---------------------------------------------------------------------------
 async def _fetch_all(request, urls, timeout):
-    """주소 여러 개를 동시에 받는다. 반환 [(주소, bytes 또는 예외)] (순서 유지)."""
+    """주소 여러 개를 동시에 받는다. 반환 [(주소, bytes 또는 예외)] (순서 유지). request 대신 app도 된다"""
+    app = getattr(request, "app", request)
+
     async def one(url):
         try:
-            return url, await _fetch_bytes(request.app[HTTP], url, timeout=timeout)
+            return url, await _fetch_bytes(app[HTTP], url, timeout=timeout)
         except Exception as e:  # 네트워크 오류 종류가 많아서 넓게 잡는다
             return url, e
     return await asyncio.gather(*(one(u) for u in urls))
@@ -345,20 +346,81 @@ async def _load_m3u(request, src, timeout=20):
     return iptv.merge_channels(lists), report
 
 
+# ----- 받아 둔 것 먼저 (stale-while-revalidate) -----
+# 채널 목록·편성표처럼 원본을 받는 데 몇 초~십몇 초 걸리는 것은: 기억해 둔 것(서버를 다시 켜도 디스크에 남은 것)을
+# 바로 주고, 오래됐으면 뒤에서 새로 받는다. 처음 한 번만 기다린다. 같은 것을 여러 사람이 동시에 새로 받지 않게 하나로.
+SWR_TASKS = web.AppKey("swr_tasks", dict)
+
+
+def _swr_path(kind, key):
+    name = hashlib.sha1(repr(key).encode()).hexdigest()[:20]
+    return os.path.join(config_store.DATA_DIR, "source_cache", f"{kind}_{name}.json.gz")
+
+
+def _swr_disk_load(kind, key):
+    import gzip
+    try:
+        with gzip.open(_swr_path(kind, key), "rt", encoding="utf-8") as f:
+            d = json.load(f)
+        return d["at"], d["data"]
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def _swr_disk_save(kind, key, at, data):
+    import gzip
+    path = _swr_path(kind, key)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with gzip.open(path + ".tmp", "wt", encoding="utf-8", compresslevel=5) as f:
+            json.dump({"at": at, "data": data}, f, ensure_ascii=False)
+        os.replace(path + ".tmp", path)
+    except OSError as e:
+        log.info("받아 둔 목록 저장 실패 (%s): %s", kind, e)
+
+
+async def _swr(app, cache, kind, key, ttl, load, force=False):
+    """load() -> data (실패하면 예외). 반환: data"""
+    tasks = app[SWR_TASKS]
+
+    async def refresh():
+        data = await load()
+        at = time.time()
+        cache[key] = (at, data)
+        await asyncio.to_thread(_swr_disk_save, kind, key, at, data)
+        return data
+
+    def start():
+        t = tasks.get((kind, key))
+        if t is None or t.done():
+            t = tasks[(kind, key)] = asyncio.ensure_future(refresh())
+            t.add_done_callback(lambda f: f.cancelled() or f.exception())   # (뒤에서 실패해도 경고만 안 나게)
+        return t
+    hit = cache.get(key)
+    if hit is None and not force:
+        hit = await asyncio.to_thread(_swr_disk_load, kind, key)   # 서버를 다시 켰으면 디스크에 남은 것
+        if hit:
+            cache[key] = hit
+    if hit and not force:
+        if time.time() - hit[0] >= ttl:
+            start()   # 오래됐으면 뒤에서 새로 (지금은 받아 둔 것으로)
+        return hit[1]
+    return await asyncio.shield(start())
+
+
+async def _iptv_channels_data(app, src):
+    channels, report = await _load_m3u(app, src)
+    errors = [f"{r['url']}: {r['error']}" for r in report if not r["ok"]]
+    return {"success": True, "channels": channels, "has_epg": bool(src.get("epg")), "lists": report, "errors": errors}
+
+
 async def iptv_channels(request):
     src = _source_or_404(request.match_info["sid"], "iptv", request)
-    cache = request.app[CHANNEL_CACHE]
-    key = (src["id"], src["m3u"])
-    hit = cache.get(key)
-    if hit and time.time() - hit[0] < CHANNEL_CACHE_SEC and not request.query.get("refresh"):
-        return web.json_response(hit[1])
     try:
-        channels, report = await _load_m3u(request, src)
+        data = await _swr(request.app, request.app[CHANNEL_CACHE], "m3u", (src["id"], src["m3u"]), CHANNEL_CACHE_SEC,
+                          lambda: _iptv_channels_data(request.app, src), force=bool(request.query.get("refresh")))
     except RuntimeError as e:
         return _json_error(502, f"M3U 받기 실패: {e}")
-    errors = [f"{r['url']}: {r['error']}" for r in report if not r["ok"]]
-    data = {"success": True, "channels": channels, "has_epg": bool(src.get("epg")), "lists": report, "errors": errors}
-    cache[key] = (time.time(), data)
     return web.json_response(data)
 
 
@@ -367,14 +429,18 @@ async def iptv_epg(request):
     urls = config_store.url_list(src.get("epg"))
     if not urls:
         return web.json_response({"success": True, "names": {}, "icons": {}, "programmes": {}})
-    cache = request.app[EPG_CACHE]
-    key = (src["id"], src["epg"])
-    hit = cache.get(key)
-    if hit and time.time() - hit[0] < EPG_CACHE_SEC and not request.query.get("refresh"):
-        return web.json_response(hit[1])
+    try:
+        data = await _swr(request.app, request.app[EPG_CACHE], "epg", (src["id"], src["epg"]), EPG_CACHE_SEC,
+                          lambda: _iptv_epg_data(request.app, urls), force=bool(request.query.get("refresh")))
+    except RuntimeError as e:
+        return _json_error(502, str(e))
+    return web.json_response(data)
+
+
+async def _iptv_epg_data(app, urls):
     now = int(time.time())
     parsed, errors = [], []
-    for url, got in await _fetch_all(request, urls, 60):
+    for url, got in await _fetch_all(app, urls, 60):
         if isinstance(got, Exception):
             errors.append(f"{_short_url(url)}: {_fetch_error(got)}")
             continue
@@ -385,10 +451,8 @@ async def iptv_epg(request):
         except Exception as e:
             errors.append(f"{_short_url(url)}: {type(e).__name__}: {e}")
     if not parsed:
-        return _json_error(502, f"EPG 받기 실패: {' / '.join(errors)}")
-    data = {"success": True, **iptv.merge_epg(parsed), "errors": errors}
-    cache[key] = (time.time(), data)
-    return web.json_response(data)
+        raise RuntimeError(f"EPG 받기 실패: {' / '.join(errors)}")
+    return {"success": True, **iptv.merge_epg(parsed), "errors": errors}
 
 
 # ---------------------------------------------------------------------------
@@ -457,6 +521,8 @@ async def _radio_now(app, station):
     return now
 
 
+RADIO_NOW_WAIT = 1.5   # 곡 정보 응답을 기다리는 최대 시간 (못 받은 방송국은 뒤에서 마저)
+RADIO_JOBS = web.AppKey("radio_jobs", dict)   # 스트림 주소 -> 곡 정보를 받고 있는 작업
 RADIO_NOW_MAX = 60   # 한 번에 곡 정보를 알아보는 방송국 수 (방송국이 많으면 화면에 보이는 것만 ?ids=로)
 
 
@@ -473,8 +539,26 @@ async def radio_now(request):
         want = set(ids)
         stations = [st for st in stations if st["id"] in want]
     stations = stations[:RADIO_NOW_MAX]
-    nows = await asyncio.gather(*(_radio_now(request.app, st) for st in stations))
-    return web.json_response({"success": True, "now": {st["id"]: n for st, n in zip(stations, nows)}})
+    # 느린 방송국 하나 때문에 전체가 기다리지 않게: RADIO_NOW_WAIT까지 온 것만 주고, 나머지는 뒤에서 마저 받아
+    # 다음 확인(화면은 몇 초마다 다시 묻는다) 때 준다. 그동안은 지난번 곡(없으면 빈 칸)
+    jobs = request.app[RADIO_JOBS]
+    tasks = {}
+    for st in stations:
+        t = jobs.get(st["url"])
+        if t is None or t.done():
+            t = jobs[st["url"]] = asyncio.ensure_future(_radio_now(request.app, st))
+            t.add_done_callback(lambda f: f.cancelled() or f.exception())
+        tasks[st["id"]] = (st, t)
+    if tasks:
+        await asyncio.wait([t for _st, t in tasks.values()], timeout=RADIO_NOW_WAIT)
+    now = {}
+    for sid, (st, t) in tasks.items():
+        if t.done() and not t.cancelled() and t.exception() is None:
+            now[sid] = t.result()
+        else:
+            hit = request.app[RADIO_NOW].get(st["url"])
+            now[sid] = hit[1] if hit else {"text": "", "artist": "", "title": "", "art": "", "pending": True}
+    return web.json_response({"success": True, "now": now})
 
 
 async def stream_proxy(request):
@@ -1568,7 +1652,7 @@ async def tg_home(request, tg):
     if len(vid_channels) > 1:
         recent = (await tg.videos(vid_channels, limit=30, fill=False, user=username(request), kind="video"))["items"]
     return web.json_response({"success": True,
-                              "continue": telegram_src.continue_watching(tg.sid, mine, user=username(request)),
+                              "continue": await asyncio.to_thread(telegram_src.continue_watching, tg.sid, mine, user=username(request)),
                               "channels": rows, "recent": recent})
 
 
@@ -3487,6 +3571,37 @@ async def service_worker(request):
                         headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"})
 
 
+WARM_TASK = web.AppKey("warm_task", asyncio.Task)
+WARM_DELAY_SEC = 3
+
+
+async def _warm_up(app):
+    """서버를 켠 뒤 뒤에서 미리 준비: IPTV 채널 목록·편성표(디스크에 남은 것이 오래됐으면 새로), 텔레그램 조각 묶음,
+    그래픽 인코더 확인 - 서버를 다시 켠 직후 처음 여는 사람이 기다리지 않게. 실패해도 그 화면을 열 때 다시 한다"""
+    await asyncio.sleep(WARM_DELAY_SEC)
+    cfg = config_store.load()
+    for src in cfg.get("sources", []):
+        if not src.get("enabled", True):
+            continue
+        try:
+            if src["type"] == "iptv" and src.get("m3u"):
+                await _swr(app, app[CHANNEL_CACHE], "m3u", (src["id"], src["m3u"]), CHANNEL_CACHE_SEC,
+                           lambda src=src: _iptv_channels_data(app, src))
+                urls = config_store.url_list(src.get("epg"))
+                if urls:
+                    await _swr(app, app[EPG_CACHE], "epg", (src["id"], src["epg"]), EPG_CACHE_SEC,
+                               lambda urls=urls: _iptv_epg_data(app, urls))
+            elif src["type"] == "telegram" and src.get("channels"):
+                await asyncio.to_thread(telegram_src.warm_part_groups, src["id"], [c["id"] for c in src["channels"]])
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.info("미리 준비 실패 (%s): %s", src.get("name"), e)
+    if plex_to_tg.load_settings()["rules"]:
+        for n in ("nvenc", "qsv", "vaapi"):
+            await folder_watch.hw_works(n)
+
+
 async def _on_startup(app):
     app[HTTP] = ClientSession(auto_decompress=True)
     media_cache.STORE.configure(config_store.load().get("cache"))
@@ -3496,6 +3611,7 @@ async def _on_startup(app):
     app[UPDATE_TASK] = asyncio.ensure_future(app[UPDATES].loop(app[HTTP]))
     app[DISCORD_TASK] = asyncio.ensure_future(app[DISCORD].loop(app[HTTP]))
     app[MIRROR_TASK] = asyncio.ensure_future(app[MIRROR].loop())
+    app[WARM_TASK] = asyncio.ensure_future(_warm_up(app))
     if app[REQUIRE_AUTH]:
         made = auth.bootstrap_from_env()
         if made:
@@ -3531,7 +3647,7 @@ async def iptv_chat_url_send(request):
 
 async def _on_cleanup(app):
     await app[CHAT_FINDER].close()
-    for task in (app.get(HLS_SWEEPER), app.get(UPDATE_TASK), app.get(DISCORD_TASK), app.get(MIRROR_TASK)):
+    for task in (app.get(HLS_SWEEPER), app.get(UPDATE_TASK), app.get(DISCORD_TASK), app.get(MIRROR_TASK), app.get(WARM_TASK)):
         if task:
             task.cancel()
     for job in list(app[HLS_JOBS].values()):
@@ -3562,6 +3678,7 @@ def create_app(require_auth=True):
         root.addHandler(RECENT)
     app[REQUIRE_AUTH] = require_auth
     app[CHANNEL_CACHE] = {}
+    app[SWR_TASKS] = {}
     app[EPG_CACHE] = {}
     app[TELEGRAM] = {}
     app[PLEX_SECTIONS] = {}
@@ -3574,6 +3691,7 @@ def create_app(require_auth=True):
     app[DISCORD] = discord_feed.Feed()
     app[MIRROR] = _make_mirror(app)
     app[RADIO_NOW] = {}
+    app[RADIO_JOBS] = {}
     app[RADIO_ART] = {}
     app[PODCAST] = podcast.FeedCache()
     app[PODCAST_LOCKS] = {}
