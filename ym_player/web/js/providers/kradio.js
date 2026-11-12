@@ -1,5 +1,6 @@
 // 공중파 라디오 소스 - 한국 지상파·지역 라디오를 지역별 채널로 (kradio.py).
-// 채널 목록은 서버가 공개 저장소(BSofDeath/radio.bsod.kr)에서 받아 준다 (/api/kradio/{id}/stations). 사이드바에는 지역마다 화면 하나.
+// 채널 목록은 서버가 공개 저장소(BSofDeath/radio.bsod.kr)에서 받아 준다 (/api/kradio/{id}/stations).
+// 사이드바에는 [방송국] 화면 하나, 지역은 그 화면 위쪽의 단추 줄로 고른다.
 // 재생은 인터넷 라디오와 같은 길(채널 카드, 위/아래로 채널 전환, 미니 플레이어, 시각화)을 쓰되,
 // 방송 주소는 틀 때마다 서버가 찾아 넘겨 준다 (/live/{채널}) - KBS·MBC·SBS처럼 주소에 토큰이 붙어 시간이 지나면 못 쓰는 방송이 있어서.
 import { api } from '../util.js';
@@ -40,17 +41,27 @@ export class KRadioProvider extends RadioProvider {
 
     async getLibraries() {
         await this._load();
-        return this.regions.map((r) => ({ id: r.id, title: r.name, type: 'radio', icon: 'tower-cell' }));
+        return [{ id: 'stations', title: '방송국', type: 'radio', icon: 'tower-cell' }];
     }
 
     librarySorts() { return [['default', '방송사 순서'], ['name', '이름']]; }
 
-    libraryKinds() { return null; }
+    /** 지역 고르기 - 방송국 화면 위쪽 단추 줄 (전국 방송은 지역마다 들어 있어 '전체'는 두지 않는다) */
+    libraryKinds() { return this.regions.length ? this.regions.map((r) => [r.id, r.name]) : null; }
 
-    async getLibraryItems(libId, { sort = 'default' } = {}) {
+    libraryKindStyle() { return 'chips'; }
+
+    libraryKindLabel() { return '지역'; }
+
+    _region(kind) {
+        return this.regions.some((r) => r.id === kind) ? kind : (this.regions[0] || {}).id;
+    }
+
+    async getLibraryItems(libId, { kind = '', sort = 'default' } = {}) {
         await this._load();
         if (!this.stations.length && this.error) throw new Error(this.error);
-        const list = this.stations.filter((st) => st.region === libId);
+        const region = this._region(kind || libId);   // (예전 주소 #/library/{id}/{지역}도 그 지역으로)
+        const list = this.stations.filter((st) => st.region === region);
         if (sort === 'name') list.sort((a, b) => a.name.localeCompare(b.name, 'ko'));
         const items = list.map((st) => this.toItem(st));
         return { items, total: items.length };
@@ -62,7 +73,7 @@ export class KRadioProvider extends RadioProvider {
         if (!first) return [];
         const list = this.stations.filter((st) => st.region === first.id).slice(0, HOME_MAX);
         return [{ title: `공중파 라디오 · ${first.name}`, source: this.name, live: true, items: list.map((st) => this.toItem(st)),
-            more: `#/library/${this.id}/${first.id}` }];
+            more: `#/library/${this.id}/stations` }];
     }
 
     async search(query) {

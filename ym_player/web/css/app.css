@@ -605,6 +605,11 @@ body.player-open { overflow: hidden; }
 .sub-sizes { display: flex; gap: 0.4rem; padding: 0.2rem 0.6rem 0.5rem; }
 .chip { border: 1px solid var(--border); background: var(--bg-elev2); border-radius: 999px; padding: 0.25rem 0.8rem; cursor: pointer; font-size: 0.8rem; }
 .chip.active { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 700; }
+/* 라이브러리 위쪽 분류 단추 줄 (공중파 라디오의 지역) */
+.kind-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.9rem; }
+.kind-chips .chip { font-size: 0.85rem; padding: 0.35rem 0.95rem; color: var(--text); }
+.kind-chips .chip.active { color: var(--accent-ink); }
+.kind-chips.disabled { opacity: 0.45; pointer-events: none; }
 
 /* 자막 글자 (브라우저 기본 자막 표시를 쓴다) */
 video::cue { background: rgba(0, 0, 0, 0.55); color: #fff; font-family: "Noto Sans KR", sans-serif; line-height: 1.35; }

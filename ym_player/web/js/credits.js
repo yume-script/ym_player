@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 134,
+        "version": "1.1.97",
+        "date": "2026-11-12",
+        "title": "공중파 라디오: 사이드바의 지역 9개를 [방송국] 화면 하나로 합치고, 지역은 화면 위쪽 단추 줄로 고르기 (고른 지역 기억)"
+    },
+    {
         "pr": 133,
         "version": "1.1.96",
         "date": "2026-11-12",
