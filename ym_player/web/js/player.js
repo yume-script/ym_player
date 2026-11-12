@@ -1243,7 +1243,7 @@ class Player {
     playChannel(provider, channel, playlist) {
         this.prepSeq++; // 준비 중이던 다른 영상은 버린다
         this._setShuffle(null);
-        if (provider.kind === 'radio') this.viz.prime(); // 누른 그 순간에 (브라우저 소리 허용 조건)
+        if (provider.kind === 'radio' || provider.kind === 'kradio') this.viz.prime(); // 누른 그 순간에 (브라우저 소리 허용 조건)
         this.ref = { type: 'channel', pid: provider.id, cid: String(channel.id) };
         return this.start(provider.getPlayback(channel), playlist);
     }

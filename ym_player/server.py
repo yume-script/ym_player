@@ -44,7 +44,7 @@ from urllib.parse import quote, urlencode
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
 from yarl import URL
 
-from . import __version__, activity, auth, bookoasis, brunch, perf, cctv, chatfind, config_store, discord_feed, folder_watch, iptv, mcp, media_cache, plex_to_tg, podcast, prefs, radio, recipe, subtitles, telegram_src, tmdb, transcode, updates
+from . import __version__, activity, auth, bookoasis, brunch, perf, cctv, chatfind, config_store, discord_feed, folder_watch, iptv, kradio, mcp, media_cache, plex_to_tg, podcast, prefs, radio, recipe, subtitles, telegram_src, tmdb, transcode, updates
 
 log = logging.getLogger("ym_player")
 
@@ -839,6 +839,35 @@ async def podcast_audio(request):
         return resp
     finally:
         upstream.release()
+
+
+# ---------------------------------------------------------------------------
+# 공중파 라디오 (kradio.py) - 채널 목록과 방송 주소를 공개 저장소(BSofDeath/radio.bsod.kr)에서 받아 읽는다
+# ---------------------------------------------------------------------------
+KRADIO = web.AppKey("kradio", kradio.Directory)
+
+
+async def kradio_stations(request):
+    """GET /api/kradio/{sid}/stations[?refresh=1] -> 지역과 채널 목록 (하루 보관, refresh=1이면 지금 다시 받기)"""
+    _source_or_404(request.match_info["sid"], "kradio", request)
+    data = await request.app[KRADIO].stations(request.app[HTTP], force=request.query.get("refresh") == "1")
+    return web.json_response({"success": True, **data})
+
+
+async def kradio_live(request):
+    """GET /api/kradio/{sid}/live/{채널}[?direct=1] -> 그 채널의 지금 방송 주소로 넘긴다 (토큰이 붙는 방송은 방송사에 물어 받는다).
+    기본은 서버 중계(/api/stream)로, direct=1이면 방송사 주소로 바로. retry=1이면 기억해 둔 주소를 버리고 다시 받는다"""
+    _source_or_404(request.match_info["sid"], "kradio", request)
+    directory = request.app[KRADIO]
+    await directory.stations(request.app[HTTP])
+    try:
+        url = await directory.resolve(request.app[HTTP], request.match_info["station"], force=request.query.get("retry") == "1")
+    except KeyError:
+        return _json_error(404, "이 채널을 찾을 수 없습니다 (목록에서 빠졌을 수 있습니다).")
+    except Exception as e:  # noqa: BLE001
+        return _json_error(502, str(e))
+    target = url if request.query.get("direct") == "1" else iptv.stream_proxy_url(url, "", "")
+    raise web.HTTPFound(target, headers={"Cache-Control": "no-store"})
 
 
 # ---------------------------------------------------------------------------
@@ -3859,6 +3888,7 @@ def create_app(require_auth=True):
     app[RADIO_ART] = {}
     app[PODCAST] = podcast.FeedCache()
     app[BOOKOASIS] = bookoasis.Clients()
+    app[KRADIO] = kradio.Directory()
     app[PODCAST_LOCKS] = {}
     app[CCTV_CACHE] = {}
     app[BRUNCH] = brunch.Brunch(lambda: app[HTTP])
@@ -3940,6 +3970,8 @@ def create_app(require_auth=True):
     app.router.add_get(r"/api/podcast/{sid}/show/{fid:[0-9a-f]{10}}", podcast_show)
     app.router.add_get(r"/api/podcast/{sid}/episode/{fid:[0-9a-f]{10}}/{eid:[0-9a-f]{12}}", podcast_episode)
     app.router.add_get(r"/api/podcast/{sid}/audio/{fid:[0-9a-f]{10}}/{eid:[0-9a-f]{12}}", podcast_audio)
+    app.router.add_get("/api/kradio/{sid}/stations", kradio_stations)
+    app.router.add_get(r"/api/kradio/{sid}/live/{station:[\w.\-]+}", kradio_live)
     app.router.add_post("/api/bo/{sid}/progress", bookoasis_progress)
     app.router.add_get("/api/bo/{sid}/{tail:.+}", bookoasis_proxy)
     app.router.add_post("/api/admin/bookoasis/test", admin_bookoasis_test)

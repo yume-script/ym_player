@@ -60,6 +60,11 @@ export async function renderSettings(main, _params, query, ctx) {
             h('button', { class: 'btn', on: { click: () => add({ type: 'recipe', name: '만개의레시피', enabled: true }) } },
                 icon('utensils'), ' 만개의레시피 추가')],
         '만개의레시피(10000recipe.com)의 인기 랭킹·분류·검색. 레시피를 누르면 재료와 만드는 순서를 한 페이지로 봅니다.'],
+        ['kradio', 'tower-cell', '공중파 라디오', () => [
+            h('button', { class: 'btn', on: { click: () => add({ type: 'kradio', name: '공중파 라디오', enabled: true }) } },
+                icon('tower-cell'), ' 공중파 라디오 추가')],
+        '한국 지상파·지역 라디오(KBS·MBC·SBS와 지역국, EBS, CBS, TBN, 공동체 라디오 등)를 지역별 채널로. 채널 목록과 방송 주소는 공개 저장소 '
+            + 'BSofDeath/radio.bsod.kr에서 하루에 한 번 받아 오고, 접속할 때마다 주소가 바뀌는 방송(KBS·MBC·SBS 등)은 서버가 방송사에 물어 받습니다.'],
         ['bookoasis', 'book', 'BookOasis', () => [
             h('button', { class: 'btn', on: { click: () => add({ type: 'bookoasis', name: 'BookOasis', url: '', username: '', password: '',
                 sessions: ['general', 'audiobook', 'video'], verify_ssl: true, enabled: true }) } },
@@ -306,24 +311,9 @@ export async function renderSettings(main, _params, query, ctx) {
             touch();
         };
         area.addEventListener('input', parse);
-        // 한국 지역 라디오(radio.bsod.kr 지역별 목록)를 지역 분류와 함께 더한다. 이미 있는 주소는 건너뜀
-        const krBtn = h('button', { class: 'btn btn-sm', type: 'button', on: { click: async (e) => {
-            e.preventDefault();
-            const { KR_RADIO } = await import('../data/kr_radio.js');
-            parse();
-            const have = new Set((src.stations || []).map((st) => st.url));
-            const add = KR_RADIO.filter((st) => !have.has(st.url));
-            if (!add.length) { toast('한국 지역 라디오가 이미 다 들어 있습니다.'); return; }
-            area.value = [area.value.trim(), toText(add)].filter(Boolean).join('\n');
-            area.rows = 14;
-            parse();
-            toast(`한국 지역 라디오 ${add.length}개를 더했습니다. [저장]을 누르면 적용됩니다.`);
-        } } }, icon('map-location-dot'), ' 한국 지역 라디오 넣기');
         return h('div', {},
             field('방송국', area, 'MP3/AAC/Ogg(Icecast/SHOUTcast)·HLS 인터넷 라디오 주소. 곡 정보를 보내는 방송국은 지금 나오는 곡과 앨범 표지가 보입니다. '
-                + '분류를 적으면 방송국 화면에서 분류(지역)별로 골라 볼 수 있습니다.'),
-            h('div', { class: 'toolbar' }, krBtn,
-                h('span', { class: 'field-hint', text: 'KBS·MBC·SBS 지역국, EBS, CBS, TBN, 공동체 라디오 등 194개 (전국 + 9개 지역, radio.bsod.kr 목록)' })));
+                + '분류를 적으면 방송국 화면에서 분류별로 골라 볼 수 있습니다. 한국 지상파·지역 라디오는 소스 종류 [공중파 라디오]를 쓰세요.'));
     }
 
     /**
@@ -696,8 +686,9 @@ export async function renderSettings(main, _params, query, ctx) {
             const isPod = src.type === 'podcast';
             const isCctv = src.type === 'cctv';
             const isReading = src.type === 'brunch' || src.type === 'recipe';
+            const isKr = src.type === 'kradio';
             const isBo = src.type === 'bookoasis';
-            const fields = isBo ? bookoasisFields(src) : isReading ? [h('p', { class: 'field-hint', text: src.type === 'brunch'
+            const fields = isBo ? bookoasisFields(src) : isKr ? [h('p', { class: 'field-hint', text: '설정할 것이 없습니다. 채널 목록은 서버가 github.com의 BSofDeath/radio.bsod.kr 저장소에서 받아 옵니다 (서버에서 인터넷 연결 필요). 사이드바에 지역별 화면이 생깁니다.' })] : isReading ? [h('p', { class: 'field-hint', text: src.type === 'brunch'
                 ? '설정할 것이 없습니다. 브런치 연재 목록과 글은 서버가 brunch.co.kr에서 받아 보여 줍니다 (서버에서 인터넷 연결 필요).'
                 : '설정할 것이 없습니다. 레시피는 서버가 www.10000recipe.com에서 받아 보여 줍니다 (서버에서 인터넷 연결 필요).' })]
                 : isCctv ? [cctvEditor(src)] : isPod ? [feedEditor(src)] : isRadio ? [stationEditor(src)] : isTg ? [
@@ -758,8 +749,8 @@ export async function renderSettings(main, _params, query, ctx) {
             list.appendChild(h('div', { class: `src-card${src.enabled ? '' : ' disabled'}` },
                 h('div', { class: 'src-head' },
                     h('span', { class: `src-type ${src.type}` },
-                        icon(isBo ? 'book' : isCctv ? 'video' : isPod ? 'podcast' : isRadio ? 'radio' : isTg ? 'paper-plane' : isPlex ? 'server' : 'tower-broadcast'),
-                        isBo ? ' BookOasis' : isCctv ? ' CCTV' : isPod ? ' 팟캐스트' : isRadio ? ' 라디오' : isTg ? ' 텔레그램' : isPlex ? ' Plex' : ' IPTV'),
+                        icon(isKr ? 'tower-cell' : isBo ? 'book' : isCctv ? 'video' : isPod ? 'podcast' : isRadio ? 'radio' : isTg ? 'paper-plane' : isPlex ? 'server' : 'tower-broadcast'),
+                        isKr ? ' 공중파 라디오' : isBo ? ' BookOasis' : isCctv ? ' CCTV' : isPod ? ' 팟캐스트' : isRadio ? ' 라디오' : isTg ? ' 텔레그램' : isPlex ? ' Plex' : ' IPTV'),
                     bindInput(src, 'name', h('input', { class: 'input src-name', value: src.name || '', placeholder: '이름' })),
                     h('label', { class: 'check' }, bindInput(src, 'enabled', h('input', { type: 'checkbox', checked: !!src.enabled }), 'checked'), ' 사용'),
                     h('button', { class: 'icon-btn', title: '위로', on: { click: () => move(-1) } }, icon('arrow-up')),
@@ -879,7 +870,7 @@ export async function renderSettings(main, _params, query, ctx) {
     showTab((query && query.get('tab')) || storeGet('yp_settings_tab', 'sources'));
 }
 
-const TYPE_ICON = { plex: 'server', iptv: 'tower-broadcast', telegram: 'paper-plane', radio: 'radio', podcast: 'podcast', cctv: 'video', brunch: 'mug-hot', recipe: 'utensils', bookoasis: 'book' };
+const TYPE_ICON = { plex: 'server', iptv: 'tower-broadcast', telegram: 'paper-plane', radio: 'radio', podcast: 'podcast', cctv: 'video', brunch: 'mug-hot', recipe: 'utensils', bookoasis: 'book', kradio: 'tower-cell' };
 
 function fmtUptime(sec) {
     const d = Math.floor(sec / 86400), hh = Math.floor((sec % 86400) / 3600), mm = Math.floor((sec % 3600) / 60);

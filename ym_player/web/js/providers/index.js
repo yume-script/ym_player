@@ -10,9 +10,10 @@ import { CctvProvider } from './cctv.js';
 import { BrunchProvider } from './brunch.js';
 import { RecipeProvider } from './recipe.js';
 import { BookOasisProvider } from './bookoasis.js';
+import { KRadioProvider } from './kradio.js';
 
 const TYPES = { plex: PlexProvider, iptv: IptvProvider, telegram: TelegramProvider, radio: RadioProvider, podcast: PodcastProvider, cctv: CctvProvider,
-    brunch: BrunchProvider, recipe: RecipeProvider, bookoasis: BookOasisProvider };
+    brunch: BrunchProvider, recipe: RecipeProvider, bookoasis: BookOasisProvider, kradio: KRadioProvider };
 
 /**
  * 여러 소스를 합친 랜덤 고르기 (홈의 [랜덤 재생]). 소스를 무작위 순서로 돌며 처음 나오는 영상.
