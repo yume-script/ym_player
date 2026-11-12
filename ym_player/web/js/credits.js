@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 137,
+        "version": "1.1.100",
+        "date": "2026-11-12",
+        "title": "공중파 라디오: 방송국 화면에 [전체 채널] 단추 - 모든 지역의 채널을 한 번에 (지역마다 겹치는 전국 방송은 한 번만)"
+    },
+    {
         "pr": 136,
         "version": "1.1.99",
         "date": "2026-11-12",

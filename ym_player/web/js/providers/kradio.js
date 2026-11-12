@@ -122,7 +122,22 @@ export class KRadioProvider extends RadioProvider {
     librarySorts() { return [['default', '방송사 순서'], ['name', '이름']]; }
 
     /** 지역 고르기 - 방송국 화면 위쪽 단추 줄 (전국 방송은 지역마다 들어 있어 '전체'는 두지 않는다). 맨 앞은 즐겨찾기 */
-    libraryKinds() { return this.regions.length ? [['@fav', '⭐ 즐겨찾기'], ...this.regions.map((r) => [r.id, r.name])] : null; }
+    libraryKinds() {
+        return this.regions.length ? [['@fav', '⭐ 즐겨찾기'], ['@all', '전체 채널'], ...this.regions.map((r) => [r.id, r.name])] : null;
+    }
+
+    /** 전체 채널: 지역마다 겹치는 전국 방송은 한 번만 (여러 지역에 있으면 부제를 '전국'으로) */
+    allStations() {
+        const count = new Map();
+        for (const st of this.stations) count.set(this.keyOf(st), (count.get(this.keyOf(st)) || 0) + 1);
+        const seen = new Set();
+        return this.stations.filter((st) => {
+            const key = this.keyOf(st);
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        }).map((st) => (count.get(this.keyOf(st)) > 1 ? { ...st, subtitle: '전국', group: '전국' } : st));
+    }
 
     /** 처음 열 때: 즐겨찾기가 있으면 즐겨찾기, 없으면 첫 지역 */
     libraryKindDefault() { return this.favorites().length ? '@fav' : ((this.regions[0] || {}).id || ''); }
@@ -138,8 +153,9 @@ export class KRadioProvider extends RadioProvider {
     async getLibraryItems(libId, { kind = '', sort = 'default' } = {}) {
         await this._load();
         if (!this.stations.length && this.error) throw new Error(this.error);
-        const region = kind === '@fav' ? '' : this._region(kind || libId);   // (예전 주소 #/library/{id}/{지역}도 그 지역으로)
-        const list = kind === '@fav' ? this.favorites() : this.stations.filter((st) => st.region === region);
+        const region = kind === '@fav' || kind === '@all' ? '' : this._region(kind || libId);   // (예전 주소 #/library/{id}/{지역}도 그 지역으로)
+        const list = kind === '@fav' ? this.favorites() : kind === '@all' ? this.allStations()
+            : this.stations.filter((st) => st.region === region);
         if (sort === 'name') list.sort((a, b) => a.name.localeCompare(b.name, 'ko'));
         const items = list.map((st) => this.toItem(st));
         return { items, total: items.length };
