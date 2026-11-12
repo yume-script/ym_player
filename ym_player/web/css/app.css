@@ -242,8 +242,7 @@ body.lib-route .view-mode { display: block; }
     border-radius: 999px; background: rgba(0, 0, 0, 0.45); color: #fff; opacity: 0; transition: opacity 0.15s; cursor: pointer; z-index: 2; }
 .card:hover .card-star, .card:focus-within .card-star, .card-star.on, .card-star:focus-visible { opacity: 1; }
 .card-star.on { color: #ffc83d; }
-.card-rename { right: 2.8rem; font-size: 0.8rem; }
-.card-rename.on { color: #fff; }
+.card-rename { right: 2.8rem; font-size: 0.8rem; opacity: 1; background: var(--accent); color: var(--accent-ink); }
 @media (hover: none) { .card-star { opacity: 1; } }
 .card-fallback { font-size: 2rem; color: var(--bg-hover); }
 .card:hover .card-art, .card:focus-visible .card-art { outline-color: var(--accent); }

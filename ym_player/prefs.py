@@ -69,9 +69,27 @@ def _nav_order(value):
             "libs": {str(k)[:MAX_LEN]: _str_list(v)[:500] for k, v in list(libs.items())[:200] if isinstance(v, list)}}
 
 
+def _fav_items(value):
+    """즐겨찾는 항목 [{pid, id, title, image, sub}] (레시피 등 - 목록을 다시 받지 않고 카드를 그리게 제목·그림도)"""
+    if not isinstance(value, list):
+        raise ValueError("목록이어야 합니다.")
+    out, seen = [], set()
+    for v in value[:500]:
+        if not isinstance(v, dict):
+            continue
+        pid, iid = str(v.get("pid") or "")[:64], str(v.get("id") or "")[:200]
+        image = str(v.get("image") or "")[:1000]
+        if not pid or not iid or (pid, iid) in seen:
+            continue
+        seen.add((pid, iid))
+        out.append({"pid": pid, "id": iid, "title": str(v.get("title") or "")[:200],
+                    "image": image if re.match(r"^(https?://|/)", image) else "", "sub": str(v.get("sub") or "")[:100]})
+    return out
+
+
 # 받아 주는 키와 검사 함수
 KEYS = {"fav_channels": _str_list, "theme": _choice(THEMES), "accent": _choice(ACCENTS), "seen_version": _version, "tg_seen": _iso_time,
-        "nav_order": _nav_order,
+        "nav_order": _nav_order, "fav_items": _fav_items,
         "home_hidden": lambda v: _str_list(v)[:200]}   # 홈에 안 보일 소스 id들 (사이드바에서는 그대로)
 
 

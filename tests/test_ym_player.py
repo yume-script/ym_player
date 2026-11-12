@@ -482,3 +482,15 @@ def test_iptv_chat_settings():
     assert cs._clean_source({"type": "iptv", "m3u": "http://x/a.m3u"}, None)["chat_url"] == ""
     with _pt.raises(ValueError):
         cs._clean_source({"type": "iptv", "m3u": "http://x/a.m3u", "chat_url": "javascript:alert(1)"}, None)
+
+
+def test_fav_items_pref():
+    from ym_player import prefs
+    out = prefs.KEYS["fav_items"]([
+        {"pid": "rc", "id": 7012345, "title": "계란장조림", "image": "https://img.example/a.jpg", "sub": "춤추는루나"},
+        {"pid": "rc", "id": "7012345", "title": "겹침"}, {"pid": "", "id": "1"}, "bad",
+        {"pid": "rc", "id": "2", "title": "x", "image": "javascript:alert(1)"}])
+    assert out == [{"pid": "rc", "id": "7012345", "title": "계란장조림", "image": "https://img.example/a.jpg", "sub": "춤추는루나"},
+                   {"pid": "rc", "id": "2", "title": "x", "image": "", "sub": ""}]
+    with pytest.raises(ValueError):
+        prefs.KEYS["fav_items"]("x")

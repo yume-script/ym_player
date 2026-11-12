@@ -119,7 +119,10 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
             randomBtn,
             p.kind === 'plex' || p.kind === 'podcast' ? h('label', { class: 'check' }, unwatchedChk, p.kind === 'podcast' ? ' 안 들은 것만' : ' 안 본 것만') : null,
             kindSel && !kindChips ? h('label', { class: 'muted' }, `${p.libraryKindLabel ? p.libraryKindLabel() : '보기'} `, kindSel) : null,
-            h('label', { class: 'muted' }, '정렬 ', sortSel)),
+            // 소스가 내는 단추 (공중파 라디오의 [편집] 등) - 누른 뒤 목록을 다시 그리게 reset을 넘긴다
+            ...(p.libraryTools ? p.libraryTools(libId, () => reset()) : []),
+            // 고를 것이 하나뿐이면(만개의레시피 등) 정렬 칸을 두지 않는다
+            sortSel.options.length > 1 ? h('label', { class: 'muted' }, '정렬 ', sortSel) : null),
         grid, sentinel);
 
     let start = 0, total = Infinity, busy = false, gen = 0;

@@ -3,6 +3,7 @@ import { h, icon, fmtDuration, toast } from './util.js';
 import { player } from './player.js';
 import { registry } from './providers/index.js';
 import { channelHealth, isFavorite, toggleFavorite } from './providers/iptv.js';
+import { isFavItem, toggleFavItem } from './favitems.js';
 // 사진 보기는 열 때 받는다
 const openViewer = (...a) => import('./viewer.js').then((m) => m.openViewer(...a));
 
@@ -49,6 +50,23 @@ export function posterCard(item, { wide = false } = {}) {
                 pointerenter: () => { if (provider.warm) provider.warm(item.id); },
             },
         }, icon('play')));
+    }
+    // 즐겨찾기 별 (레시피처럼 item.fav = {title, image, sub}를 주는 소스)
+    if (item.fav) {
+        const on0 = isFavItem(item.pid, item.id);
+        const star = h('span', { class: `card-star${on0 ? ' on' : ''}`, role: 'button', tabindex: '0', title: '즐겨찾기' },
+            h('i', { class: on0 ? 'fa-solid fa-star' : 'fa-regular fa-star' }));
+        const flip = (e) => {
+            e.preventDefault(); e.stopPropagation();
+            const on = toggleFavItem({ pid: item.pid, id: item.id, ...item.fav });
+            star.classList.toggle('on', on);
+            star.firstChild.className = on ? 'fa-solid fa-star' : 'fa-regular fa-star';
+            toast(on ? `${item.title}: 즐겨찾기에 추가했습니다.` : `${item.title}: 즐겨찾기에서 뺐습니다.`);
+            if (item.onFavChange) item.onFavChange(on);
+        };
+        star.addEventListener('click', flip);
+        star.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') flip(e); });
+        art.appendChild(star);
     }
     if (item.type === 'photo') {
         art.appendChild(h('span', { class: 'card-kind', title: '사진' }, icon('image')));
