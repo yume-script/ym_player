@@ -58,6 +58,17 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
     const kindOpts = p.libraryKinds ? p.libraryKinds(libId) : null;
     const kindSel = kindOpts ? h('select', { class: 'select' },
         kindOpts.map(([v, label]) => h('option', { value: v, text: label, selected: v === (pref.kind || '') }))) : null;
+    // 분류를 위쪽 단추 줄로 보여 주는 소스 (공중파 라디오의 지역): 단추가 위 select의 값을 바꾼다
+    const kindChips = kindSel && p.libraryKindStyle && p.libraryKindStyle(libId) === 'chips' ? h('div', { class: 'kind-chips', role: 'tablist' }) : null;
+    const drawChips = () => {
+        if (!kindChips) return;
+        clear(kindChips);
+        kindOpts.forEach(([v, label]) => kindChips.appendChild(h('button', {
+            class: `chip${v === kindSel.value ? ' active' : ''}`, type: 'button', role: 'tab', 'aria-selected': String(v === kindSel.value), text: label,
+            on: { click: () => { if (kindSel.value === v) return; kindSel.value = v; drawChips(); kindSel.dispatchEvent(new Event('change')); } },
+        })));
+    };
+    drawChips();
     // 소스 안에서 찾기 (만개의레시피 등 - 소스가 librarySearchHint를 주면 검색창). 검색어는 주소(?q=)에도 남겨 뒤로 가기로 돌아와도 그대로
     const searchHint = p.librarySearchHint ? p.librarySearchHint(libId) : '';
     const searchBox = searchHint ? h('input', {
@@ -100,12 +111,13 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
     window.addEventListener('yp-view', onView);
     ctx.onLeave(() => window.removeEventListener('yp-view', onView));
     body.append(
+        kindChips,
         h('div', { class: 'toolbar' },
             countEl,
             searchBox,
             randomBtn,
             p.kind === 'plex' || p.kind === 'podcast' ? h('label', { class: 'check' }, unwatchedChk, p.kind === 'podcast' ? ' 안 들은 것만' : ' 안 본 것만') : null,
-            kindSel ? h('label', { class: 'muted' }, `${p.libraryKindLabel ? p.libraryKindLabel() : '보기'} `, kindSel) : null,
+            kindSel && !kindChips ? h('label', { class: 'muted' }, `${p.libraryKindLabel ? p.libraryKindLabel() : '보기'} `, kindSel) : null,
             h('label', { class: 'muted' }, '정렬 ', sortSel)),
         grid, sentinel);
 
@@ -158,6 +170,7 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
             if (q === last) return;
             last = q;
             if (kindSel) kindSel.disabled = !!q;
+            if (kindChips) kindChips.classList.toggle('disabled', !!q);
             const params = new URLSearchParams(query);
             if (q) params.set('q', q); else params.delete('q');
             const qs = params.toString();
