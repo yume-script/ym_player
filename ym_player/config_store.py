@@ -98,6 +98,19 @@ def clean_logos(raw):
     return [{"name": k, "url": v} for k, v in out.items()][:500]
 
 
+def clean_names(raw):
+    """[{"from": 원래 채널 이름, "to": 보여 줄 이름}] - 같거나 빈 것은 빼고, 원래 이름이 겹치면 뒤의 것"""
+    out = {}
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        a = " ".join(str(item.get("from") or "").split())[:60]
+        b = " ".join(str(item.get("to") or "").split())[:60]
+        if a and b and a != b:
+            out[a] = b
+    return [{"from": k, "to": v} for k, v in out.items()][:500]
+
+
 def _clean_source(raw, old):
     stype = raw.get("type")
     if stype not in SOURCE_TYPES:
@@ -155,6 +168,7 @@ def _clean_source(raw, old):
             raise ValueError(f"[{src['name']}] {e}")
     elif stype == "kradio":
         src["logos"] = clean_logos(raw.get("logos"))   # 관리자가 정한 채널 로고 (없으면 화면이 글자 로고를 그린다)
+        src["names"] = clean_names(raw.get("names"))   # 관리자가 바꾼 채널 이름 (주파수를 붙이는 등)
     elif stype in ("brunch", "recipe"):
         pass   # 설정 칸 없음 (정해진 사이트의 공개 목록을 읽는다)
     elif stype == "podcast":

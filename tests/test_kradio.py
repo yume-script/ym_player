@@ -114,6 +114,10 @@ def test_logos_setting():
         {"name": " MBC  FM4U ", "url": "https://img.example/fm4u.png"}, {"name": "KBS 1FM", "url": "javascript:alert(1)"},
         {"name": "", "url": "https://x/y.png"}, "bad", {"name": "MBC FM4U", "url": "http://img.example/new.png"}]}, None)
     assert src["logos"] == [{"name": "MBC FM4U", "url": "http://img.example/new.png"}]
+    src = config_store._clean_source({"id": "kr", "type": "kradio", "names": [
+        {"from": " 광주MBC  FM4U ", "to": "광주MBC FM4U 91.5"}, {"from": "KBS 1FM", "to": "KBS 1FM"}, {"from": "", "to": "x"},
+        {"from": "EBS FM", "to": " "}, "bad", {"from": "광주MBC FM4U", "to": "광주 FM4U"}]}, None)
+    assert src["names"] == [{"from": "광주MBC FM4U", "to": "광주 FM4U"}]
 
 
 def test_pick_stream():

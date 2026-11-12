@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 136,
+        "version": "1.1.99",
+        "date": "2026-11-12",
+        "title": "공중파 라디오: 채널 이름 바꾸기 - 관리자가 카드의 연필이나 설정에서 이름을 바꿔 지역 방송 주파수를 붙인다 (로고에도 나옴)"
+    },
+    {
         "pr": 135,
         "version": "1.1.98",
         "date": "2026-11-12",

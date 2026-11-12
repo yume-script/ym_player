@@ -167,6 +167,14 @@ export function channelCard(item, playlist) {
         star.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') flip(e); });
         art.appendChild(star);
     }
+    // [관리자] 이름 바꾸기 연필 (공중파 라디오)
+    if (item.onRename) {
+        const pen = h('span', { class: 'card-star card-rename', role: 'button', tabindex: '0', title: '이름 바꾸기 (관리자)' }, icon('pen'));
+        const go = (e) => { e.preventDefault(); e.stopPropagation(); item.onRename(); };
+        pen.addEventListener('click', go);
+        pen.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') go(e); });
+        art.appendChild(pen);
+    }
     const offline = channelHealth.get(ch.id) === 'offline';
     return h('button', {
         class: `card card-channel${offline ? ' offline' : ''}`,

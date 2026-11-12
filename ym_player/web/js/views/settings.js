@@ -775,9 +775,21 @@ export async function renderSettings(main, _params, query, ctx) {
                 .filter(([name, url]) => name && /^https?:\/\//.test(url || '')).map(([name, url]) => ({ name, url }));
             touch();
         });
+        const toNames = (list) => (list || []).map((n) => `${n.from} = ${n.to}`).join('\n');
+        const names = h('textarea', {
+            class: 'input url-list', rows: Math.min(10, Math.max(3, (src.names || []).length + 1)), spellcheck: false, text: toNames(src.names),
+            placeholder: '광주MBC FM4U = 광주MBC FM4U 91.5\n(원래 이름 = 보여 줄 이름)',
+        });
+        names.addEventListener('input', () => {
+            src.names = names.value.split('\n').map((line) => line.split('=').map((x) => x.trim()))
+                .filter(([a, b]) => a && b && a !== b).map(([a, b]) => ({ from: a, to: b }));
+            touch();
+        });
         return h('div', {},
             h('p', { class: 'field-hint', text: '채널 목록은 서버가 github.com의 BSofDeath/radio.bsod.kr 저장소에서 받아 옵니다 (서버에서 인터넷 연결 필요). '
                 + '방송국 화면 위쪽 단추로 지역과 즐겨찾기를 고르고, 카드의 별로 즐겨찾기를 넣고 뺍니다.' }),
+            field('채널 이름 바꾸기 (선택)', names, '한 줄에 하나 "원래 이름 = 보여 줄 이름". 지역 방송의 주파수를 붙일 때 (예: 광주MBC FM4U = 광주MBC FM4U 91.5). '
+                + '방송국 화면에서 카드의 연필(관리자)로도 바꿉니다. 주파수는 로고에도 나옵니다.'),
             field('채널 로고 (선택)', area, '한 줄에 하나 "채널 이름 | 그림 주소". 적지 않은 채널은 방송사 글자 로고(예: MBC FM4U 91.9)를 그립니다.'));
     }
 
