@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 135,
+        "version": "1.1.98",
+        "date": "2026-11-12",
+        "title": "공중파 라디오: 채널 로고(관리자가 그림 주소를 정하거나, 없으면 'MBC FM4U 91.9' 꼴 글자 로고), 즐겨찾기(카드의 별, 위쪽 ⭐ 즐겨찾기 단추, 홈 '즐겨찾는 라디오')"
+    },
+    {
         "pr": 134,
         "version": "1.1.97",
         "date": "2026-11-12",

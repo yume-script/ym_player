@@ -688,7 +688,7 @@ export async function renderSettings(main, _params, query, ctx) {
             const isReading = src.type === 'brunch' || src.type === 'recipe';
             const isKr = src.type === 'kradio';
             const isBo = src.type === 'bookoasis';
-            const fields = isBo ? bookoasisFields(src) : isKr ? [h('p', { class: 'field-hint', text: '설정할 것이 없습니다. 채널 목록은 서버가 github.com의 BSofDeath/radio.bsod.kr 저장소에서 받아 옵니다 (서버에서 인터넷 연결 필요). 사이드바에 지역별 화면이 생깁니다.' })] : isReading ? [h('p', { class: 'field-hint', text: src.type === 'brunch'
+            const fields = isBo ? bookoasisFields(src) : isKr ? [kradioLogos(src)] : isReading ? [h('p', { class: 'field-hint', text: src.type === 'brunch'
                 ? '설정할 것이 없습니다. 브런치 연재 목록과 글은 서버가 brunch.co.kr에서 받아 보여 줍니다 (서버에서 인터넷 연결 필요).'
                 : '설정할 것이 없습니다. 레시피는 서버가 www.10000recipe.com에서 받아 보여 줍니다 (서버에서 인터넷 연결 필요).' })]
                 : isCctv ? [cctvEditor(src)] : isPod ? [feedEditor(src)] : isRadio ? [stationEditor(src)] : isTg ? [
@@ -761,6 +761,24 @@ export async function renderSettings(main, _params, query, ctx) {
                     }, icon('trash'))),
                 h('div', { class: 'src-fields' }, fields)));
         });
+    }
+
+    /** 공중파 라디오: 채널 로고 (한 줄에 "채널 이름 | 그림 주소"). 없는 채널은 방송사 글자 로고를 그린다 */
+    function kradioLogos(src) {
+        const toText = (list) => (list || []).map((l) => `${l.name} | ${l.url}`).join('\n');
+        const area = h('textarea', {
+            class: 'input url-list', rows: Math.min(10, Math.max(3, (src.logos || []).length + 1)), spellcheck: false, text: toText(src.logos),
+            placeholder: 'MBC FM4U | https://…/fm4u.png\n(채널 이름은 방송국 화면의 이름 그대로)',
+        });
+        area.addEventListener('input', () => {
+            src.logos = area.value.split('\n').map((line) => line.split('|').map((x) => x.trim()))
+                .filter(([name, url]) => name && /^https?:\/\//.test(url || '')).map(([name, url]) => ({ name, url }));
+            touch();
+        });
+        return h('div', {},
+            h('p', { class: 'field-hint', text: '채널 목록은 서버가 github.com의 BSofDeath/radio.bsod.kr 저장소에서 받아 옵니다 (서버에서 인터넷 연결 필요). '
+                + '방송국 화면 위쪽 단추로 지역과 즐겨찾기를 고르고, 카드의 별로 즐겨찾기를 넣고 뺍니다.' }),
+            field('채널 로고 (선택)', area, '한 줄에 하나 "채널 이름 | 그림 주소". 적지 않은 채널은 방송사 글자 로고(예: MBC FM4U 91.9)를 그립니다.'));
     }
 
     /** BookOasis 소스: 주소·계정·보여 줄 서재 + 연결 확인 */

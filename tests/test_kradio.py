@@ -109,6 +109,13 @@ def test_build():
     assert by["busan.kbs.1radio.busan"]["how"]["api"] == kradio.KBS_API + "10_21"
 
 
+def test_logos_setting():
+    src = config_store._clean_source({"id": "kr", "type": "kradio", "logos": [
+        {"name": " MBC  FM4U ", "url": "https://img.example/fm4u.png"}, {"name": "KBS 1FM", "url": "javascript:alert(1)"},
+        {"name": "", "url": "https://x/y.png"}, "bad", {"name": "MBC FM4U", "url": "http://img.example/new.png"}]}, None)
+    assert src["logos"] == [{"name": "MBC FM4U", "url": "http://img.example/new.png"}]
+
+
 def test_pick_stream():
     assert kradio.pick_stream(" https://a.example/x.m3u8?token=1 \n") == "https://a.example/x.m3u8?token=1"
     assert kradio.pick_stream('{"ret":0,"channel_item":[{"service_url":"https://k.example/1fm.m3u8?Policy=x"}]}') == "https://k.example/1fm.m3u8?Policy=x"

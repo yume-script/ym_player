@@ -1,9 +1,13 @@
 // 공중파 라디오 소스 - 한국 지상파·지역 라디오를 지역별 채널로 (kradio.py).
 // 채널 목록은 서버가 공개 저장소(BSofDeath/radio.bsod.kr)에서 받아 준다 (/api/kradio/{id}/stations).
 // 사이드바에는 [방송국] 화면 하나, 지역은 그 화면 위쪽의 단추 줄로 고른다.
+// 로고는 관리자가 정한 그림(소스 설정의 채널 로고), 없으면 방송사 글자 로고(kradio_logo.js). 카드의 별로 즐겨찾기.
+// 즐겨찾기는 지역과 상관없이 채널 하나로 친다 (전국 방송은 지역마다 들어 있어서) - 채널 id에 지역을 넣지 않는다.
 // 재생은 인터넷 라디오와 같은 길(채널 카드, 위/아래로 채널 전환, 미니 플레이어, 시각화)을 쓰되,
 // 방송 주소는 틀 때마다 서버가 찾아 넘겨 준다 (/live/{채널}) - KBS·MBC·SBS처럼 주소에 토큰이 붙어 시간이 지나면 못 쓰는 방송이 있어서.
 import { api } from '../util.js';
+import { isFavorite, streamProxyUrl } from './iptv.js';
+import { frequencyOf, textLogo } from './kradio_logo.js';
 import { RadioProvider } from './radio.js';
 
 const HOME_MAX = 24;
@@ -15,6 +19,8 @@ export class KRadioProvider extends RadioProvider {
         this.base = `/api/kradio/${encodeURIComponent(src.id)}`;
         this.regions = [];
         this.error = '';
+        this.logos = new Map((src.logos || []).map((l) => [l.name, l.url]));
+        this._logoCache = new Map();
         this._loading = null;
     }
 
@@ -29,6 +35,35 @@ export class KRadioProvider extends RadioProvider {
             return this.stations;
         }).catch((e) => { this._loading = null; this.error = e.message; return []; });
         return this._loading;
+    }
+
+    /** 지역을 뺀 채널 키 ("seoul.mbc.fm4u.-" -> "mbc.fm4u.-") - 즐겨찾기·채널 id용 */
+    keyOf(st) { return String(st.id).slice(String(st.region).length + 1); }
+
+    logoOf(st) {
+        const custom = this.logos.get(st.name);
+        if (custom) return custom.startsWith('http://') ? streamProxyUrl(custom) : custom;
+        if (!this._logoCache.has(st.id)) this._logoCache.set(st.id, textLogo(st.name, frequencyOf(st.id)));
+        return this._logoCache.get(st.id);
+    }
+
+    channelOf(st) {
+        return { id: `${this.id}:${this.keyOf(st)}`, stationId: st.id, name: st.name, group: st.group || '', logo: this.logoOf(st), url: st.url };
+    }
+
+    toItem(st) {
+        return { ...super.toItem(st), logo: this.logoOf(st), favoritable: true };
+    }
+
+    /** 즐겨찾은 채널 (지역마다 겹치는 전국 방송은 한 번만) */
+    favorites() {
+        const seen = new Set();
+        return this.stations.filter((st) => {
+            const key = this.keyOf(st);
+            if (seen.has(key) || !isFavorite(this.channelOf(st))) return false;
+            seen.add(key);
+            return true;
+        });
     }
 
     /** 새로고침 뒤 이어 틀기·채널 전환이 쓰는 목록 */
@@ -46,8 +81,11 @@ export class KRadioProvider extends RadioProvider {
 
     librarySorts() { return [['default', '방송사 순서'], ['name', '이름']]; }
 
-    /** 지역 고르기 - 방송국 화면 위쪽 단추 줄 (전국 방송은 지역마다 들어 있어 '전체'는 두지 않는다) */
-    libraryKinds() { return this.regions.length ? this.regions.map((r) => [r.id, r.name]) : null; }
+    /** 지역 고르기 - 방송국 화면 위쪽 단추 줄 (전국 방송은 지역마다 들어 있어 '전체'는 두지 않는다). 맨 앞은 즐겨찾기 */
+    libraryKinds() { return this.regions.length ? [['@fav', '⭐ 즐겨찾기'], ...this.regions.map((r) => [r.id, r.name])] : null; }
+
+    /** 처음 열 때: 즐겨찾기가 있으면 즐겨찾기, 없으면 첫 지역 */
+    libraryKindDefault() { return this.favorites().length ? '@fav' : ((this.regions[0] || {}).id || ''); }
 
     libraryKindStyle() { return 'chips'; }
 
@@ -60,8 +98,8 @@ export class KRadioProvider extends RadioProvider {
     async getLibraryItems(libId, { kind = '', sort = 'default' } = {}) {
         await this._load();
         if (!this.stations.length && this.error) throw new Error(this.error);
-        const region = this._region(kind || libId);   // (예전 주소 #/library/{id}/{지역}도 그 지역으로)
-        const list = this.stations.filter((st) => st.region === region);
+        const region = kind === '@fav' ? '' : this._region(kind || libId);   // (예전 주소 #/library/{id}/{지역}도 그 지역으로)
+        const list = kind === '@fav' ? this.favorites() : this.stations.filter((st) => st.region === region);
         if (sort === 'name') list.sort((a, b) => a.name.localeCompare(b.name, 'ko'));
         const items = list.map((st) => this.toItem(st));
         return { items, total: items.length };
@@ -71,6 +109,11 @@ export class KRadioProvider extends RadioProvider {
         await this._load();
         const first = this.regions[0];
         if (!first) return [];
+        const favs = this.favorites();
+        if (favs.length) {
+            return [{ title: '즐겨찾는 라디오', source: this.name, live: true, items: favs.slice(0, HOME_MAX).map((st) => this.toItem(st)),
+                more: `#/library/${this.id}/stations` }];
+        }
         const list = this.stations.filter((st) => st.region === first.id).slice(0, HOME_MAX);
         return [{ title: `공중파 라디오 · ${first.name}`, source: this.name, live: true, items: list.map((st) => this.toItem(st)),
             more: `#/library/${this.id}/stations` }];
@@ -81,7 +124,7 @@ export class KRadioProvider extends RadioProvider {
         const q = query.toLowerCase();
         const seen = new Set();   // 전국 방송은 지역마다 있다 -> 한 번만
         const hits = this.stations.filter((st) => {
-            const key = st.id.slice(st.region.length + 1);
+            const key = this.keyOf(st);
             if (!st.name.toLowerCase().includes(q) || seen.has(key)) return false;
             seen.add(key);
             return true;
