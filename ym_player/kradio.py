@@ -1,7 +1,8 @@
 """공중파 라디오 소스 - 한국 지상파·지역 라디오를 지역별 채널로.
 
 채널 목록과 방송 주소는 넣어 두지 않는다. 공개 저장소 BSofDeath/radio.bsod.kr (https://github.com/BSofDeath/radio.bsod.kr)에서
-그때그때 받아 읽는다 (하루 보관, 못 받으면 이전 것):
+그때그때 받아 읽는다 (하루 보관, 못 받으면 이전 것). 저장소가 채널을 더하거나 빼거나 주소를 고치면 다음 날까지는 따라가고,
+관리자는 방송국 화면의 [채널 새로 받기]로 바로 다시 받는다 (기억해 둔 방송 주소도 같이 버린다):
   index.html                     지역(수도권·부산…)과 그 지역의 채널 (stn / ch / city)
   functions/api/template/*.js    방송사별 주소 표 - 고정 주소(HLS .m3u8 등) 또는 방송사에 물어 주소를 받는 곳
 주소가 접속할 때마다 바뀌는 방송(KBS·MBC·SBS 등 - 토큰이 붙고 시간이 지나면 못 씀)은 그 저장소 README가 적어 둔 대로
@@ -200,6 +201,7 @@ class Directory:
         self.tried = 0.0
         self.lock = asyncio.Lock()
         self.urls = {}    # key -> (주소, 만료 시각)
+        self.changed = None   # 마지막으로 새로 받았을 때 달라진 채널 {"added": [이름], "removed": [이름]}
 
     async def _text(self, http, url):
         async with http.get(url, headers={"User-Agent": UA}, timeout=ClientTimeout(total=20)) as r:
@@ -217,6 +219,8 @@ class Directory:
             if (fresh and not force) or (not force and now - self.tried < RETRY_TTL):
                 return self._public()
             self.tried = now
+            before = {x["key"]: x["name"] for x in (self.data or {}).get("stations") or []}
+            self.changed = None
             try:
                 names = ["index.html"] + [f"functions/api/template/{t}.js" for t in TEMPLATES]
                 texts = await asyncio.gather(*(self._text(http, self.base + n) for n in names))
@@ -225,6 +229,10 @@ class Directory:
                     raise RuntimeError("저장소에서 채널을 하나도 읽지 못했습니다 (형식이 바뀐 듯)")
                 self.data = dict(built, at=now)
                 self.error = ""
+                self.urls.clear()   # 주소 표가 바뀌었을 수 있다 - 기억해 둔 방송 주소도 버린다
+                after = {x["key"]: x["name"] for x in built["stations"]}
+                self.changed = {"added": sorted(after[k] for k in after.keys() - before.keys())[:30],
+                                "removed": sorted(before[k] for k in before.keys() - after.keys())[:30]} if before else None
                 await asyncio.to_thread(_save_cache, self.data)
             except Exception as e:  # noqa: BLE001
                 self.error = f"채널 목록을 받지 못했습니다: {e}"
@@ -232,7 +240,7 @@ class Directory:
 
     def _public(self):
         d = self.data or {}
-        return {"regions": d.get("regions") or [], "at": d.get("at", 0), "error": self.error,
+        return {"regions": d.get("regions") or [], "at": d.get("at", 0), "error": self.error, "changed": self.changed,
                 "stations": [{"id": s["id"], "name": s["name"], "region": s["region"], "group": s["group"], "hls": is_hls(s)}
                              for s in d.get("stations") or []]}
 

@@ -158,7 +158,7 @@ def test_kradio_api(data, monkeypatch):
             name = request.match_info["name"]
             base = f"http://127.0.0.1:{request.url.port}"
             if name == "index.html":
-                return web.Response(text=INDEX, content_type="text/html")
+                return web.Response(text=hits.get("index") or INDEX, content_type="text/html")
             return web.Response(text=_templates(base)[name.rsplit("/", 1)[-1][:-3]], content_type="text/plain")
 
         async def mbc(request):
@@ -213,6 +213,23 @@ def test_kradio_api(data, monkeypatch):
             assert r.status == 502 and "받지 못했습니다" in (await r.json())["error"]
             assert (await live("seoul.none.-.-"))[0] == 404
             assert (await c.get("/api/kradio/nope/stations")).status == 404
+
+            # 저장소가 채널을 바꾸면: 하루 뒤에 따라가고, 관리자는 바로 새로 받는다 (기억해 둔 방송 주소도 버린다)
+            auth.create_user("kid", "secret2", "user")
+            r = await c.post("/api/auth/logout")
+            await c.post("/api/auth/login", json={"username": "kid", "password": "secret2"})
+            assert (await c.get("/api/kradio/kr/stations?refresh=1")).status == 403                  # 새로 받기는 관리자만
+            assert (await c.get("/api/kradio/kr/stations")).status == 200
+            await c.post("/api/auth/logout")
+            await c.post("/api/auth/login", json={"username": "boss", "password": "secret1"})
+            hits["index"] = INDEX.replace("""<a class="channel" href="javascript:changeSource({stn:'ifm'})">iFM 경인방송</a>""",
+                                          """<a class="channel" href="javascript:changeSource({stn:'kbs', ch:'1radio'})">KBS 1라디오</a>""")
+            assert len((await (await c.get("/api/kradio/kr/stations")).json())["stations"]) == 10    # 아직 예전 목록
+            assert app[server.KRADIO].urls                                                            # (MBC 주소를 기억 중)
+            d = await (await c.get("/api/kradio/kr/stations?refresh=1")).json()
+            assert d["changed"] == {"added": ["KBS 1라디오"], "removed": ["iFM 경인방송"]} and not app[server.KRADIO].urls
+            assert "seoul.kbs.1radio.-" in {x["id"] for x in d["stations"]}
+            hits["index"] = None
 
             hits["down"] = True                                                               # 저장소가 안 되면 이전 목록 + 알림
             d = await (await c.get("/api/kradio/kr/stations?refresh=1")).json()
