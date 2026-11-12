@@ -5,7 +5,7 @@
 // 즐겨찾기는 지역과 상관없이 채널 하나로 친다 (전국 방송은 지역마다 들어 있어서) - 채널 id에 지역을 넣지 않는다.
 // 재생은 인터넷 라디오와 같은 길(채널 카드, 위/아래로 채널 전환, 미니 플레이어, 시각화)을 쓰되,
 // 방송 주소는 틀 때마다 서버가 찾아 넘겨 준다 (/live/{채널}) - KBS·MBC·SBS처럼 주소에 토큰이 붙어 시간이 지나면 못 쓰는 방송이 있어서.
-import { api, h, modal, toast } from '../util.js';
+import { api, h, icon, modal, toast } from '../util.js';
 import { registry } from './index.js';
 import { isFavorite, streamProxyUrl } from './iptv.js';
 import { frequencyOf, textLogo } from './kradio_logo.js';
@@ -24,6 +24,7 @@ export class KRadioProvider extends RadioProvider {
         this.logos = new Map((src.logos || []).map((l) => [l.name, l.url]));
         this.names = new Map((src.names || []).map((n) => [n.from, n.to]));
         this._logoCache = new Map();
+        this.editing = false;
         this._loading = null;
     }
 
@@ -92,7 +93,20 @@ export class KRadioProvider extends RadioProvider {
 
     toItem(st) {
         return { ...super.toItem(st), logo: this.logoOf(st), favoritable: true,
-            onRename: registry.isAdmin() ? () => this.rename(st) : null };
+            onRename: this.editing && registry.isAdmin() ? () => this.rename(st) : null };   // 연필은 [편집]을 켰을 때만
+    }
+
+    /** 방송국 화면 위쪽의 [편집] (관리자) - 켜면 카드마다 이름 바꾸기 연필이 보인다 */
+    libraryTools(_libId, redraw) {
+        if (!registry.isAdmin()) return [];
+        const btn = h('button', { class: `btn btn-sm${this.editing ? ' btn-accent' : ''}`, type: 'button', title: '채널 이름 바꾸기 (관리자)',
+            on: { click: () => {
+                this.editing = !this.editing;
+                btn.classList.toggle('btn-accent', this.editing);
+                btn.lastChild.textContent = this.editing ? ' 편집 끝' : ' 편집';
+                redraw();
+            } } }, icon('pen'), this.editing ? ' 편집 끝' : ' 편집');
+        return [btn];
     }
 
     /** 즐겨찾은 채널 (지역마다 겹치는 전국 방송은 한 번만) */

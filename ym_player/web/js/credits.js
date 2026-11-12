@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 139,
+        "version": "1.1.102",
+        "date": "2026-11-12",
+        "title": "만개의레시피: 즐겨찾기(카드의 별, 분류의 ⭐ 즐겨찾기, 홈 '즐겨찾는 레시피'), 쓰지 않는 정렬 칸 삭제. 공중파 라디오: 이름 바꾸기 연필은 위쪽 [편집]을 눌렀을 때만"
+    },
+    {
         "pr": 138,
         "version": "1.1.101",
         "date": "2026-11-12",

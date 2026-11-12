@@ -1,6 +1,7 @@
 // 만개의레시피 (10000recipe.com). 추천·분류·검색과 레시피는 서버(/api/recipe/{id}, recipe.py)가 읽어 글자만 넘긴다.
 // 카드를 누르면 글 읽기 화면(article.js)에서 재료·만드는 순서를 한 페이지로 ([듣기]로 순서를 소리 내어).
 import { api, h } from '../util.js';
+import { favItems } from '../favitems.js';
 // 글 읽기 화면은 열 때 받는다
 const openArticle = (...a) => import('../article.js').then((m) => m.openArticle(...a));
 
@@ -22,7 +23,7 @@ export class RecipeProvider {
 
     librarySorts() { return [['default', '사이트 순']]; }
 
-    libraryKinds() { return [['', '추천 레시피'], ...CATEGORIES.map((c, i) => [String(i), c])]; }
+    libraryKinds() { return [['', '추천 레시피'], ['@fav', '⭐ 즐겨찾기'], ...CATEGORIES.map((c, i) => [String(i), c])]; }
 
     libraryKindLabel() { return '분류'; }
 
@@ -34,12 +35,17 @@ export class RecipeProvider {
             thumb: r.image, wideThumb: r.image, shape: 'wide', progress: 0,
             facts: { year: '', date: '', length: '', rating: '', extra: r.by || '', summary: '' },
             onOpen: () => this.read(r.id, r),
+            fav: { title: r.title, image: r.image || '', sub: r.by || '' },   // 카드의 별 (favitems.js)
             raw: r,
         };
     }
 
     // 검색어가 있으면 분류와 상관없이 사이트 검색 (만개의레시피 검색은 분류를 같이 받지 않는다)
     async getLibraryItems(_libId, { start = 0, kind = '', q = '' } = {}) {
+        if (kind === '@fav' && !q) {   // 즐겨찾기: 저장해 둔 제목·그림으로 바로
+            const items = start > 0 ? [] : this.favorites();
+            return { items, total: start + items.length };
+        }
         const key = q ? `q:${q}` : kind;
         const page = start > 0 ? (this._pages.get(key) || 2) : 1;
         const d = await api(`${this.base}/list?${new URLSearchParams(q ? { q, page } : { cat: kind, page })}`);
@@ -50,10 +56,19 @@ export class RecipeProvider {
         return { items, total: more ? shown + 1 : shown, shown, approx: more };
     }
 
+    /** 즐겨찾은 레시피 (최근에 넣은 것부터) */
+    favorites() {
+        return favItems(this.id).map((f) => this.toItem({ id: f.id, title: f.title, image: f.image, by: f.sub }));
+    }
+
     async getHomeHubs() {
+        const hubs = [];
+        const favs = this.favorites().slice(0, HOME_MAX);
+        if (favs.length) hubs.push({ title: '즐겨찾는 레시피', source: this.name, items: favs, more: `#/library/${this.id}/recipes` });
         const d = await api(`${this.base}/list`);
         const items = d.items.slice(0, HOME_MAX).map((r) => this.toItem(r));
-        return items.length ? [{ title: '추천 레시피', source: this.name, items, more: `#/library/${this.id}/recipes` }] : [];
+        if (items.length) hubs.push({ title: '추천 레시피', source: this.name, items, more: `#/library/${this.id}/recipes` });
+        return hubs;
     }
 
     async search(query) {
