@@ -162,6 +162,7 @@ ym_player/                       저장소 루트
     ├── plex_to_tg.py            Plex 새 동영상 -> 텔레그램 채널 자동 올리기 (설정 > 자동 올리기)
     ├── perf.py                  응답 압축(gzip), 화면 파일 압축본, 느린 요청 측정
     ├── brunch.py                브런치 연재 소스 (요일별 연재 목록, 글 본문 정리)
+    ├── bookoasis.py             BookOasis 소스 (계정 로그인·세션 유지, 이어 줄 주소 규칙, 보던 위치 전달)
     ├── recipe.py                만개의레시피 소스 (추천·분류·검색, 레시피 재료·순서)
     ├── folder_watch.py          자동 올리기의 rclone 드라이브·폴더 규칙 (새 파일 찾기, 바로 재생되게 인코딩)
     ├── activity.py              재생 현황 (/api/activity - 지금 재생 중인 스트림 수만)
@@ -222,6 +223,8 @@ ym_player/                       저장소 루트
 | `GET /api/radio/{id}/now` | 라디오 방송국마다 지금 나오는 곡과 앨범 표지 |
 | `GET /api/podcast/{id}/shows` · `home` · `show/{피드}[?refresh=1]` · `episode/{피드}/{에피소드}` | 팟캐스트 프로그램 목록 / 이어 듣기·새 에피소드 / 프로그램과 에피소드 / 에피소드 하나와 앞뒤 회 |
 | `GET /api/podcast/{id}/audio/{피드}/{에피소드}` · `POST progress` · `POST watched` | 에피소드 오디오 중계(Range, 피드에 적힌 주소만) / 들은 위치 / 다 들음 표시 |
+| `GET /api/bo/{id}/api/media/…` · `covers/…` · `POST /api/bo/{id}/progress` | BookOasis 소스: 목록·표지·쪽 그림·PDF·오디오·영상 중계(정해진 읽기 주소만, Range) / 보던 위치를 BookOasis에 저장 |
+| `POST /api/admin/bookoasis/test` | BookOasis 주소·계정으로 로그인해 보고 서재 수 확인 (관리자) |
 | `GET /api/cctv/{id}/cams` · `GET /api/cctv/{id}/live/{cctv}` | 도로 CCTV 목록(영상 주소·인증키는 빼고, 5분 캐시) / 지금 쓸 영상 주소의 서버 중계로 넘기기(302) |
 | `GET /api/admin/podcast/search?q=` · `POST /api/admin/podcast/probe` | 팟캐스트 찾기(iTunes 검색) / RSS 주소를 받아 보고 이름 확인 (관리자) |
 | `POST /api/tg/{id}/hls/{c}/{m}?start=초&mode=` · `GET /api/tg-hls/{변환id}/{파일}` | Safari용 서버 변환 (HLS 재생목록·조각, 시작한 사람만) |
@@ -266,6 +269,17 @@ Jazz24)가 들어갑니다. 방송국은 한 줄에 하나 `이름 | 스트림 �
   영상은 10초 뒤로/30초 앞으로)을 거기서 조작합니다 (Media Session, 라디오·IPTV·Plex·텔레그램 모두).
 - **LP 잡음**: [LP 잡음] 버튼으로 켜고 끕니다. 켜면 강도(0~100%, 기본 30%) 칸이 잠깐 나타납니다. 브라우저에서 만든 히스와
   탁탁 튀는 소리를 20초 분량 반복하며, 재생 중일 때만 들리고 미니 플레이어로 접어도 계속됩니다. 재생기 음량을 따라갑니다.
+
+## BookOasis
+
+설정 > 소스 > **BookOasis** > **[BookOasis 추가]**. [BookOasis](https://github.com/leeyj/bookoasis_stable) 서재의 **책·오디오북·영상**을 YMPlayer에서 봅니다.
+
+- **주소·계정·비밀번호**: YMPlayer 서버에서 닿는 BookOasis 주소와 BookOasis 계정. 이 서버가 그 계정으로 로그인해 이어 주며, 비밀번호는 서버(`data/config.json`)에만 저장되고 브라우저로 내려가지 않습니다. **[연결 확인]** 으로 바로 시험할 수 있습니다.
+- **보여 줄 서재**: 책 / 오디오북 / 영상 / 성인 서재(기본 꺼짐). 고르지 않은 서재는 주소로 직접 불러도 막습니다. 그 계정이 BookOasis에서 볼 수 있는 것만 나옵니다.
+- 넣은 뒤 **[저장]**. 사이드바에 서재별 화면, 홈에 **새로 들어온 책·오디오북·영상** 줄이 생기고 전체 검색에도 나옵니다.
+- **책**: 만화·웹툰(압축·폴더)은 웹툰 보기로, PDF·EPUB은 책 보기로 엽니다 (EPUB은 원본을 받아 열어서 BookOasis 계정에 내려받기 권한이 필요, TXT는 BookOasis에서). **오디오북·영상**은 재생기로 (자막, 속도, 다음 트랙·화 이어 재생).
+- **보던 위치는 BookOasis의 그 계정에 저장**됩니다 (BookOasis에서 이어 볼 수 있음). YMPlayer 사용자가 여럿이어도 BookOasis에는 한 계정의 기록이므로, YMPlayer 전용 BookOasis 계정을 따로 만들어 쓰기를 권합니다. EPUB 위치만 이 브라우저에 기억합니다.
+- Safari에서 변환이 필요한 영상은 BookOasis의 HLS로 받습니다. 그 밖의 브라우저에서 변환 영상은 BookOasis 방식대로 탐색이 제한될 수 있습니다.
 
 ## 팟캐스트
 

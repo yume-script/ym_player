@@ -44,7 +44,7 @@ from urllib.parse import quote, urlencode
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
 from yarl import URL
 
-from . import __version__, activity, auth, brunch, perf, cctv, chatfind, config_store, discord_feed, folder_watch, iptv, mcp, media_cache, plex_to_tg, podcast, prefs, radio, recipe, subtitles, telegram_src, tmdb, transcode, updates
+from . import __version__, activity, auth, bookoasis, brunch, perf, cctv, chatfind, config_store, discord_feed, folder_watch, iptv, mcp, media_cache, plex_to_tg, podcast, prefs, radio, recipe, subtitles, telegram_src, tmdb, transcode, updates
 
 log = logging.getLogger("ym_player")
 
@@ -839,6 +839,102 @@ async def podcast_audio(request):
         return resp
     finally:
         upstream.release()
+
+
+# ---------------------------------------------------------------------------
+# BookOasis (bookoasis.py) - 서재의 책·오디오북·영상. 이 서버가 계정으로 로그인해 정해진 읽기 주소만 이어 준다
+# ---------------------------------------------------------------------------
+BOOKOASIS = web.AppKey("bookoasis", bookoasis.Clients)
+
+
+def _bo_check_session(src, tail, query):
+    sess = bookoasis.session_of(tail, query)
+    if sess and sess not in (src.get("sessions") or []):
+        raise web.HTTPForbidden(text="이 소스에서 볼 수 없는 서재입니다.")
+
+
+async def bookoasis_proxy(request):
+    """GET /api/bo/{sid}/{tail} -> BookOasis의 목록·표지·쪽 그림·본문·오디오·영상 (Range 그대로)"""
+    src = _source_or_404(request.match_info["sid"], "bookoasis", request)
+    tail = request.match_info["tail"]
+    if ".." in tail or not bookoasis.allowed(tail):
+        raise web.HTTPNotFound(text="이어 줄 수 없는 주소입니다.")
+    _bo_check_session(src, tail, request.query_string)
+    headers = {k: request.headers[k] for k in ("Range", "If-None-Match", "If-Modified-Since", "Accept") if k in request.headers}
+    if request.query.get("ua") == "safari" and tail.endswith("/stream"):
+        headers["User-Agent"] = "Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"   # BookOasis가 HLS로 주게
+    try:
+        upstream = await request.app[BOOKOASIS].of(src).request("GET", tail, request.query_string, headers=headers, stream_timeout=True)
+    except bookoasis.LoginError as e:
+        return _json_error(502, f"BookOasis 로그인 실패: {e}")
+    except Exception as e:  # noqa: BLE001
+        return _json_error(502, f"BookOasis 연결 실패: {type(e).__name__}: {e}")
+    try:
+        ctype = upstream.headers.get("Content-Type", "")
+        if upstream.status == 200 and "mpegurl" in ctype.lower():
+            text = bookoasis.rewrite_playlist(await upstream.text(), src["id"])
+            return web.Response(text=text, content_type="application/vnd.apple.mpegurl", headers={"Cache-Control": "no-store"})
+        resp_headers = _resp_headers(upstream)
+        if tail.startswith("covers/") or tail.endswith("/cover"):
+            resp_headers["Cache-Control"] = "private, max-age=86400"
+        resp = web.StreamResponse(status=upstream.status, headers=resp_headers)
+        await resp.prepare(request)
+        try:
+            async for chunk in upstream.content.iter_chunked(64 * 1024):
+                await resp.write(chunk)
+        except (ConnectionError, asyncio.CancelledError):
+            pass
+        return resp
+    finally:
+        upstream.release()
+
+
+async def bookoasis_progress(request):
+    """POST /api/bo/{sid}/progress {kind: book|audio|video, …} -> 보던 위치를 BookOasis에 저장"""
+    src = _source_or_404(request.match_info["sid"], "bookoasis", request)
+    try:
+        tail, payload, sess = bookoasis.progress_request(await request.json())
+    except Exception:  # noqa: BLE001
+        return _json_error(400, "보던 위치 형식이 맞지 않습니다.")
+    if sess not in (src.get("sessions") or []):
+        raise web.HTTPForbidden(text="이 소스에서 볼 수 없는 서재입니다.")
+    try:
+        upstream = await request.app[BOOKOASIS].of(src).request("POST", tail, json=payload)
+    except Exception as e:  # noqa: BLE001
+        return _json_error(502, f"BookOasis 연결 실패: {e}")
+    try:
+        return web.json_response({"success": upstream.status < 400}, status=200 if upstream.status < 400 else 502)
+    finally:
+        upstream.release()
+
+
+@admin_only
+async def admin_bookoasis_test(request):
+    """POST /api/admin/bookoasis/test {url, username, password, id?} -> 로그인해 보고 서재 수를 알려 준다 (비밀번호를 비우면 저장된 것)"""
+    body = await request.json()
+    old = config_store.get_source(config_store.load(), str(body.get("id") or "")) or {}
+    try:
+        src = bookoasis.clean_settings(body, old if old.get("type") == "bookoasis" else {})
+    except ValueError as e:
+        return _json_error(400, str(e))
+    client = bookoasis.Client(src)
+    try:
+        await client.login(force=True)
+        counts = {}
+        for sess in src["sessions"]:
+            r = await client.request("GET", "api/media/libraries", f"type={sess}")
+            try:
+                data = await r.json(content_type=None) if r.status == 200 else {}
+            finally:
+                r.release()
+            counts[sess] = len(data.get("libraries") or []) if r.status == 200 else None
+        return web.json_response({"success": True, "libraries": counts})
+    except bookoasis.LoginError as e:
+        return _json_error(400, f"로그인 실패: {e}")
+    except Exception as e:  # noqa: BLE001
+        return _json_error(502, f"연결 실패: {type(e).__name__}: {e}")
+    finally:
+        await client.close()
 
 
 @admin_only
@@ -3722,6 +3818,7 @@ async def _on_cleanup(app):
         if proc.returncode is None:
             proc.kill()
     await app[HTTP].close()
+    await app[BOOKOASIS].close()
     for tg in list(app[TELEGRAM].values()):
         try:
             await tg.close()
@@ -3761,6 +3858,7 @@ def create_app(require_auth=True):
     app[RADIO_JOBS] = {}
     app[RADIO_ART] = {}
     app[PODCAST] = podcast.FeedCache()
+    app[BOOKOASIS] = bookoasis.Clients()
     app[PODCAST_LOCKS] = {}
     app[CCTV_CACHE] = {}
     app[BRUNCH] = brunch.Brunch(lambda: app[HTTP])
@@ -3842,6 +3940,9 @@ def create_app(require_auth=True):
     app.router.add_get(r"/api/podcast/{sid}/show/{fid:[0-9a-f]{10}}", podcast_show)
     app.router.add_get(r"/api/podcast/{sid}/episode/{fid:[0-9a-f]{10}}/{eid:[0-9a-f]{12}}", podcast_episode)
     app.router.add_get(r"/api/podcast/{sid}/audio/{fid:[0-9a-f]{10}}/{eid:[0-9a-f]{12}}", podcast_audio)
+    app.router.add_post("/api/bo/{sid}/progress", bookoasis_progress)
+    app.router.add_get("/api/bo/{sid}/{tail:.+}", bookoasis_proxy)
+    app.router.add_post("/api/admin/bookoasis/test", admin_bookoasis_test)
     app.router.add_post("/api/podcast/{sid}/progress", podcast_progress)
     app.router.add_post("/api/podcast/{sid}/watched", podcast_watched)
     app.router.add_get("/api/admin/podcast/search", admin_podcast_search)
