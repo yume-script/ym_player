@@ -5,7 +5,8 @@
 // 즐겨찾기는 지역과 상관없이 채널 하나로 친다 (전국 방송은 지역마다 들어 있어서) - 채널 id에 지역을 넣지 않는다.
 // 재생은 인터넷 라디오와 같은 길(채널 카드, 위/아래로 채널 전환, 미니 플레이어, 시각화)을 쓰되,
 // 방송 주소는 틀 때마다 서버가 찾아 넘겨 준다 (/live/{채널}) - KBS·MBC·SBS처럼 주소에 토큰이 붙어 시간이 지나면 못 쓰는 방송이 있어서.
-import { api } from '../util.js';
+import { api, h, modal, toast } from '../util.js';
+import { registry } from './index.js';
 import { isFavorite, streamProxyUrl } from './iptv.js';
 import { frequencyOf, textLogo } from './kradio_logo.js';
 import { RadioProvider } from './radio.js';
@@ -19,7 +20,9 @@ export class KRadioProvider extends RadioProvider {
         this.base = `/api/kradio/${encodeURIComponent(src.id)}`;
         this.regions = [];
         this.error = '';
+        this.src = src;
         this.logos = new Map((src.logos || []).map((l) => [l.name, l.url]));
+        this.names = new Map((src.names || []).map((n) => [n.from, n.to]));
         this._logoCache = new Map();
         this._loading = null;
     }
@@ -29,7 +32,9 @@ export class KRadioProvider extends RadioProvider {
         if (this._loading && !force) return this._loading;
         this._loading = api(`${this.base}/stations${force ? '?refresh=1' : ''}`).then((d) => {
             this.regions = d.regions || [];
-            this.stations = (d.stations || []).map((st) => ({ ...st, subtitle: st.group, url: `${this.base}/live/${encodeURIComponent(st.id)}` }));
+            // name = 보여 줄 이름 (관리자가 바꾼 이름), origName = 저장소의 이름
+            this.stations = (d.stations || []).map((st) => ({ ...st, origName: st.name, name: this.names.get(st.name) || st.name,
+                subtitle: st.group, url: `${this.base}/live/${encodeURIComponent(st.id)}` }));
             this.error = d.error || '';
             if (!this.stations.length) this._loading = null;
             return this.stations;
@@ -41,10 +46,44 @@ export class KRadioProvider extends RadioProvider {
     keyOf(st) { return String(st.id).slice(String(st.region).length + 1); }
 
     logoOf(st) {
-        const custom = this.logos.get(st.name);
+        const custom = this.logos.get(st.name) || this.logos.get(st.origName);
         if (custom) return custom.startsWith('http://') ? streamProxyUrl(custom) : custom;
-        if (!this._logoCache.has(st.id)) this._logoCache.set(st.id, textLogo(st.name, frequencyOf(st.id)));
+        // 바꾼 이름에 주파수(숫자)가 이미 있으면 수도권 주파수를 덧붙이지 않는다
+        const freq = /\d+(\.\d+)?\s*$/.test(st.name) ? '' : frequencyOf(st.id);
+        if (!this._logoCache.has(st.id)) this._logoCache.set(st.id, textLogo(st.name, freq));
         return this._logoCache.get(st.id);
+    }
+
+    /** [관리자] 채널 이름 바꾸기 (예: "광주MBC FM4U" -> "광주MBC FM4U 91.5"). 비우면 원래 이름으로 */
+    rename(st) {
+        const input = h('input', { class: 'input', value: st.name, placeholder: st.origName, maxlength: 60 });
+        const save = async () => {
+            const to = input.value.trim().replace(/\s+/g, ' ');
+            const names = (this.src.names || []).filter((n) => n.from !== st.origName);
+            if (to && to !== st.origName) names.push({ from: st.origName, to });
+            const sources = registry.config.sources.map((s) => (s.id === this.id ? { ...s, names } : { id: s.id, type: s.type, keep: true }));
+            try {
+                registry.config = await api('/api/config', { method: 'PUT', json: { sources } });
+                m.close();
+                toast(to && to !== st.origName ? `"${st.origName}" → "${to}"` : `"${st.origName}" 원래 이름으로 되돌렸습니다.`, 'success');
+                // 이 화면에 바로 반영 (같은 채널은 지역마다 있다)
+                this.src = registry.config.sources.find((s) => s.id === this.id) || { ...this.src, names };
+                this.names = new Map((this.src.names || []).map((n) => [n.from, n.to]));
+                for (const x of this.stations) x.name = this.names.get(x.origName) || x.origName;
+                this._logoCache.clear();
+                window.dispatchEvent(new HashChangeEvent('hashchange'));
+            } catch (e) {
+                toast(`저장 실패: ${e.message}`, 'error', 6000);
+            }
+        };
+        input.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
+        const m = modal('채널 이름 바꾸기', h('div', {},
+            h('p', { class: 'muted', text: `원래 이름: ${st.origName} · ${st.group}` }),
+            input,
+            h('p', { class: 'field-hint', text: '주파수를 붙여 쓰면 로고에도 나옵니다 (예: 광주MBC FM4U 91.5). 비우고 저장하면 원래 이름으로. 모든 사용자에게 같이 바뀝니다.' })),
+        [h('button', { class: 'btn', on: { click: () => m.close() } }, '취소'),
+            h('button', { class: 'btn btn-accent', on: { click: save } }, '저장')]);
+        setTimeout(() => { input.focus(); input.select(); }, 30);
     }
 
     channelOf(st) {
@@ -52,7 +91,8 @@ export class KRadioProvider extends RadioProvider {
     }
 
     toItem(st) {
-        return { ...super.toItem(st), logo: this.logoOf(st), favoritable: true };
+        return { ...super.toItem(st), logo: this.logoOf(st), favoritable: true,
+            onRename: registry.isAdmin() ? () => this.rename(st) : null };
     }
 
     /** 즐겨찾은 채널 (지역마다 겹치는 전국 방송은 한 번만) */
@@ -125,7 +165,7 @@ export class KRadioProvider extends RadioProvider {
         const seen = new Set();   // 전국 방송은 지역마다 있다 -> 한 번만
         const hits = this.stations.filter((st) => {
             const key = this.keyOf(st);
-            if (!st.name.toLowerCase().includes(q) || seen.has(key)) return false;
+            if (!`${st.name} ${st.origName}`.toLowerCase().includes(q) || seen.has(key)) return false;
             seen.add(key);
             return true;
         });
