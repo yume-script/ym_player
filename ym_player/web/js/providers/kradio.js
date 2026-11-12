@@ -37,6 +37,8 @@ export class KRadioProvider extends RadioProvider {
             this.stations = (d.stations || []).map((st) => ({ ...st, origName: st.name, name: this.names.get(st.name) || st.name,
                 subtitle: st.group, url: `${this.base}/live/${encodeURIComponent(st.id)}` }));
             this.error = d.error || '';
+            this.listAt = d.at || 0;
+            this.changed = d.changed || null;
             if (!this.stations.length) this._loading = null;
             return this.stations;
         }).catch((e) => { this._loading = null; this.error = e.message; return []; });
@@ -106,7 +108,24 @@ export class KRadioProvider extends RadioProvider {
                 btn.lastChild.textContent = this.editing ? ' 편집 끝' : ' 편집';
                 redraw();
             } } }, icon('pen'), this.editing ? ' 편집 끝' : ' 편집');
-        return [btn];
+        // 채널 목록은 하루에 한 번 저장소에서 받는다 - 저장소가 바뀐 것을 바로 받고 싶을 때
+        const when = this.listAt ? new Date(this.listAt * 1000).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+        const refresh = h('button', { class: 'btn btn-sm', type: 'button',
+            title: `채널 목록과 방송 주소 표를 저장소에서 지금 다시 받습니다 (관리자)${when ? ` · 마지막으로 받은 때 ${when}` : ''}`,
+            on: { click: async () => {
+                refresh.disabled = true;
+                const before = this.stations.length;
+                await this._load(true);
+                refresh.disabled = false;
+                this._logoCache.clear();
+                if (this.error) { toast(this.error, 'error', 7000); return; }
+                const c = this.changed || { added: [], removed: [] };
+                const parts = [c.added.length ? `추가 ${c.added.length}개 (${c.added.slice(0, 3).join(', ')}${c.added.length > 3 ? ' …' : ''})` : '',
+                    c.removed.length ? `빠짐 ${c.removed.length}개 (${c.removed.slice(0, 3).join(', ')}${c.removed.length > 3 ? ' …' : ''})` : ''].filter(Boolean);
+                toast(`채널 목록을 새로 받았습니다 - ${this.stations.length}개${parts.length ? ` · ${parts.join(' · ')}` : before ? ' · 달라진 채널 없음' : ''}`, 'success', 6000);
+                redraw();
+            } } }, icon('rotate'), ' 채널 새로 받기');
+        return [btn, refresh];
     }
 
     /** 즐겨찾은 채널 (지역마다 겹치는 전국 방송은 한 번만) */

@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 140,
+        "version": "1.1.103",
+        "date": "2026-11-13",
+        "title": "공중파 라디오: 방송국 화면에 [채널 새로 받기](관리자) - 저장소의 채널·주소 변경을 하루 기다리지 않고 바로 받는다 (추가·빠진 채널을 알려 줌)"
+    },
+    {
         "pr": 139,
         "version": "1.1.102",
         "date": "2026-11-12",

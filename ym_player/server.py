@@ -848,9 +848,12 @@ KRADIO = web.AppKey("kradio", kradio.Directory)
 
 
 async def kradio_stations(request):
-    """GET /api/kradio/{sid}/stations[?refresh=1] -> 지역과 채널 목록 (하루 보관, refresh=1이면 지금 다시 받기)"""
+    """GET /api/kradio/{sid}/stations[?refresh=1] -> 지역과 채널 목록 (하루 보관, refresh=1이면 지금 다시 받기 - 관리자만)"""
     _source_or_404(request.match_info["sid"], "kradio", request)
-    data = await request.app[KRADIO].stations(request.app[HTTP], force=request.query.get("refresh") == "1")
+    force = request.query.get("refresh") == "1"
+    if force and not is_admin(request):
+        return _json_error(403, "채널 목록을 새로 받는 것은 관리자만 할 수 있습니다.")
+    data = await request.app[KRADIO].stations(request.app[HTTP], force=force)
     return web.json_response({"success": True, **data})
 
 
