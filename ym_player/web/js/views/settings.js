@@ -60,6 +60,12 @@ export async function renderSettings(main, _params, query, ctx) {
             h('button', { class: 'btn', on: { click: () => add({ type: 'recipe', name: '만개의레시피', enabled: true }) } },
                 icon('utensils'), ' 만개의레시피 추가')],
         '만개의레시피(10000recipe.com)의 인기 랭킹·분류·검색. 레시피를 누르면 재료와 만드는 순서를 한 페이지로 봅니다.'],
+        ['bookoasis', 'book', 'BookOasis', () => [
+            h('button', { class: 'btn', on: { click: () => add({ type: 'bookoasis', name: 'BookOasis', url: '', username: '', password: '',
+                sessions: ['general', 'audiobook', 'video'], verify_ssl: true, enabled: true }) } },
+                icon('book'), ' BookOasis 추가')],
+        'BookOasis 서재의 책·오디오북·영상을 YMPlayer에서 봅니다. 이 서버가 아래 계정으로 BookOasis에 로그인해 이어 주고(비밀번호는 이 서버에만 저장), '
+            + '보던 위치는 BookOasis의 그 계정에 남습니다. YMPlayer 전용 BookOasis 계정을 따로 만들어 쓰는 것을 권합니다.'],
     ];
     let srcType = storeGet('yp_settings_srctype', '');
     if (!SRC_TYPES.some(([t]) => t === srcType)) srcType = (drafts[0] && drafts[0].type) || 'plex';
@@ -690,7 +696,8 @@ export async function renderSettings(main, _params, query, ctx) {
             const isPod = src.type === 'podcast';
             const isCctv = src.type === 'cctv';
             const isReading = src.type === 'brunch' || src.type === 'recipe';
-            const fields = isReading ? [h('p', { class: 'field-hint', text: src.type === 'brunch'
+            const isBo = src.type === 'bookoasis';
+            const fields = isBo ? bookoasisFields(src) : isReading ? [h('p', { class: 'field-hint', text: src.type === 'brunch'
                 ? '설정할 것이 없습니다. 브런치 연재 목록과 글은 서버가 brunch.co.kr에서 받아 보여 줍니다 (서버에서 인터넷 연결 필요).'
                 : '설정할 것이 없습니다. 레시피는 서버가 www.10000recipe.com에서 받아 보여 줍니다 (서버에서 인터넷 연결 필요).' })]
                 : isCctv ? [cctvEditor(src)] : isPod ? [feedEditor(src)] : isRadio ? [stationEditor(src)] : isTg ? [
@@ -751,8 +758,8 @@ export async function renderSettings(main, _params, query, ctx) {
             list.appendChild(h('div', { class: `src-card${src.enabled ? '' : ' disabled'}` },
                 h('div', { class: 'src-head' },
                     h('span', { class: `src-type ${src.type}` },
-                        icon(isCctv ? 'video' : isPod ? 'podcast' : isRadio ? 'radio' : isTg ? 'paper-plane' : isPlex ? 'server' : 'tower-broadcast'),
-                        isCctv ? ' CCTV' : isPod ? ' 팟캐스트' : isRadio ? ' 라디오' : isTg ? ' 텔레그램' : isPlex ? ' Plex' : ' IPTV'),
+                        icon(isBo ? 'book' : isCctv ? 'video' : isPod ? 'podcast' : isRadio ? 'radio' : isTg ? 'paper-plane' : isPlex ? 'server' : 'tower-broadcast'),
+                        isBo ? ' BookOasis' : isCctv ? ' CCTV' : isPod ? ' 팟캐스트' : isRadio ? ' 라디오' : isTg ? ' 텔레그램' : isPlex ? ' Plex' : ' IPTV'),
                     bindInput(src, 'name', h('input', { class: 'input src-name', value: src.name || '', placeholder: '이름' })),
                     h('label', { class: 'check' }, bindInput(src, 'enabled', h('input', { type: 'checkbox', checked: !!src.enabled }), 'checked'), ' 사용'),
                     h('button', { class: 'icon-btn', title: '위로', on: { click: () => move(-1) } }, icon('arrow-up')),
@@ -763,6 +770,47 @@ export async function renderSettings(main, _params, query, ctx) {
                     }, icon('trash'))),
                 h('div', { class: 'src-fields' }, fields)));
         });
+    }
+
+    /** BookOasis 소스: 주소·계정·보여 줄 서재 + 연결 확인 */
+    function bookoasisFields(src) {
+        const SESSIONS = [['general', '책'], ['audiobook', '오디오북'], ['video', '영상'], ['adult', '성인 서재']];
+        if (!Array.isArray(src.sessions)) src.sessions = ['general', 'audiobook', 'video'];
+        const result = h('span', { class: 'field-hint' });
+        const testBtn = h('button', { class: 'btn', type: 'button', on: { click: async () => {
+            testBtn.disabled = true;
+            result.textContent = '확인 중...';
+            try {
+                const r = await api('/api/admin/bookoasis/test', { method: 'POST', json: { id: src.id, url: src.url, username: src.username, password: src.password,
+                    sessions: src.sessions, verify_ssl: src.verify_ssl !== false } });
+                result.textContent = `연결됨 - ${SESSIONS.filter(([k]) => k in r.libraries)
+                    .map(([k, label]) => `${label}: ${r.libraries[k] == null ? '볼 수 없음 (계정 권한 확인)' : `서재 ${r.libraries[k]}개`}`).join(', ')}`;
+            } catch (e) {
+                result.textContent = `실패: ${e.message}`;
+            } finally {
+                testBtn.disabled = false;
+            }
+        } } }, icon('plug'), ' 연결 확인');
+        return [
+            field('BookOasis 주소', bindInput(src, 'url', h('input', { class: 'input', value: src.url || '', placeholder: 'http://192.168.0.10:5050', spellcheck: false })),
+                '이 서버(YMPlayer)에서 닿는 주소. 같은 기기면 http://127.0.0.1:포트'),
+            h('div', { class: 'row-2' },
+                field('계정', bindInput(src, 'username', h('input', { class: 'input', value: src.username || '', autocomplete: 'off', spellcheck: false }))),
+                field('비밀번호', bindInput(src, 'password', h('input', {
+                    class: 'input', type: 'password', value: src.password || '', autocomplete: 'new-password',
+                    placeholder: src.has_password ? '저장된 비밀번호 사용 중 (바꿀 때만 입력)' : 'BookOasis 비밀번호',
+                })))),
+            h('div', { class: 'field' }, h('span', { class: 'field-label', text: '보여 줄 서재' }),
+                h('div', { class: 'row-inline' }, SESSIONS.map(([key, label]) => h('label', { class: 'check' },
+                    h('input', { type: 'checkbox', checked: src.sessions.includes(key), on: { change: (e) => {
+                        src.sessions = SESSIONS.map(([k]) => k).filter((k) => (k === key ? e.target.checked : src.sessions.includes(k)));
+                        touch();
+                    } } }), ` ${label}`))),
+                h('span', { class: 'field-hint', text: '그 계정이 BookOasis에서 볼 수 있는 것만 나옵니다. 성인 서재는 켰을 때만, 그리고 이 소스를 허락받은 YMPlayer 사용자 모두에게 보입니다.' })),
+            h('label', { class: 'check' }, bindInput(src, 'verify_ssl', h('input', { type: 'checkbox', checked: src.verify_ssl !== false }), 'checked'),
+                ' HTTPS 인증서 확인 (자체 서명 인증서면 끄기)'),
+            h('div', { class: 'toolbar' }, testBtn, result),
+        ];
     }
 
     async function save() {
@@ -831,7 +879,7 @@ export async function renderSettings(main, _params, query, ctx) {
     showTab((query && query.get('tab')) || storeGet('yp_settings_tab', 'sources'));
 }
 
-const TYPE_ICON = { plex: 'server', iptv: 'tower-broadcast', telegram: 'paper-plane', radio: 'radio', podcast: 'podcast', cctv: 'video', brunch: 'mug-hot', recipe: 'utensils' };
+const TYPE_ICON = { plex: 'server', iptv: 'tower-broadcast', telegram: 'paper-plane', radio: 'radio', podcast: 'podcast', cctv: 'video', brunch: 'mug-hot', recipe: 'utensils', bookoasis: 'book' };
 
 function fmtUptime(sec) {
     const d = Math.floor(sec / 86400), hh = Math.floor((sec % 86400) / 3600), mm = Math.floor((sec % 3600) / 60);

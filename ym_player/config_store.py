@@ -25,8 +25,8 @@ import uuid
 DATA_DIR = os.environ.get("MP_DATA_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
 
-SOURCE_TYPES = ("plex", "iptv", "telegram", "radio", "podcast", "cctv", "brunch", "recipe")
-_SECRET_FIELDS = ("token", "api_hash", "tmdb_key", "api_key")
+SOURCE_TYPES = ("plex", "iptv", "telegram", "radio", "podcast", "cctv", "brunch", "recipe", "bookoasis")
+_SECRET_FIELDS = ("token", "api_hash", "tmdb_key", "api_key", "password")
 _lock = threading.Lock()
 
 
@@ -80,6 +80,7 @@ def public_config(cfg):
         pub["has_api_hash"] = bool(s.get("api_hash"))
         pub["has_tmdb_key"] = bool(s.get("tmdb_key"))
         pub["has_api_key"] = bool(s.get("api_key"))
+        pub["has_password"] = bool(s.get("password"))
         out.append(pub)
     return {"client_id": cfg.get("client_id"), "sources": out}
 
@@ -92,7 +93,7 @@ def _clean_source(raw, old):
         "id": str(raw.get("id") or secrets.token_hex(4)),
         "type": stype,
         "name": str(raw.get("name") or {"plex": "Plex", "iptv": "IPTV", "telegram": "Telegram", "radio": "라디오", "podcast": "팟캐스트", "cctv": "도로 CCTV",
-                                   "brunch": "브런치 연재", "recipe": "만개의레시피"}[stype]).strip(),
+                                   "brunch": "브런치 연재", "recipe": "만개의레시피", "bookoasis": "BookOasis"}[stype]).strip(),
         "enabled": bool(raw.get("enabled", True)),
     }
     if stype == "plex":
@@ -133,6 +134,12 @@ def _clean_source(raw, old):
     elif stype == "cctv":
         from .cctv import clean_settings
         src.update(clean_settings(raw, old))
+    elif stype == "bookoasis":
+        from .bookoasis import clean_settings as clean_bookoasis
+        try:
+            src.update(clean_bookoasis(raw, old))
+        except ValueError as e:
+            raise ValueError(f"[{src['name']}] {e}")
     elif stype in ("brunch", "recipe"):
         pass   # 설정 칸 없음 (정해진 사이트의 공개 목록을 읽는다)
     elif stype == "podcast":

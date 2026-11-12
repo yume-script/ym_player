@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 132,
+        "version": "1.1.95",
+        "date": "2026-11-12",
+        "title": "BookOasis 소스: 서재(BookOasis)의 책·오디오북·영상을 YMPlayer에서 보기 (BookOasis 계정으로 연결, 보던 위치는 BookOasis에 저장)"
+    },
+    {
         "pr": 130,
         "version": "1.1.94",
         "date": "2026-11-11",
