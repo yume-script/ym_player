@@ -1,8 +1,8 @@
 // 포스터/채널 카드와 가로 줄(허브). 홈, 라이브러리, 검색, 상세 화면이 같이 쓴다.
-import { h, icon, fmtDuration } from './util.js';
+import { h, icon, fmtDuration, toast } from './util.js';
 import { player } from './player.js';
 import { registry } from './providers/index.js';
-import { channelHealth } from './providers/iptv.js';
+import { channelHealth, isFavorite, toggleFavorite } from './providers/iptv.js';
 // 사진 보기는 열 때 받는다
 const openViewer = (...a) => import('./viewer.js').then((m) => m.openViewer(...a));
 
@@ -152,6 +152,21 @@ export function channelCard(item, playlist) {
     const bar = progressBar(item.progress);
     if (bar) art.appendChild(bar);
     art.appendChild(h('span', { class: 'card-play static' }, icon('play')));
+    // 즐겨찾기 별 (공중파 라디오처럼 카드에서 바로 고르는 소스)
+    if (item.favoritable) {
+        const star = h('span', { class: `card-star${isFavorite(ch) ? ' on' : ''}`, role: 'button', tabindex: '0', title: '즐겨찾기' }, icon('star'));
+        const flip = (e) => {
+            e.preventDefault(); e.stopPropagation();
+            const on = toggleFavorite(ch);
+            star.classList.toggle('on', on);
+            star.firstChild.className = on ? 'fa-solid fa-star' : 'fa-regular fa-star';
+            toast(on ? `${item.title}: 즐겨찾기에 추가했습니다.` : `${item.title}: 즐겨찾기에서 뺐습니다.`);
+        };
+        star.firstChild.className = isFavorite(ch) ? 'fa-solid fa-star' : 'fa-regular fa-star';
+        star.addEventListener('click', flip);
+        star.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') flip(e); });
+        art.appendChild(star);
+    }
     const offline = channelHealth.get(ch.id) === 'offline';
     return h('button', {
         class: `card card-channel${offline ? ' offline' : ''}`,

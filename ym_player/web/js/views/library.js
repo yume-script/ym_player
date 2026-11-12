@@ -57,7 +57,8 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
     // 텔레그램: 영상/사진 골라 보기 (관리자가 "영상만/사진만"으로 정한 채널은 없음)
     const kindOpts = p.libraryKinds ? p.libraryKinds(libId) : null;
     const kindSel = kindOpts ? h('select', { class: 'select' },
-        kindOpts.map(([v, label]) => h('option', { value: v, text: label, selected: v === (pref.kind || '') }))) : null;
+        kindOpts.map(([v, label]) => h('option', { value: v, text: label,
+            selected: v === (pref.kind || (p.libraryKindDefault ? p.libraryKindDefault(libId) : '')) }))) : null;
     // 분류를 위쪽 단추 줄로 보여 주는 소스 (공중파 라디오의 지역): 단추가 위 select의 값을 바꾼다
     const kindChips = kindSel && p.libraryKindStyle && p.libraryKindStyle(libId) === 'chips' ? h('div', { class: 'kind-chips', role: 'tablist' }) : null;
     const drawChips = () => {

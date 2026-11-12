@@ -85,6 +85,19 @@ def public_config(cfg):
     return {"client_id": cfg.get("client_id"), "sources": out}
 
 
+def clean_logos(raw):
+    """[{"name": 채널 이름, "url": 그림 주소}] - http(s) 그림만, 이름 겹치면 뒤의 것"""
+    out = {}
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        name = " ".join(str(item.get("name") or "").split())[:60]
+        url = str(item.get("url") or "").strip()
+        if name and re.match(r"^https?://\S+$", url) and len(url) <= 1000:
+            out[name] = url
+    return [{"name": k, "url": v} for k, v in out.items()][:500]
+
+
 def _clean_source(raw, old):
     stype = raw.get("type")
     if stype not in SOURCE_TYPES:
@@ -140,7 +153,9 @@ def _clean_source(raw, old):
             src.update(clean_bookoasis(raw, old))
         except ValueError as e:
             raise ValueError(f"[{src['name']}] {e}")
-    elif stype in ("brunch", "recipe", "kradio"):
+    elif stype == "kradio":
+        src["logos"] = clean_logos(raw.get("logos"))   # 관리자가 정한 채널 로고 (없으면 화면이 글자 로고를 그린다)
+    elif stype in ("brunch", "recipe"):
         pass   # 설정 칸 없음 (정해진 사이트의 공개 목록을 읽는다)
     elif stype == "podcast":
         from .podcast import clean_feeds   # (podcast가 config_store를 가져다 쓴다)

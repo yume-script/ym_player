@@ -236,6 +236,13 @@ body.lib-route .view-mode { display: block; }
 .shape-wide { aspect-ratio: 16 / 9; }
 .shape-channel { aspect-ratio: 16 / 9; background: radial-gradient(circle at 50% 40%, var(--bg-elev2), var(--bg-elev)); }
 .shape-channel img { object-fit: contain; width: 62%; height: 62%; }
+.shape-channel img.logo-tile, .shape-channel img[src^="data:image/svg+xml"] { width: 86%; height: 86%; }
+/* 채널 카드의 즐겨찾기 별 (공중파 라디오) */
+.card-star { position: absolute; top: 0.4rem; right: 0.4rem; width: 2rem; height: 2rem; display: grid; place-items: center;
+    border-radius: 999px; background: rgba(0, 0, 0, 0.45); color: #fff; opacity: 0; transition: opacity 0.15s; cursor: pointer; z-index: 2; }
+.card:hover .card-star, .card:focus-within .card-star, .card-star.on, .card-star:focus-visible { opacity: 1; }
+.card-star.on { color: #ffc83d; }
+@media (hover: none) { .card-star { opacity: 1; } }
 .card-fallback { font-size: 2rem; color: var(--bg-hover); }
 .card:hover .card-art, .card:focus-visible .card-art { outline-color: var(--accent); }
 .card-title { margin-top: 0.45rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
