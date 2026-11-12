@@ -111,8 +111,8 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
     };
     window.addEventListener('yp-view', onView);
     ctx.onLeave(() => window.removeEventListener('yp-view', onView));
-    body.append(
-        kindChips,
+    // (append는 null을 "null" 글자로 넣는다 - 단추 줄이 없는 소스는 빼고)
+    body.append(...[kindChips].filter(Boolean),
         h('div', { class: 'toolbar' },
             countEl,
             searchBox,

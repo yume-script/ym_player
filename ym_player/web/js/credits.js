@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 138,
+        "version": "1.1.101",
+        "date": "2026-11-12",
+        "title": "라이브러리 화면 제목 아래에 'null' 글자가 나오던 것 고침 (1.1.97에서 생김)"
+    },
+    {
         "pr": 137,
         "version": "1.1.100",
         "date": "2026-11-12",
