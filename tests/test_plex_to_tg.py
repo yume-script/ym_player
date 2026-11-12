@@ -159,15 +159,15 @@ def test_mirror_uploads_new_items(data, tmp_path, monkeypatch):
             tg.fail = 1                                  # 첫 번째는 한 번 실패
             await mirror.run_queue(st)
             names = [x["name"] for x in tg.sent]
-            assert names == ["Big part1.mkv", "Big part1.ko.srt", "Big part2.mkv", "Big part2.ko.srt"], names
+            assert names == ["Big part1.mp4", "Big part1.ko.srt", "Big part2.mp4", "Big part2.ko.srt"], names   # 조각도 mp4
             p1, s1, p2, s2 = tg.sent
-            assert p1["caption"] == "큰 영화 (2026)\n(1/2)\n\n새 영화" and p1["thumb"] == b"\xff\xd8thumb" and p1["stream"] is False
+            assert p1["caption"] == "큰 영화 (2026)\n(1/2)\n\n새 영화" and p1["thumb"] == b"\xff\xd8thumb" and p1["stream"] is True
             assert s1["doc"] and "첫 자막" in s1["body"].decode() and "뒤 자막" not in s1["body"].decode()
             assert "뒤 자막" in s2["body"].decode() and "00:00:01,500" in s2["body"].decode()   # 뒤 조각 자막은 3초 당겨짐
             assert len(p1["body"]) + len(p2["body"]) >= big.stat().st_size * 0.9
             state = plex_to_tg.load_state()
             assert list(state["rules"]["r1"]["waiting"]) == ["3"]
-            assert [(h["title"], h["ok"], h["note"]) for h in state["history"]] == [("큰 영화 (2026)", True, "2개로 나눠 올림 (2GB 한도), 자막 파일 2개 첨부"), ("호프 (2026)", False, "일시 오류 (다시 시도 1/3: 10분 뒤)")]
+            assert [(h["title"], h["ok"], h["note"]) for h in state["history"]] == [("큰 영화 (2026)", True, "mp4로 다시 담음, 2개로 나눠 올림 (2GB 한도), 자막 파일 2개 첨부"), ("호프 (2026)", False, "일시 오류 (다시 시도 1/3: 10분 뒤)")]
             retry = state["rules"]["r1"]["retry"]["2"]
             assert retry["at"] > __import__("time").time() + 500 and state["rules"]["r1"]["fails"]["2"] == 1   # 10분 뒤에 다시
             # 올린 두 조각 메시지에 Plex 작품 정보
@@ -374,13 +374,14 @@ def test_sidecar_subtitles_and_no_font(data, tmp_path, monkeypatch):
         monkeypatch.setattr(plex_to_tg, "_KO_FONT", False)
         rule = plex_to_tg.clean_settings({"rules": [{"id": "r", "plex": "px", "section": "1", "tg": "tg", "channel": "-1"}]})["rules"][0]
         note = await mirror.upload(rule, "9", 2)      # Plex에는 자막이 없지만 옆 파일이 있으니 기다리지 않는다
-        assert [x["name"] for x in tg.sent] == ["Show.S01E02.mkv", "Show.S01E02.ko.srt", "Show.S01E02.smi"]
+        assert [x["name"] for x in tg.sent] == ["Show.S01E02.mp4", "Show.S01E02.ko.srt", "Show.S01E02.smi"]
         assert "한글 글꼴이 없어" in note and "자막 파일 2개 첨부" in note
     asyncio.run(main())
 
 
 def test_soft_subtitle_inside_file_counts(data, tmp_path, monkeypatch):
-    """Plex 정보에 자막이 없어도 파일 안에 자막 트랙(소프트 자막)이 있으면 기다리지 않고, 입히지도 않고 그대로 올린다"""
+    """Plex 정보에 자막이 없어도 파일 안에 자막 트랙(소프트 자막)이 있으면 기다리지 않는다.
+    mp4로 바꾸면 그 트랙이 따라오지 못하므로 꺼내서 화면에 입힌다 (자막 입히기를 껐으면 자막 파일로 같이 올린다)"""
     import shutil as _sh
     import subprocess
     if not (_sh.which("ffmpeg") and _sh.which("ffprobe")):
@@ -415,8 +416,13 @@ def test_soft_subtitle_inside_file_counts(data, tmp_path, monkeypatch):
             await mirror.upload(rule, "plain", 2)
         cur["k"] = "soft"
         note = await mirror.upload(rule, "soft", 2)
-        assert [x["name"] for x in tg.sent] == ["Anime.S01E03.mkv"] and note == "내장 자막" and mirror.subs_label == "소프트 자막"
-        assert tg.sent[0]["caption"].startswith("애니 S01E03")
+        assert [x["name"] for x in tg.sent] == ["Anime.S01E03.mp4"] and "자막 입혀 인코딩" in note and mirror.subs_label == "화면에 입힘"
+        assert tg.sent[0]["caption"].startswith("애니 S01E03") and tg.sent[0]["stream"] is True
+        tg.sent.clear()
+        rule["burn_subs"] = False                    # 입히지 않으면 꺼낸 자막을 파일로 같이
+        note = await mirror.upload(rule, "soft", 2)
+        assert [x["name"] for x in tg.sent] == ["Anime.S01E03.mp4", "Anime.S01E03.ko.ass"] and "자막 파일 1개 첨부" in note
+        assert "Dialogue" in tg.sent[1]["body"].decode()
     asyncio.run(main())
 
 
@@ -770,10 +776,15 @@ def test_plex_rule_scales_to_720p(data, tmp_path, monkeypatch):
         v = _json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(out)],
                                        capture_output=True, text=True).stdout)["streams"][0]
         assert (v["codec_name"], v["width"], v["height"]) == ("h264", 960, 720)
-        rule["height"] = 0                                                   # 원본 그대로
+        rule["height"] = 0                                                   # 줄이지 않아도 mkv는 mp4로 다시 담는다 (화면은 그대로)
         tg.sent.clear()
-        await mirror.upload(rule, "9", 2)
-        assert tg.sent[0]["name"] == "Tall.2026.mkv" and tg.sent[0]["body"] == src_video.read_bytes()
+        note = await mirror.upload(rule, "9", 2)
+        assert tg.sent[0]["name"] == "Tall.2026.mp4" and tg.sent[0]["stream"] is True and "p로 줄임" not in note
+        out.write_bytes(tg.sent[0]["body"])
+        fmt = _json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(out)],
+                                         capture_output=True, text=True).stdout)
+        assert "mp4" in fmt["format"]["format_name"] and fmt["streams"][0]["height"] > 720
+        assert {x["codec_name"] for x in fmt["streams"]} <= {"h264", "aac"}
     asyncio.run(main())
 
 

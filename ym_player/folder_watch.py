@@ -144,6 +144,44 @@ def _join_remote(folder, rel):
     return f"{folder.rstrip('/')}/{rel}" if not folder.endswith(":") else f"{folder}{rel}"
 
 
+NETWORK_FS = ("fuse.rclone", "rclone", "nfs", "nfs4", "cifs", "smb3", "smbfs", "fuse.sshfs", "fuse.mergerfs", "davfs", "fuse.gcsfuse")
+
+
+def on_network_drive(path, mounts_file="/proc/mounts"):
+    """그 파일이 rclone mount 같은 네트워크 드라이브에 있는지 (가장 길게 맞는 마운트의 종류로 본다).
+    그런 파일을 그대로 인코딩하면 읽기가 느리고 끊겨서, 먼저 이 서버로 복사해 놓고 인코딩한다"""
+    path = os.path.realpath(path)
+    best, kind = "", ""
+    try:
+        with open(mounts_file, encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return False
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        mnt = re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), parts[1])
+        if (path == mnt or path.startswith(mnt.rstrip("/") + "/")) and len(mnt) >= len(best):
+            best, kind = mnt, parts[2]
+    return kind in NETWORK_FS or "rclone" in kind
+
+
+def copy_file(src, dest, progress=None, chunk=4 * 1024 * 1024):
+    """[스레드에서] 파일을 통째로 복사 (progress(받은 바이트))"""
+    done = 0
+    with open(src, "rb") as fi, open(dest, "wb") as fo:
+        while True:
+            buf = fi.read(chunk)
+            if not buf:
+                break
+            fo.write(buf)
+            done += len(buf)
+            if progress:
+                progress(done)
+    return done
+
+
 def local_path(folder, key):
     """이 컴퓨터 폴더 안의 파일 경로 (폴더 밖을 가리키면 FolderError)"""
     root = os.path.realpath(folder)
@@ -445,7 +483,7 @@ def encode_plan(info, ext, height_cap, burn_sub=None, enc=None):
     v_ok = (str(v.get("codec_name")) == "h264" and str(v.get("pix_fmt")) in ("yuv420p", "yuvj420p")
             and "10" not in str(v.get("profile") or "") and "4:4" not in str(v.get("profile") or "")
             and not scale and not burn_sub)
-    a_ok = a is None or str(a.get("codec_name")) in ("aac", "mp3")
+    a_ok = a is None or str(a.get("codec_name")) == "aac"   # 텔레그램 앱은 AAC여야 소리가 끊기지 않는다 (MP3·AC3·DTS 등은 AAC로)
     if v_ok and a_ok and ext.lower() in (".mp4", ".m4v"):
         return None
     notes, pre = [], []
