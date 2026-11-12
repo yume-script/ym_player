@@ -1,7 +1,7 @@
 // 인터넷 라디오 소스 (MP3/AAC/Ogg 스트림과 HLS .m3u8). 방송국 목록은 설정(config)에 있고, 지금 나오는 곡과 앨범 표지는 서버(/api/radio/{id}/now)가
 // 방송 스트림의 곡 정보(ICY)와 iTunes 검색으로 알려 준다. 재생은 IPTV 라이브 채널과 같은 길(채널 카드, OSD,
 // 위/아래 방송국 전환, 미니 플레이어)을 쓰고, 화면에는 영상 대신 앨범 표지를 크게 보여 준다.
-// 방송국에 분류(group, 예: 한국 지역 라디오의 "서울·경기")가 있으면 방송국 화면에서 분류별로 골라 본다.
+// 방송국에 분류(group)가 있으면 방송국 화면에서 분류별로 골라 본다.
 import { api, storeGet, storeSet } from '../util.js';
 import { streamProxyUrl } from './iptv.js';
 
@@ -138,7 +138,7 @@ export class RadioProvider {
         const st = this.stations.find((s) => s.id === ch.stationId) || ch;
         // HLS(.m3u8) 방송은 hls.js로 (Chrome은 <audio>에 m3u8을 바로 못 넣음, Safari는 기본 지원).
         // 서버 중계(/api/stream)가 재생목록 안의 조각 주소도 중계 주소로 바꿔 준다.
-        // 주소만으로 모르는 방송(radio.bsod.kr/stream?... 처럼 방송사 HLS로 넘겨 주는 주소)은 먼저 그냥 열어 보고,
+        // 주소만으로 모르는 방송(방송사 HLS로 넘겨 주는 주소)은 먼저 그냥 열어 보고,
         // 안 되면 HLS로 다시 - 그렇게 나온 방송국은 기억해 두고 다음부터 바로 HLS로
         const knownHls = /\.m3u8(\?|$)/i.test(st.url || '') || this._hls.has(st.url);
         this._playing = st.id;

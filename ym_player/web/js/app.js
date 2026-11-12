@@ -114,7 +114,7 @@ function openGroup(pid) {
 
 /** 사이드바 머리줄의 소스 종류 아이콘 */
 const SOURCE_ICON = { plex: 'server', telegram: 'paper-plane', iptv: 'tower-broadcast', radio: 'radio', podcast: 'podcast',
-    cctv: 'video', brunch: 'mug-hot', recipe: 'utensils' };
+    cctv: 'video', brunch: 'mug-hot', recipe: 'utensils', bookoasis: 'book', kradio: 'tower-cell' };
 
 function navLink(href, iconName, label) {
     return h('a', { href, class: 'nav-link' }, icon(iconName), h('span', { text: label }));
