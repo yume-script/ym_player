@@ -66,6 +66,11 @@ MAX_PARTS = 10
 PART_LIMIT = 1000 * 1024 * 1024   # 텔레그램 한도 1GB 단위 (2GB = 2000MiB = 4000조각 x 512KB) - max_gb를 곱해 쓴다
 
 
+def file_sig(key, size):
+    """폴더 규칙의 같은 파일 표시: 파일 이름(폴더 빼고, 대소문자 무시) + 크기 - 다른 폴더로 옮겨도 같다"""
+    return f"{os.path.basename(str(key)).casefold()}|{int(size or 0)}"
+
+
 def part_name(stem, index, ext):
     """나눠 올리는 조각의 이름: "Hope.2026.1080p-KyoGo" 0 ".mp4" -> "Hope.2026.1080p-KyoGo_0000.mp4" (0부터, 4자리)"""
     return f"{stem}_{index:04d}{ext}"
@@ -404,6 +409,8 @@ class Mirror:
         self._shot_fail = {}     # (규칙, 항목) -> (시각, 오류) - 장면 뽑기에 실패한 것 (SHOT_RETRY_SEC 뒤에 다시)
 
     _job_task = None      # 지금 올리는 작업 (취소용)
+    _job = None           # 지금 올리는 줄의 항목
+    _cur_sig = ""         # 지금 올리는 파일의 이름+크기 (같은 채널에 두 번 올리지 않게)
     _cancel_req = None    # 직접 취소한 (규칙, 키)
 
     def cancelled(self):
@@ -519,6 +526,7 @@ class Mirror:
                         continue
                     rs["baseline"] = int(time.time())
                     rs["known"] = [folder_watch.key_hash(f["key"]) for f in files]
+                    rs["sigs"] = [file_sig(f["key"], f["size"]) for f in files]
                     rs["sizes"] = {}
                     continue
             else:
@@ -560,13 +568,20 @@ class Mirror:
     def _queue_files(self, rule, rs, files, done, queued):
         """폴더 규칙: 처음 보는 파일 중 다 올라온 것(크기가 그대로이거나 수정한 지 STABLE_SEC 지남)을 줄에"""
         known = set(rs.get("known") or [])
+        sigs = set(rs.get("sigs") or [])
         sizes, now, fresh = rs.setdefault("sizes", {}), time.time(), {}
         for f in sorted(files, key=lambda x: x["mtime"]):
             key = f["key"]
             if folder_watch.key_hash(key) in known or key in done or (rule["id"], key) in queued or key in rs.get("fails", {}):
                 continue
+            sig = file_sig(key, f["size"])
+            if sig in sigs:   # 이미 올린(또는 처음부터 있던) 파일을 다른 폴더로 옮겼거나 경로만 바뀐 것 - 다시 올리지 않는다
+                rs.setdefault("known", []).append(folder_watch.key_hash(key))
+                continue
+            if any((j["rule"] == rule["id"] and j.get("sig") == sig) for j in self.queue):   # 같은 파일이 두 경로에 - 하나만
+                continue
             if sizes.get(key) == f["size"] or now - f["mtime"] >= folder_watch.STABLE_SEC:
-                self.queue.append({"rule": rule["id"], "key": key, "title": folder_watch.file_fields(key)["name"]})
+                self.queue.append({"rule": rule["id"], "key": key, "title": folder_watch.file_fields(key)["name"], "sig": sig})
                 queued.add((rule["id"], key))
             else:   # 아직 올라오는 중일 수 있다 - 다음 확인 때 크기가 같으면
                 fresh[key] = f["size"]
@@ -738,6 +753,55 @@ class Mirror:
             n += 1
         return n
 
+    def _already_sent(self, rule, sig):
+        """같은 채널에 같은 파일(이름+크기)을 이미 올렸는지 - 규칙이 둘이거나(Plex 규칙과 폴더 규칙이 같은 파일을 봄)
+        같은 파일이 다른 항목으로 다시 들어온 경우. 올렸으면 그 기록 문구, 아니면 """""
+        if not sig:
+            return ""
+        got = (load_state().get("sent_sigs") or {}).get(str(rule["channel"])) or {}
+        return got.get(sig, "")
+
+    def _remember_sent(self, rule, sig, title):
+        if not sig:
+            return
+        state = load_state()
+        ch = state.setdefault("sent_sigs", {}).setdefault(str(rule["channel"]), {})
+        ch[sig] = title
+        while len(ch) > KEEP_DONE:
+            ch.pop(next(iter(ch)))
+        save_state(state)
+
+    def _note_sent(self, msg_id):
+        """지금 올리는 항목이 채널에 보낸 메시지 id를 상태에 바로 적는다 (sending) - 다 올리기 전에 실패하거나 취소되거나
+        서버가 다시 켜지면 그 메시지들을 지우고 처음부터 다시 올린다 (반쪽짜리가 채널에 남아 겹치지 않게)"""
+        job = self.current_job or {}
+        if not msg_id or not job:
+            return
+        state = load_state()
+        rs = state["rules"].setdefault(job["rule"], {"done": [], "fails": {}})
+        rs.setdefault("sending", {}).setdefault(job["key"], []).append(int(msg_id))
+        save_state(state)
+
+    async def _drop_partial(self, rule, key):
+        """그 항목이 지난번에 반쯤 올리다 만 메시지들을 채널에서 지운다 (없으면 아무것도 안 함). 지운 수"""
+        state = load_state()
+        ids = ((state["rules"].get(rule["id"]) or {}).get("sending") or {}).get(key) or []
+        if not ids:
+            return 0
+        try:
+            tg = self.tg_for(rule["tg"])
+            client = await tg.authorized_client()
+            peer = await tg.peer(int(rule["channel"]))
+            await client.delete_messages(peer, ids)
+        except Exception as e:  # noqa: BLE001 - 못 지워도 다음에 다시 (sending은 그대로 둔다)
+            log.warning("자동 올리기: 반쯤 올린 메시지 %s개를 지우지 못했습니다 (%s): %s", len(ids), key, e)
+            return 0
+        state = load_state()
+        ((state["rules"].get(rule["id"]) or {}).get("sending") or {}).pop(key, None)
+        save_state(state)
+        log.info("자동 올리기: 반쯤 올린 메시지 %s개를 지웠습니다 (%s)", len(ids), key)
+        return len(ids)
+
     async def run_queue(self, st):
         rules = {r["id"]: r for r in st["rules"]}
         while self.queue:
@@ -748,8 +812,11 @@ class Mirror:
             rule = rules.get(job["rule"])
             ok, note, waiting = False, "", False
             self.current_job, self.subs_label = {"rule": job["rule"], "key": job["key"]}, ""
+            self._job, self._cur_sig = job, ""
             cancelled = False
             self._cancel_req = None
+            if rule:
+                await self._drop_partial(rule, job["key"])   # 지난번(서버가 다시 켜지기 전 등)에 반쯤 올린 것
             if rule:
                 try:
                     self._job_task = asyncio.ensure_future(self.upload(rule, job["key"], st["max_gb"], test=job.get("test") or job.get("force")))
@@ -765,13 +832,16 @@ class Mirror:
                     waiting = True
                 except Exception as e:
                     wait = getattr(e, "seconds", None) if type(e).__name__ == "FloodWaitError" else None
-                    if wait:   # 텔레그램이 기다리라고 함 - 그만큼 쉬고 같은 것을 다시
+                    if wait:   # 텔레그램이 기다리라고 함 - 그만큼 쉬고 같은 것을 처음부터 다시 (반쯤 올린 것은 지우고)
                         self.current = {"title": job["title"], "phase": f"텔레그램 요청 제한 - {wait}초 기다리는 중", "done": 0, "total": 0}
                         await asyncio.sleep(min(int(wait) + 1, 3600))
+                        await self._drop_partial(rule, job["key"])
                         continue
                     note = str(e) or type(e).__name__
                     log.warning("자동 올리기 실패 (%s): %s", job["title"], note)
             self._job_task = None
+            if rule and not ok:   # 실패·취소·자막 기다림: 반쯤 올린 것은 지운다 (다시 올릴 때 겹치지 않게)
+                await self._drop_partial(rule, job["key"])
             if self.queue and self.queue[0] is job:
                 self.queue.pop(0)
             else:
@@ -792,14 +862,20 @@ class Mirror:
                 drop_shot(job["rule"], job["key"])   # 대기에서 빠졌으면 판단용 장면도
             fails = rs.setdefault("fails", {})
             retry = rs.setdefault("retry", {})
-            if ok and note.startswith("건너뜀"):   # 너무 큰 파일 - 다시 시도하지 않는다
+            if ok and note.startswith("건너뜀"):   # 너무 큰 파일 / 이미 올린 파일 - 다시 시도하지 않는다
                 ok = False
                 fails[job["key"]] = GIVE_UP
                 retry.pop(job["key"], None)
             elif ok:
+                (rs.get("sending") or {}).pop(job["key"], None)   # 다 올렸다 - 지울 것 없음
+                if self._cur_sig and rule and not job.get("test"):
+                    ch = state.setdefault("sent_sigs", {}).setdefault(str(rule["channel"]), {})
+                    ch[self._cur_sig] = job["title"]
                 rs["done"] = [*rs.get("done", []), job["key"]][-KEEP_DONE:]
                 if (rule or {}).get("kind") == "folder":   # 폴더 규칙은 올린 파일 이름을 따로 끝까지 기억 (done은 최근 것만)
                     rs.setdefault("known", []).append(folder_watch.key_hash(job["key"]))
+                    if job.get("sig"):   # 이름+크기도 (옮겨도 다시 올리지 않게)
+                        rs.setdefault("sigs", []).append(job["sig"])
                 fails.pop(job["key"], None)
                 retry.pop(job["key"], None)
             elif not job.get("test"):
@@ -858,6 +934,10 @@ class Mirror:
             if not rule["wait_hours"] or not w or time.time() - w.get("since", time.time()) < rule["wait_hours"] * 3600:
                 raise Waiting()
         size = int(part.get("size") or 0)
+        self._cur_sig = file_sig(part.get("file") or "", size) if part.get("file") and size else ""
+        dup = "" if test else self._already_sent(rule, self._cur_sig)
+        if dup:
+            return f"건너뜀: 이 채널에 이미 올린 파일 ({dup})"
         tg = self.tg_for(rule["tg"])
         client = await tg.authorized_client()
         max_gb = max_gb or await self._account_gb(rule["tg"], client)   # 자동: 그 계정이 프리미엄이면 4GB, 아니면 2GB
@@ -1005,6 +1085,10 @@ class Mirror:
         folder = rule["folder"]
         remote = folder_watch.is_remote(folder)
         copied = False
+        self._cur_sig = (self._job or {}).get("sig") or ""
+        dup = "" if test else self._already_sent(rule, self._cur_sig)
+        if dup:
+            return f"건너뜀: 이 채널에 이미 올린 파일 ({dup})"
         fields = folder_watch.file_fields(key, rule["section_title"])
         name = re.sub(r'[\\/:*?"<>|]', "_", os.path.basename(key)) or "video.mp4"
         stem, ext = os.path.splitext(name)
@@ -1139,6 +1223,7 @@ class Mirror:
             sent = await client.send_file(peer, path, caption=cap[:1024], thumb=thumb, attributes=attrs,
                                           supports_streaming=stream, force_document=False, progress_callback=progress)
             msgs.append(getattr(sent, "id", None))
+            self._note_sent(getattr(sent, "id", None))
             for spath, lang, sext in sub_files:   # 그 조각의 자막 (나눴으면 조각 시간만큼 잘라서)
                 out = spath
                 if many:
@@ -1147,7 +1232,8 @@ class Mirror:
                     if not out:
                         continue
                 sname = f"{os.path.splitext(vname)[0]}{'.' + lang if lang else ''}.{'srt' if many and sext == 'smi' else sext}"
-                await client.send_file(peer, out, force_document=True, attributes=[DocumentAttributeFilename(sname)])
+                sub_msg = await client.send_file(peer, out, force_document=True, attributes=[DocumentAttributeFilename(sname)])
+                self._note_sent(getattr(sub_msg, "id", None))
                 sent_subs += 1
         return sent_subs
 

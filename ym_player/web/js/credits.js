@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 145,
+        "version": "1.1.108",
+        "date": "2026-11-13",
+        "title": "자동 올리기 중복 막기: 반쯤 올리다 실패·취소·서버 재시작하면 보낸 메시지를 지우고 다시, 같은 파일(이름+크기)은 같은 채널에 한 번만, 폴더 안에서 옮긴 파일은 다시 올리지 않음"
+    },
+    {
         "pr": 144,
         "version": "1.1.107",
         "date": "2026-11-13",
