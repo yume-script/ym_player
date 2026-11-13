@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 141,
+        "version": "1.1.104",
+        "date": "2026-11-13",
+        "title": "텔레그램 자동 올리기: 언제나 앱에서 바로 재생되는 MP4(H.264+AAC, 720p까지)로, 네트워크 드라이브 원본은 서버로 복사(자막 파일 포함)한 뒤 인코딩, 나눈 조각도 바로 재생, MKV 안의 자막은 꺼내서 입히거나 파일로"
+    },
+    {
         "pr": 140,
         "version": "1.1.103",
         "date": "2026-11-13",

@@ -134,7 +134,7 @@ def test_folder_rule_uploads_new_files(data, tmp_path, monkeypatch):
         assert all(x["stream"] is True and x["thumb"] for x in tg.sent)
         assert tg.sent[0]["caption"] == "Hope S01E02"
         burned = _probe(tg.sent[0]["body"], tmp_path)
-        assert [s["codec_name"] for s in burned["streams"]] == ["h264", "mp3"]   # 자막은 화면에, 소리는 그대로
+        assert [s["codec_name"] for s in burned["streams"]] == ["h264", "aac"]   # 자막은 화면에, 소리는 AAC로 (텔레그램 앱은 MP3 소리를 못 낼 때가 있다)
         assert "자막 입힘" in hist[1]["note"] and hist[1]["subs"] == "화면에 입힘"
         assert tg.sent[1]["body"] == ready.read_bytes() and hist[0]["note"].startswith("그대로 올림")
         assert not os.listdir(data / "data" / "plex_to_tg_tmp")             # 임시 파일은 지움
@@ -388,4 +388,60 @@ def test_encode_pauses_while_someone_plays(data, tmp_path, monkeypatch):
         playing["on"] = False
         await asyncio.wait_for(task, 60)                                        # 재생이 끝나면 이어서 끝까지
         assert out.exists() and mirror.current["phase"] == "인코딩 중"
+    asyncio.run(main())
+
+
+def test_network_drive_detection(tmp_path):
+    mounts = tmp_path / "mounts"
+    mounts.write_text("/dev/sda1 / ext4 rw 0 0\n"
+                      "gdrive: /mnt/gds2 fuse.rclone rw 0 0\n"
+                      "/dev/sdb1 /mnt/gds2/local ext4 rw 0 0\n"
+                      "nas:/vol /mnt/nas\\040share nfs4 rw 0 0\n", encoding="utf-8")
+    on = lambda p: folder_watch.on_network_drive(p, str(mounts))   # noqa: E731
+    assert on("/mnt/gds2/GDRIVE/VIDEO/a.mkv") and on("/mnt/nas share/b.mkv")
+    assert not on("/home/user/a.mkv") and not on("/mnt/gds2/local/c.mkv")      # 가장 길게 맞는 마운트로 본다
+    assert not folder_watch.on_network_drive("/x", str(tmp_path / "missing"))
+
+
+def test_mount_folder_is_copied_to_server_before_encoding(data, tmp_path, monkeypatch):
+    """rclone mount 폴더의 파일: 그대로 읽으며 인코딩하지 않고 서버(임시 폴더)로 복사한 뒤 인코딩한다 - 자막 파일도 같이"""
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg 없음")
+    from ym_player import telegram_src
+    telegram_src._migrated.discard(str(data / "data"))
+    monkeypatch.setattr(plex_to_tg, "_KO_FONT", True)
+    drive = tmp_path / "mnt"
+    drive.mkdir()
+    ep = drive / "Hope.S01E03.mkv"
+    _make(ep, color="gray")
+    (drive / "Hope.S01E03.ko.srt").write_bytes(SRT.encode("cp949"))
+    monkeypatch.setattr(folder_watch, "on_network_drive", lambda p, *a: str(p).startswith(str(drive)))
+    read_from = []
+    real_copy = folder_watch.copy_file
+    monkeypatch.setattr(folder_watch, "copy_file", lambda src, dest, progress=None: (read_from.append((src, dest)), real_copy(src, dest, progress))[1])
+    tg = FakeTg()
+    mirror = plex_to_tg.Mirror(None, None, lambda sid: tg, lambda: None)
+    encoded_from = []
+    real_encode = mirror._encode
+
+    async def spy(src_path, *a, **k):
+        encoded_from.append(src_path)
+        return await real_encode(src_path, *a, **k)
+    monkeypatch.setattr(mirror, "_encode", spy)
+    rule = plex_to_tg.clean_settings({"rules": [{"id": "f", "kind": "folder", "folder": str(drive), "tg": "tg", "channel": "-100",
+                                                 "wait_subs": False}]})["rules"][0]
+
+    async def main():
+        note = await mirror.upload(rule, "Hope.S01E03.mkv", 2)
+        assert note.startswith("서버로 복사 후 처리") and "자막 입힘" in note
+        assert read_from and read_from[0][0] == str(ep) and not read_from[0][1].startswith(str(drive))   # 영상을 임시 폴더로
+        assert encoded_from and not encoded_from[0].startswith(str(drive))                                # 인코딩은 복사본으로
+        assert [x["name"] for x in tg.sent] == ["Hope.S01E03.mp4"] and tg.sent[0]["stream"] is True
+        got = _probe(tg.sent[0]["body"], tmp_path)
+        assert [s["codec_name"] for s in got["streams"]] == ["h264", "aac"]
+        assert not os.listdir(data / "data" / "plex_to_tg_tmp")                                           # 복사본·임시 파일은 지움
+        # 임시 폴더에 자리가 모자라면 올리지 않고 알린다
+        monkeypatch.setattr(shutil, "disk_usage", lambda p: type("U", (), {"free": 1024, "total": 1, "used": 1})())
+        with pytest.raises(RuntimeError, match="자리가 모자랍니다"):
+            await mirror.upload(rule, "Hope.S01E03.mkv", 2)
     asyncio.run(main())

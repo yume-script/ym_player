@@ -15,6 +15,12 @@
 - 자막 입혀 인코딩(규칙마다, 기본 켬): 영상 안에 자막이 없고 외부 자막만 있으면(자막을 기다리다 생긴 경우 등) 그 자막을
   화면에 입혀 H.264 mp4로 다시 인코딩해서 올린다 - 텔레그램 앱에서도 자막이 보인다 (한국어 자막을 먼저 고름).
 - 720p로 줄이기(규칙마다 높이, 기본 720): 그보다 높은 영상은 용량과 상관없이 줄여 H.264 mp4로 올린다 (자막 입히기와 한 번에).
+- 텔레그램 앱에서 바로 재생되게: 올리는 영상은 언제나 MP4(H.264 영상 + AAC 소리, 머리에 색인 - faststart)다. MKV·AVI·WMV나
+  HEVC·AC3·DTS·MP3 소리는 앱에서 받기만 되고 재생이 안 되거나 소리가 끊기므로 필요한 만큼만 다시 담거나 인코딩한다
+  (이미 H.264/AAC mp4면 그대로). '동영상'(미디어)으로 보내 미리보기 그림이 붙고 받기 전에 바로 재생된다 (파일로 보내지 않는다).
+  한도(일반 2GB / 프리미엄 4GB)를 넘으면 나눈 조각도 각각 바로 재생되는 mp4다.
+- 네트워크 드라이브(rclone mount 등)에 있는 원본은 그대로 읽으며 인코딩하지 않고, 먼저 이 서버(임시 폴더)로 복사한 뒤 인코딩한다
+  (읽기가 느리고 끊겨서). 옆에 있는 자막 파일도 같이 복사한다. 임시 폴더에 자리가 모자라면 올리지 않고 알린다.
 - 올린 영상마다 Plex의 작품 정보(포스터·배경·줄거리·장르·출연·회차 제목/줄거리/스틸)를 텔레그램 색인에 같이 남겨
   (telegram_src.plex_meta_put) YMPlayer의 텔레그램 화면이 TMDB 없이도 Plex처럼 보인다.
 
@@ -781,9 +787,13 @@ class Mirror:
         msgs = []
         try:
             local = local_file
+            copied = False
             if not local_ok:   # Plex가 다른 컴퓨터면 받아 온다
                 local = os.path.join(tmp, name)
                 await self._download(cfg, src, part["key"], local, fields["name"], size)
+            elif folder_watch.on_network_drive(local_file):   # rclone mount 등: 서버로 복사해 놓고 인코딩 (자막 파일도)
+                local, side = await self._bring_local(local_file, side, tmp, fields["name"])
+                copied = True
             # 외부 자막 파일 (내장 자막은 영상 안에 그대로 들어 있다)
             sub_files, seen, sub_fail = [], set(), 0
             for x in subs:
@@ -816,12 +826,40 @@ class Mirror:
             vh = int(((folder_watch.streams(info, "video") or [{}])[0]).get("height") or 0)
             scale = bool(rule["height"] and vh > rule["height"])
             width, height = int(media.get("width") or 0), int(media.get("height") or 0)
-            enc_used = ""
-            if burn_name or scale:
-                out = os.path.join(tmp, f"{stem}.enc.mp4")
-                plan = await self._encode_plan(local, lambda enc: folder_watch.encode_plan(info, ".mkv", rule["height"], burn_name, enc),
-                                               out, duration, fields["name"], tmp)
+            enc_used, remux_notes = "", []
+            # mp4로 바꾸면 파일 안의 자막 트랙(소프트 자막)은 따라오지 못한다 → 글자 자막이면 꺼내서 화면에 입히거나
+            # (자막 입히기를 켰고 한글 글꼴이 있을 때) 자막 파일로 같이 올린다. 그림 자막(PGS 등)은 옮길 수 없다
+            soft_lost = False
+            will_convert = bool(info) and transcode.ffmpeg_path() and \
+                folder_watch.encode_plan(info, ext, rule["height"], burn_name, None) is not None
+            if embedded and will_convert and not burn_name:
+                inside = folder_watch.text_subs(info)
+                raw = None
+                if inside:
+                    idx, ilang, isext = inside[0]   # 한국어 먼저 (text_subs가 그렇게 늘어놓는다)
+                    raw = os.path.join(tmp, f"inside.{isext}")
+                    ok, err = await self._ffmpeg("-i", local, "-map", f"0:{idx}", "-c:s", "ass" if isext == "ass" else "srt", raw)
+                    if not ok or not os.path.exists(raw) or os.path.getsize(raw) == 0:
+                        log.info("자동 올리기: 파일 안의 자막을 꺼내지 못했습니다 (%s): %s", fields["name"], err.strip()[-200:])
+                        raw = None
+                if raw and rule["burn_subs"] and has_korean_font():
+                    burn_name = os.path.basename(self.utf8_sub(raw, os.path.join(tmp, f"burn.{isext}")))
+                elif raw:
+                    sub_files.append((raw, sub_lang(ilang), isext))
+                else:
+                    soft_lost = True
+            # 텔레그램 앱에서 바로 재생되게 언제나 MP4(H.264 + AAC)로 - 이미 그런 파일이면 손대지 않는다 (plan None)
+            out = os.path.join(tmp, f"{stem}.enc.mp4")
+            plan = await self._encode_plan(local, lambda enc: folder_watch.encode_plan(info, ext, rule["height"], burn_name, enc),
+                                           out, duration, fields["name"], tmp) if transcode.ffmpeg_path() and info else None
+            if plan:
                 enc_used = folder_watch.ENCODER_NAMES.get(plan.encoder, "")
+                remux_notes = [n for n in plan[1] if n not in ("자막 입힘",) and "p로 줄임" not in n]
+                if copied or not local_ok:   # 서버로 가져온 원본은 바로 지운다 (디스크)
+                    try:
+                        os.remove(local)
+                    except OSError:
+                        pass
                 local, name, ext = out, f"{stem}.mp4", ".mp4"
                 burned, scaled = bool(burn_name), scale
                 v = (folder_watch.streams(await folder_watch.probe(local), "video") or [{}])[0]
@@ -844,12 +882,17 @@ class Mirror:
             shutil.rmtree(tmp, ignore_errors=True)
         log.info("자동 올리기: %s -> %s", fields["name"], rule["channel_title"] or rule["channel"])
         self.subs_label = ("화면에 입힘" if burned else f"파일 {sent_subs}개" if sent_subs
-                           else "소프트 자막" if embedded else "없음")
+                           else "옮기지 못함" if soft_lost else "소프트 자막" if embedded else "없음")
         notes = []
+        if copied:
+            notes.append("서버로 복사 후 처리")
         if burned:
             notes.append("자막 입혀 인코딩")
         if scaled:
             notes.append(f"{rule['height']}p로 줄임")
+        notes += remux_notes
+        if ext.lower() not in STREAMABLE:
+            notes.append("mp4가 아니라 앱에서 바로 재생되지 않을 수 있음 (ffmpeg 없음)")
         if enc_used:
             notes.append(f"인코더 {enc_used}")
         if burn_skip:
@@ -858,6 +901,8 @@ class Mirror:
             notes.append(f"{len(msgs)}개로 나눠 올림 ({max_gb}GB 한도)")
         if sent_subs:
             notes.append(f"자막 파일 {sent_subs}개 첨부")
+        elif soft_lost:
+            notes.append("파일 안의 자막이 그림 자막이라 mp4로 옮기지 못함")
         elif embedded and not burned:
             notes.append("내장 자막")
         if sub_fail:
@@ -873,6 +918,7 @@ class Mirror:
             raise RuntimeError("서버에 ffmpeg가 없어 인코딩할 수 없습니다.")
         folder = rule["folder"]
         remote = folder_watch.is_remote(folder)
+        copied = False
         fields = folder_watch.file_fields(key, rule["section_title"])
         name = re.sub(r'[\\/:*?"<>|]', "_", os.path.basename(key)) or "video.mp4"
         stem, ext = os.path.splitext(name)
@@ -922,6 +968,9 @@ class Mirror:
                     sub_files.append((dest, sub_lang(lang), sext))
             else:
                 sub_files = [(pth, lang, sext) for pth, lang, sext in side]
+                if folder_watch.on_network_drive(local):   # rclone mount 폴더: 서버로 복사해 놓고 인코딩 (자막 파일도)
+                    local, sub_files = await self._bring_local(local, sub_files, tmp, fields["name"])
+                    copied = True
             if not info:
                 raise RuntimeError("영상 정보를 읽지 못했습니다 (ffprobe).")
             duration = folder_watch.duration(info)
@@ -948,7 +997,7 @@ class Mirror:
             notes = []
             if plan:
                 notes = list(plan[1]) + ([f"인코더 {folder_watch.ENCODER_NAMES[plan.encoder]}"] if plan.encoder in folder_watch.ENCODER_NAMES else [])
-                if remote:   # 받은 원본은 바로 지운다 (디스크)
+                if remote or copied:   # 받은(복사한) 원본은 바로 지운다 (디스크)
                     os.remove(local)
                 local, name, ext = out, f"{stem}.mp4", ".mp4"
                 info = await folder_watch.probe(local) or info
@@ -974,6 +1023,8 @@ class Mirror:
         self.subs_label = "화면에 입힘" if burn else f"파일 {sent_subs}개" if sent_subs else "없음"
         if not plan:
             notes = ["그대로 올림 (바로 재생되는 mp4)"]
+        if copied:
+            notes.insert(0, "서버로 복사 후 처리")
         if burn_skip:
             notes.append(burn_skip)
         if len(msgs) > 1:
@@ -1045,6 +1096,33 @@ class Mirror:
         except ValueError:
             return None
         return [{"codec": x.get("codec_name", ""), "lang": (x.get("tags") or {}).get("language", "")} for x in streams]
+
+    async def _bring_local(self, src_path, subs, tmp, title):
+        """네트워크 드라이브(rclone mount 등)의 원본과 옆 자막 파일을 이 서버(tmp)로 복사한다.
+        돌려주는 값: (복사한 영상 경로, [(자막 경로, 언어, 확장자)]). 자리가 모자라면 RuntimeError"""
+        size = os.path.getsize(src_path)
+        free = shutil.disk_usage(tmp).free
+        if free < size * 2.2 + 512 * 1024 * 1024:   # 원본 + 인코딩한 것 + 나눌 때 여유
+            raise RuntimeError(f"서버 임시 폴더에 자리가 모자랍니다 (원본 {size / 1024 ** 3:.1f}GB, 남은 자리 {free / 1024 ** 3:.1f}GB) - "
+                               "복사한 뒤 인코딩하려면 원본의 두 배쯤 필요합니다.")
+        dest = os.path.join(tmp, "src" + os.path.splitext(src_path)[1])
+        self.current = {"title": title, "phase": "서버로 복사하는 중", "done": 0, "total": size}
+
+        def got(n):
+            if self.current:
+                self.current["done"] = n
+        await asyncio.to_thread(folder_watch.copy_file, src_path, dest, got)
+        if os.path.getsize(dest) != size:
+            raise RuntimeError("서버로 복사한 파일의 크기가 원본과 다릅니다 (드라이브 연결 확인).")
+        out = []
+        for i, (spath, lang, sext) in enumerate(subs):   # 자막 파일도 같이
+            sdest = os.path.join(tmp, f"srcsub{i}.{sext}")
+            try:
+                await asyncio.to_thread(shutil.copyfile, spath, sdest)
+                out.append((sdest, lang, sext))
+            except OSError as e:
+                log.warning("자동 올리기: 자막 파일을 복사하지 못했습니다 (%s): %s", spath, e)
+        return dest, out
 
     async def _ffmpeg(self, *args):
         proc = await asyncio.create_subprocess_exec(transcode.ffmpeg_path(), "-v", "error", "-y", *args,
@@ -1153,7 +1231,8 @@ class Mirror:
                 path = f"{base} part{i + 1}{ext}"
                 self.current = {"title": title, "phase": f"{n}개로 나누는 중 ({i + 1}/{n})", "done": i, "total": n}
                 args = ["-ss", f"{i * seg:.3f}", "-i", src_path] + (["-t", f"{seg:.3f}"] if i < n - 1 else []) + \
-                       ["-map", "0", "-c", "copy", "-avoid_negative_ts", "make_zero", path]
+                       ["-map", "0", "-c", "copy", "-avoid_negative_ts", "make_zero"] + \
+                       (["-movflags", "+faststart"] if ext.lower() in STREAMABLE else []) + [path]   # 조각도 받기 전에 바로 재생되게
                 ok, err = await self._ffmpeg(*args)
                 if not ok:
                     raise RuntimeError(f"ffmpeg로 나누지 못했습니다: {err.strip()}")
