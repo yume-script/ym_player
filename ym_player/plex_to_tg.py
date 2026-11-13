@@ -122,20 +122,12 @@ def sub_lang(code):
 def sidecar_subs(video_path):
     """영상 파일 옆의 자막 파일들 [(경로, 언어, 확장자)] - Plex가 아직 못 읽었어도 (같은 이름 + .ko.srt / .smi 등)"""
     folder, base = os.path.split(video_path)
-    stem = os.path.splitext(base)[0]
-    out = []
     try:
         names = sorted(os.listdir(folder))
     except OSError:
-        return out
-    for n in names:
-        root, ext = os.path.splitext(n)
-        sext = SUB_EXT.get(ext[1:].lower())
-        if not sext or not (root == stem or root.startswith(stem + ".")):
-            continue
-        tail = root[len(stem) + 1:] if root != stem else ""
-        out.append((os.path.join(folder, n), sub_lang(tail.split(".")[-1]) if tail else "", sext))
-    return out
+        return []
+    return [(os.path.join(folder, n), sub_lang(lang) if lang else "", SUB_EXT.get(sext, sext))
+            for n, lang, sext in folder_watch.match_subs(base, names)]
 
 
 SHOT_AT = 600      # 자막을 사람이 판단할 장면: 10분 지점 (더 짧은 영상은 가운데)
@@ -911,45 +903,41 @@ class Mirror:
                 if h not in seen:
                     seen.add(h)
                     sub_files.append((path, lang, sext))
-            burned, burn_skip = False, ""
+            burned, burn_skip, soft_lost = False, "", False
             embedded = bool(soft)
-            if rule["burn_subs"] and sub_files and not embedded and not has_korean_font():
-                burn_skip = "한글 글꼴이 없어 자막을 입히지 않고 파일로 올림 (sudo apt install fonts-nanum)"
-            burn_name = None
-            if rule["burn_subs"] and sub_files and not embedded and has_korean_font():   # 영상 안에 자막이 없으면 외부 자막을 입힌다
-                best = next((f for f in sub_files if f[1].lower() in ("kor", "ko", "ko-kr")), sub_files[0])
-                burn_name = os.path.basename(self.utf8_sub(best[0], os.path.join(tmp, f"burn.{best[2]}")))
             # 정한 높이(기본 720p)보다 큰 영상은 용량과 상관없이 줄인다 - 자막 입히기와 한 번에 인코딩
             info = await folder_watch.probe(local)
             vh = int(((folder_watch.streams(info, "video") or [{}])[0]).get("height") or 0)
             scale = bool(rule["height"] and vh > rule["height"])
             width, height = int(media.get("width") or 0), int(media.get("height") or 0)
             enc_used, remux_notes = "", []
-            # mp4로 바꾸면 파일 안의 자막 트랙(소프트 자막)은 따라오지 못한다 → 글자 자막이면 꺼내서 화면에 입히거나
-            # (자막 입히기를 켰고 한글 글꼴이 있을 때) 자막 파일로 같이 올린다. 그림 자막(PGS 등)은 옮길 수 없다
-            soft_lost = False
+            inside = folder_watch.text_subs(info) if info else []
+            # 자막 입히기: 텔레그램 앱은 영상 안의 자막 트랙(소프트 자막)을 보여 주지 않는다 - 영상 안에 자막이 있어도
+            # 자막 파일이나 글자 자막이 있으면 화면에 입힌다 (한국어 먼저). 전에는 영상 안에 아무 자막(영어·그림 자막 포함)이
+            # 있으면 옆의 한국어 자막 파일을 입히지 않았다
+            burn_name = None
+            if rule["burn_subs"] and (sub_files or inside) and transcode.ffmpeg_path():
+                if not has_korean_font():
+                    burn_skip = "한글 글꼴이 없어 자막을 입히지 않고 파일로 올림 (sudo apt install fonts-nanum)"
+                else:
+                    burn_name = await self._burn_source(local, sub_files, inside, tmp, fields["name"])
+            # mp4로 바꾸면 파일 안의 자막 트랙은 따라오지 못한다 - 입히지 않으면 글자 자막은 꺼내서 파일로 같이 올린다
             will_convert = bool(info) and transcode.ffmpeg_path() and \
                 folder_watch.encode_plan(info, ext, rule["height"], burn_name, None) is not None
-            if embedded and will_convert and not burn_name:
-                inside = folder_watch.text_subs(info)
-                raw = None
-                if inside:
-                    idx, ilang, isext = inside[0]   # 한국어 먼저 (text_subs가 그렇게 늘어놓는다)
+            if embedded and will_convert and not burn_name and not sub_files:
+                for idx, ilang, isext in inside[:1]:
                     raw = os.path.join(tmp, f"inside.{isext}")
-                    ok, err = await self._ffmpeg("-i", local, "-map", f"0:{idx}", "-c:s", "ass" if isext == "ass" else "srt", raw)
-                    if not ok or not os.path.exists(raw) or os.path.getsize(raw) == 0:
-                        log.info("자동 올리기: 파일 안의 자막을 꺼내지 못했습니다 (%s): %s", fields["name"], err.strip()[-200:])
-                        raw = None
-                if raw and rule["burn_subs"] and has_korean_font():
-                    burn_name = os.path.basename(self.utf8_sub(raw, os.path.join(tmp, f"burn.{isext}")))
-                elif raw:
-                    sub_files.append((raw, sub_lang(ilang), isext))
-                else:
-                    soft_lost = True
+                    ok, _err = await self._ffmpeg("-i", local, "-map", f"0:{idx}", "-c:s", "ass" if isext == "ass" else "srt", raw)
+                    if ok and os.path.exists(raw) and os.path.getsize(raw) > 0:
+                        sub_files.append((raw, sub_lang(ilang), isext))
+                soft_lost = not sub_files
             # 텔레그램 앱에서 바로 재생되게 언제나 MP4(H.264 + AAC)로 - 이미 그런 파일이면 손대지 않는다 (plan None)
             out = os.path.join(tmp, f"{stem}.enc.mp4")
-            plan = await self._encode_plan(local, lambda enc: folder_watch.encode_plan(info, ext, rule["height"], burn_name, enc),
-                                           out, duration, fields["name"], tmp) if transcode.ffmpeg_path() and info else None
+            plan, did_burn = None, False
+            if transcode.ffmpeg_path() and info:
+                plan, did_burn, why = await self._encode_burn(
+                    local, lambda enc, b: folder_watch.encode_plan(info, ext, rule["height"], b, enc), out, duration, fields["name"], tmp, burn_name)
+                burn_skip = burn_skip or why
             if plan:
                 enc_used = folder_watch.ENCODER_NAMES.get(plan.encoder, "")
                 remux_notes = [n for n in plan[1] if n not in ("자막 입힘",) and "p로 줄임" not in n]
@@ -959,7 +947,7 @@ class Mirror:
                     except OSError:
                         pass
                 local, name, ext = out, f"{stem}.mp4", ".mp4"
-                burned, scaled = bool(burn_name), scale
+                burned, scaled = did_burn, scale
                 v = (folder_watch.streams(await folder_watch.probe(local), "video") or [{}])[0]
                 width, height = int(v.get("width") or width), int(v.get("height") or height)
                 if burned:
@@ -1072,26 +1060,19 @@ class Mirror:
             if not info:
                 raise RuntimeError("영상 정보를 읽지 못했습니다 (ffprobe).")
             duration = folder_watch.duration(info)
-            # 3) 화면에 입힐 자막: 옆 자막 파일(한국어 먼저), 없으면 파일 안의 글자 자막 트랙
+            # 3) 화면에 입힐 자막: 한국어 먼저 (자막 파일 > 파일 안의 글자 자막 > 다른 언어)
             burn, burn_skip, inside = None, "", folder_watch.text_subs(info)
             if rule["burn_subs"] and (sub_files or inside):
                 if not has_korean_font():
                     burn_skip = "한글 글꼴이 없어 자막을 입히지 않고 파일로 올림 (sudo apt install fonts-nanum)"
-                elif sub_files:
-                    best = next((f for f in sub_files if f[1].lower() in ("kor", "ko", "ko-kr")), sub_files[0])
-                    burn = os.path.basename(self.utf8_sub(best[0], os.path.join(tmp, f"burn.{best[2]}")))
                 else:
-                    idx, _lang, sext = inside[0]
-                    raw = os.path.join(tmp, f"inside.{sext}")
-                    ok, err = await self._ffmpeg("-i", local, "-map", f"0:{idx}", "-c:s", "ass" if sext == "ass" else "srt", raw)
-                    if ok and os.path.getsize(raw) > 0:
-                        burn = os.path.basename(self.utf8_sub(raw, os.path.join(tmp, f"burn.{sext}")))
-                    else:
-                        log.info("자동 올리기: 파일 안의 자막을 꺼내지 못했습니다 (%s): %s", fields["name"], err.strip()[-200:])
+                    burn = await self._burn_source(local, sub_files, inside, tmp, fields["name"])
             # 4) 인코딩 (필요할 때만)
             out = os.path.join(tmp, f"{stem}.mp4")
-            plan = await self._encode_plan(local, lambda enc: folder_watch.encode_plan(info, ext, rule["height"], burn, enc),
-                                           out, duration, fields["name"], tmp)
+            plan, did_burn, why = await self._encode_burn(
+                local, lambda enc, b: folder_watch.encode_plan(info, ext, rule["height"], b, enc), out, duration, fields["name"], tmp, burn)
+            burn_skip = burn_skip or why
+            burn = burn if did_burn else None
             notes = []
             if plan:
                 notes = list(plan[1]) + ([f"인코더 {folder_watch.ENCODER_NAMES[plan.encoder]}"] if plan.encoder in folder_watch.ENCODER_NAMES else [])
@@ -1223,6 +1204,35 @@ class Mirror:
             except OSError as e:
                 log.warning("자동 올리기: 자막 파일을 복사하지 못했습니다 (%s): %s", spath, e)
         return dest, out
+
+    async def _burn_source(self, local, sub_files, inside, tmp, title):
+        """화면에 입힐 자막 파일 이름 (tmp 안, UTF-8). 한국어를 먼저: 한국어 자막 파일 > 영상 안의 한국어 글자 자막 >
+        다른 자막 파일 > 영상 안의 다른 글자 자막. 못 고르면 None"""
+        def ko(lang):
+            return str(lang or "").lower() in ("ko", "kor", "korean", "kr", "ko-kr")
+        order = [("file", f) for f in sub_files if ko(f[1])] + [("in", t) for t in inside if ko(t[1])] + \
+                [("file", f) for f in sub_files if not ko(f[1])] + [("in", t) for t in inside if not ko(t[1])]
+        for kind, x in order:
+            if kind == "file":
+                return os.path.basename(self.utf8_sub(x[0], os.path.join(tmp, f"burn.{x[2]}")))
+            idx, _lang, isext = x
+            raw = os.path.join(tmp, f"inside{idx}.{isext}")
+            ok, err = await self._ffmpeg("-i", local, "-map", f"0:{idx}", "-c:s", "ass" if isext == "ass" else "srt", raw)
+            if ok and os.path.exists(raw) and os.path.getsize(raw) > 0:
+                return os.path.basename(self.utf8_sub(raw, os.path.join(tmp, f"burn.{isext}")))
+            log.info("자동 올리기: 파일 안의 자막을 꺼내지 못했습니다 (%s): %s", title, err.strip()[-200:])
+        return None
+
+    async def _encode_burn(self, local, make, out, duration, title, tmp, burn_name):
+        """자막을 입혀 인코딩 - 자막 때문에 실패하면(깨진 자막 등) 자막 없이 한 번 더. 돌려주는 값: (plan, 입혔는지, 못 입힌 까닭)"""
+        try:
+            return await self._encode_plan(local, lambda enc: make(enc, burn_name), out, duration, title, tmp), bool(burn_name), ""
+        except RuntimeError as e:
+            if not burn_name:
+                raise
+            log.warning("자동 올리기: 자막을 입혀 인코딩하지 못해 자막 없이 다시 합니다 (%s): %s", title, e)
+            plan = await self._encode_plan(local, lambda enc: make(enc, None), out, duration, title, tmp)
+            return plan, False, "자막을 입히지 못해 파일로 올림 (자막 파일 확인)"
 
     async def _ffmpeg(self, *args):
         proc = await asyncio.create_subprocess_exec(transcode.ffmpeg_path(), "-v", "error", "-y", *args,

@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 144,
+        "version": "1.1.107",
+        "date": "2026-11-13",
+        "title": "자동 올리기: 자막 파일이 있는데 화면에 입히지 않던 것 고침 - 영상 안에 영어·그림 자막이 있어도 한국어 자막을 입힘, 이름이 조금 다른 자막도 찾음(같은 회차·영상 하나뿐인 폴더), 자막 때문에 인코딩이 실패하면 자막 없이 다시"
+    },
+    {
         "pr": 143,
         "version": "1.1.106",
         "date": "2026-11-13",

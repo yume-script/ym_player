@@ -262,12 +262,45 @@ async def scan(folder):
 
 
 def _sub_match(stem, name):
+    """같은 이름의 자막 (대소문자 무시): "영상.srt", "영상.ko.srt", "영상.kor.smi" -> (언어 꼬리, 확장자)"""
     root, ext = os.path.splitext(name)
     sext = SUB_EXT.get(ext[1:].lower())
-    if not sext or not (root == stem or root.startswith(stem + ".")):
+    s, r = stem.casefold(), root.casefold()
+    if not sext or not (r == s or r.startswith(s + ".")):
         return None
-    tail = root[len(stem) + 1:] if root != stem else ""
+    tail = root[len(stem) + 1:] if r != s else ""
     return tail.split(".")[-1] if tail else "", sext
+
+
+_LANG_TAIL = re.compile(r"[._ -](ko|kor|korean|kr|en|eng|english|ja|jpn|jp|zh|chi|chs|cht)$", re.I)
+
+
+def match_subs(video_name, names):
+    """영상 옆의 파일 이름들 중 그 영상의 자막 [(이름, 언어 꼬리, 확장자)].
+    1) 같은 이름("영상.srt", "영상.ko.srt") 2) 없으면 같은 회차 표시(S01E02)가 든 자막 3) 그래도 없고 그 폴더에 영상이 하나뿐이면
+    그 폴더의 자막 전부 (자막 이름이 릴리스 이름과 조금 다른 경우가 많아서 - 예: "Hope.2026.1080p.WEB-DL.ko.srt")"""
+    stem = os.path.splitext(video_name)[0]
+    exact = [(n, *hit) for n in names for hit in [_sub_match(stem, n)] if hit]
+    if exact:
+        return exact
+    subs = [n for n in names if SUB_EXT.get(os.path.splitext(n)[1][1:].lower())]
+    if not subs:
+        return []
+
+    def lang_of(n):
+        m = _LANG_TAIL.search(os.path.splitext(n)[0])
+        return m.group(1) if m else ""
+    ep = _EP_RE.search(stem)
+    if ep:
+        tag = (int(ep.group(1)), int(ep.group(2)))
+        same = [n for n in subs for m in [_EP_RE.search(os.path.splitext(n)[0])] if m and (int(m.group(1)), int(m.group(2))) == tag]
+        if same:
+            return [(n, lang_of(n), SUB_EXT[os.path.splitext(n)[1][1:].lower()]) for n in same]
+        return []   # 회차가 있는 영상인데 같은 회차 자막이 없으면 다른 회차 자막을 붙이지 않는다
+    videos = [n for n in names if os.path.splitext(n)[1].lower() in VIDEO_EXT]
+    if len(videos) == 1:
+        return [(n, lang_of(n), SUB_EXT[os.path.splitext(n)[1][1:].lower()]) for n in subs]
+    return []
 
 
 async def remote_subs(folder, key):
@@ -275,13 +308,8 @@ async def remote_subs(folder, key):
     d, base = os.path.split(key)
     stem = os.path.splitext(base)[0]
     target = _join_remote(folder, d) if d else folder
-    out = []
-    for r in await _lsjson(target, recursive=False):
-        name = str(r.get("Name") or r.get("Path") or "")
-        hit = _sub_match(stem, name)
-        if hit:
-            out.append((f"{d}/{name}" if d else name, hit[0], hit[1]))
-    return sorted(out)
+    names = [str(r.get("Name") or r.get("Path") or "") for r in await _lsjson(target, recursive=False)]
+    return sorted((f"{d}/{n}" if d else n, lang, sext) for n, lang, sext in match_subs(base, names))
 
 
 async def fetch(folder, key, dest, progress=None):

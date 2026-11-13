@@ -445,3 +445,19 @@ def test_mount_folder_is_copied_to_server_before_encoding(data, tmp_path, monkey
         with pytest.raises(RuntimeError, match="자리가 모자랍니다"):
             await mirror.upload(rule, "Hope.S01E03.mkv", 2)
     asyncio.run(main())
+
+
+def test_match_subtitle_files_loosely():
+    m = folder_watch.match_subs
+    v = "Hope.2026.1080p.AMZN.WEB-DL.DDP5.1.H.264-KyoGo.mkv"
+    # 같은 이름 (대소문자 무시) - 있으면 이것만
+    assert m(v, [v, "hope.2026.1080p.amzn.web-dl.ddp5.1.h.264-kyogo.ko.SRT", "other.srt"]) == [
+        ("hope.2026.1080p.amzn.web-dl.ddp5.1.h.264-kyogo.ko.SRT", "ko", "srt")]
+    # 이름이 다르지만 폴더에 영상이 하나뿐이면 그 폴더의 자막 (릴리스 이름이 다른 자막)
+    assert m(v, [v, "Hope.2026.1080p.WEB-DL.kor.smi", "readme.txt"]) == [("Hope.2026.1080p.WEB-DL.kor.smi", "kor", "smi")]
+    assert m(v, [v, "Other.Movie.mkv", "Hope.2026.srt"]) == []                  # 영상이 여럿이면 엉뚱한 것을 붙이지 않는다
+    # 회차가 있으면 같은 회차 자막
+    ep = "Show.S01E02.1080p.WEB-DL-GRP.mkv"
+    names = [ep, "Show.S01E01.1080p.WEB-DL-GRP.mkv", "Show.S01E02.WEB.ko.srt", "Show.S01E01.WEB.ko.srt"]
+    assert m(ep, names) == [("Show.S01E02.WEB.ko.srt", "ko", "srt")]
+    assert m("Show.S01E03.mkv", ["Show.S01E03.mkv", "Show.S01E02.ko.srt"]) == []   # 다른 회차 자막은 안 붙인다
