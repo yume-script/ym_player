@@ -923,3 +923,81 @@ def test_part_names_and_grouping():
     keys = [telegram_src.split_part(n) for n in names]
     assert keys[0][0] == keys[1][0] == stem.casefold() and [k[1] for k in keys] == [0, 1]
     assert telegram_src.part_base_title(f"{stem}_0001") == stem
+
+
+def test_burn_source_prefers_korean(tmp_path):
+    """입힐 자막: 한국어 자막 파일 > 영상 안의 한국어 글자 자막 > 다른 자막 파일 > 영상 안의 다른 글자 자막"""
+    mirror = plex_to_tg.Mirror(None, None, lambda sid: None, lambda: None)
+    en, ko = tmp_path / "a.en.srt", tmp_path / "a.ko.srt"
+    en.write_text(SRT, encoding="utf-8")
+    ko.write_bytes(SRT.encode("cp949"))
+    got = []
+
+    async def fake_ffmpeg(*args):
+        out = args[-1]
+        got.append(args[args.index("-map") + 1])
+        with open(out, "w", encoding="utf-8") as f:
+            f.write(SRT)
+        return True, ""
+    mirror._ffmpeg = fake_ffmpeg
+
+    async def main():
+        # 영상 안에 영어 자막이 있어도 옆의 한국어 자막 파일을 입힌다
+        name = await mirror._burn_source("v.mkv", [(str(en), "en", "srt"), (str(ko), "ko", "srt")], [(2, "eng", "srt")], str(tmp_path), "t")
+        assert name == "burn.srt" and "첫 자막" in (tmp_path / name).read_text(encoding="utf-8") and not got
+        # 자막 파일은 영어뿐이고 영상 안에 한국어 글자 자막이 있으면 그것을 꺼내 입힌다
+        name = await mirror._burn_source("v.mkv", [(str(en), "en", "srt")], [(3, "eng", "srt"), (4, "kor", "ass")], str(tmp_path), "t")
+        assert got == ["0:4"] and name == "burn.ass"
+        assert await mirror._burn_source("v.mkv", [], [], str(tmp_path), "t") is None
+    asyncio.run(main())
+
+
+def test_burn_failure_falls_back_to_plain_encode(tmp_path, monkeypatch):
+    """깨진 자막 때문에 입혀 인코딩하지 못하면 자막 없이 한 번 더 (올리기 자체가 실패하지 않게)"""
+    mirror = plex_to_tg.Mirror(None, None, lambda sid: None, lambda: None)
+    tried = []
+
+    async def fake_plan(src, make, out, duration, title, cwd):
+        plan = make({"name": "cpu"})
+        tried.append(plan)
+        if plan == "with-sub":
+            raise RuntimeError("인코딩 실패: Unable to open burn.srt")
+        return plan
+    monkeypatch.setattr(mirror, "_encode_plan", fake_plan)
+    make = lambda enc, b: "with-sub" if b else "plain"   # noqa: E731
+    assert asyncio.run(mirror._encode_burn("v", make, "o", 1, "t", str(tmp_path), "burn.srt")) == (
+        "plain", False, "자막을 입히지 못해 파일로 올림 (자막 파일 확인)")
+    assert asyncio.run(mirror._encode_burn("v", make, "o", 1, "t", str(tmp_path), None)) == ("plain", False, "")
+    assert tried == ["with-sub", "plain", "plain"]
+
+
+def test_korean_file_is_burned_even_with_english_track_inside(data, tmp_path, monkeypatch):
+    """영상 안에 영어 자막 트랙이 있어도 옆의 한국어 자막 파일을 화면에 입힌다 (전에는 입히지 않고 파일로만 올렸다)"""
+    import shutil as _sh
+    import subprocess
+    if not (_sh.which("ffmpeg") and _sh.which("ffprobe")):
+        pytest.skip("ffmpeg 없음")
+    plain = tmp_path / "plain.mp4"
+    _video(plain, 2)
+    en = tmp_path / "en.srt"
+    en.write_text(SRT.replace("첫 자막", "first"), encoding="utf-8")
+    video = tmp_path / "Movie.2026.1080p.WEB-DL.mkv"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(plain), "-i", str(en), "-map", "0", "-map", "1", "-c", "copy",
+                    "-c:s", "srt", "-metadata:s:s:0", "language=eng", str(video)], check=True)
+    (tmp_path / "Movie.2026.1080p.WEB-DL.ko.srt").write_bytes(SRT.encode("cp949"))
+    tg = FakeTg()
+
+    async def plex_json(c, s, path, params=None):
+        return {"MediaContainer": {"Metadata": [{"ratingKey": "1", "type": "movie", "title": "영화", "year": 2026, "duration": 2000,
+                "Media": [{"Part": [{"key": "/p/1", "file": str(video), "size": video.stat().st_size, "Stream": []}]}]}]}}
+
+    async def main():
+        mirror = plex_to_tg.Mirror(plex_json, lambda sid: ({"client_id": "c"}, {"id": "px", "url": "http://x"}), lambda sid: tg, lambda: None)
+        monkeypatch.setattr(mirror, "_art", lambda *a: asyncio.sleep(0))
+        monkeypatch.setattr(mirror, "_save_meta", lambda *a: asyncio.sleep(0))
+        monkeypatch.setattr(plex_to_tg, "_KO_FONT", True)
+        rule = plex_to_tg.clean_settings({"rules": [{"id": "r", "plex": "px", "section": "1", "tg": "tg", "channel": "-1"}]})["rules"][0]
+        note = await mirror.upload(rule, "1", 2)
+        assert [x["name"] for x in tg.sent] == ["Movie.2026.1080p.WEB-DL.mp4"] and "자막 입혀 인코딩" in note
+        assert mirror.subs_label == "화면에 입힘"
+    asyncio.run(main())
