@@ -1283,3 +1283,21 @@ body.docpip { margin: 0; background: #000; overflow: hidden; }
 .mirror-live-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
 .btn.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
 .btn.danger:hover { background: color-mix(in srgb, var(--danger) 14%, transparent); }
+
+/* 설정 > 로그 */
+.log-tools { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem; }
+.log-tools .input { flex: 1 1 12rem; min-width: 0; max-width: 22rem; }
+.log-meta { display: block; font-size: 0.8rem; margin-bottom: 0.5rem; }
+.log-list { padding: 0.25rem 0; max-height: 70vh; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.78rem; }
+.log-row { display: grid; grid-template-columns: auto 4.5rem minmax(6rem, 12rem) 1fr; gap: 0.6rem; padding: 0.3rem 0.9rem; border-bottom: 1px solid var(--border); }
+.log-row:last-child { border-bottom: none; }
+.log-time, .log-logger { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.log-level { font-weight: 600; }
+.log-msg { white-space: pre-wrap; word-break: break-word; }
+.log-row.warning .log-level, .log-row.warning .log-msg { color: #d29922; }
+.log-row.error .log-level, .log-row.error .log-msg, .log-row.critical .log-level, .log-row.critical .log-msg { color: #f85149; }
+@media (max-width: 640px) {
+    .log-row { grid-template-columns: auto 1fr; }
+    .log-logger { grid-column: 1 / -1; }
+    .log-msg { grid-column: 1 / -1; }
+}

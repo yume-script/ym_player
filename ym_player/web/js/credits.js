@@ -106,6 +106,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 147,
+        "version": "1.2.10",
+        "date": "2026-11-13",
+        "title": "설정 > 로그 탭: 서버 로그를 수준(전체·경고·오류)과 찾을 말로 걸러 보기, 5초마다 새 줄, 파일 받기 (데이터 폴더/logs/ymplayer.log에도 남김)"
+    },
+    {
         "pr": 146,
         "version": "1.2.09",
         "date": "2026-11-13",

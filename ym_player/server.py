@@ -79,6 +79,61 @@ class _RecentWarnings(logging.Handler):
 
 
 RECENT = _RecentWarnings()
+
+
+class _LogBuffer(logging.Handler):
+    """설정 > 로그 탭에 보여줄 최근 로그 (INFO 이상, 메모리에 LOG_KEEP줄). 요청마다 찍히는 접속 기록(aiohttp.access)은 뺀다."""
+
+    def __init__(self, size=3000):
+        super().__init__(logging.INFO)
+        self.items = collections.deque(maxlen=size)
+        self.seq = 0
+
+    def emit(self, record):
+        if record.name == "aiohttp.access":
+            return
+        try:
+            msg = record.getMessage()
+            if record.exc_info:
+                msg += "\n" + logging.Formatter().formatException(record.exc_info)
+            self.seq += 1
+            self.items.append({"id": self.seq, "time": record.created, "level": record.levelname,
+                               "logger": record.name, "message": msg[:4000]})
+        except Exception:
+            pass
+
+    def query(self, after=0, level="", q="", limit=500):
+        """after보다 새 줄 중 level 이상, q가 들어간 것 (오래된 것부터, 최근 limit줄)"""
+        rank = logging.getLevelName(level.upper()) if level else 0
+        rank = rank if isinstance(rank, int) else 0
+        q = q.casefold()
+        rows = [it for it in list(self.items) if it["id"] > after
+                and logging.getLevelName(it["level"]) >= rank
+                and (not q or q in it["message"].casefold() or q in it["logger"].casefold())]
+        return rows[-limit:]
+
+
+LOGS = _LogBuffer()
+LOG_FILE_NAME = "ymplayer.log"
+
+
+def log_file_path():
+    return os.path.join(config_store.DATA_DIR, "logs", LOG_FILE_NAME)
+
+
+def setup_file_log():
+    """데이터 폴더/logs/ymplayer.log 에도 남긴다 (5MB씩 3개까지 돌려 씀) - 서버를 다시 켜도 지난 로그를 받을 수 있게"""
+    from logging.handlers import RotatingFileHandler
+    try:
+        os.makedirs(os.path.dirname(log_file_path()), exist_ok=True)
+        fh = RotatingFileHandler(log_file_path(), maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8")
+    except OSError as e:
+        log.warning("로그 파일을 열지 못했습니다 (%s): %s", log_file_path(), e)
+        return
+    fh.setLevel(logging.INFO)
+    fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    fh.addFilter(lambda r: r.name != "aiohttp.access")
+    logging.getLogger().addHandler(fh)
 STARTED = time.time()
 
 HTTP = web.AppKey("http", ClientSession)
@@ -3192,6 +3247,37 @@ async def admin_status(request):
 
 
 @admin_only
+async def admin_logs(request):
+    """최근 로그 (메모리) - ?after=마지막 id 로 새 줄만, level=WARNING 등, q=찾을 말"""
+    qs = request.query
+    try:
+        after, limit = int(qs.get("after") or 0), max(1, min(int(qs.get("limit") or 500), 3000))
+    except ValueError:
+        raise web.HTTPBadRequest(text="after/limit는 숫자")
+    rows = LOGS.query(after, qs.get("level", ""), qs.get("q", "").strip(), limit)
+    return web.json_response({"success": True, "items": rows, "last": LOGS.seq, "keep": LOGS.items.maxlen,
+                              "file": os.path.exists(log_file_path())})
+
+
+@admin_only
+async def admin_logs_download(request):
+    """로그 파일 받기 (지난 것부터 이어 붙임). 파일이 없으면 메모리의 최근 로그"""
+    path = log_file_path()
+    parts = [f"{path}.{i}" for i in (3, 2, 1)] + [path]
+    chunks = []
+    for f in parts:
+        if os.path.exists(f):
+            with open(f, encoding="utf-8", errors="replace") as fp:
+                chunks.append(fp.read())
+    if not chunks:
+        chunks = [f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(it['time']))} {it['level']} {it['logger']}: {it['message']}\n"
+                  for it in LOGS.items]
+    name = f"ymplayer-{time.strftime('%Y%m%d-%H%M%S')}.log"
+    return web.Response(text="".join(chunks), content_type="text/plain", charset="utf-8",
+                        headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@admin_only
 async def admin_update_get(request):
     """GitHub에 새 버전이 있는지 (마지막으로 확인한 결과, 6시간마다 다시 봄)"""
     return web.json_response({"success": True, **request.app[UPDATES].info()})
@@ -3878,6 +3964,8 @@ def create_app(require_auth=True):
     root = logging.getLogger()
     if RECENT not in root.handlers:
         root.addHandler(RECENT)
+    if LOGS not in root.handlers:
+        root.addHandler(LOGS)
     app[REQUIRE_AUTH] = require_auth
     app[CHANNEL_CACHE] = {}
     app[SWR_TASKS] = {}
@@ -3929,6 +4017,8 @@ def create_app(require_auth=True):
     app.router.add_put("/api/admin/branding/icon", branding_icon_put)
     app.router.add_delete("/api/admin/branding/icon", branding_icon_delete)
     app.router.add_get("/api/admin/status", admin_status)
+    app.router.add_get("/api/admin/logs", admin_logs)
+    app.router.add_get("/api/admin/logs/download", admin_logs_download)
     app.router.add_get("/api/admin/backup", admin_backup)
     app.router.add_get("/api/admin/update", admin_update_get)
     app.router.add_get("/api/admin/mcp", admin_mcp_list)
@@ -4030,6 +4120,7 @@ def create_app(require_auth=True):
 
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    setup_file_log()
     host = os.environ.get("MP_HOST", "127.0.0.1")
     port = int(os.environ.get("MP_PORT", "8899"))
     if host not in ("127.0.0.1", "localhost", "::1") and auth.needs_setup() and not (

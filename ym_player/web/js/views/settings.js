@@ -97,9 +97,10 @@ export async function renderSettings(main, _params, query, ctx) {
         mcp: h('div', { class: 'settings-pane' }),
         discord: h('div', { class: 'settings-pane' }),
         mirror: h('div', { class: 'settings-pane' }),
+        logs: h('div', { class: 'settings-pane' }),
         thanks: h('div', { class: 'settings-pane' }),
     };
-    const TABS = [['sources', 'layer-group', '소스'], ['general', 'sliders', '공통'], ['users', 'users', '사용자'], ['status', 'heart-pulse', '상태'], ['cache', 'hard-drive', '캐시'], ['look', 'palette', '화면'], ['backup', 'box-archive', '백업'], ['mcp', 'robot', 'MCP'], ['discord', 'comment-dots', '디스코드'], ['mirror', 'cloud-arrow-up', '자동 올리기'], ['thanks', 'heart', 'Thanks to']];
+    const TABS = [['sources', 'layer-group', '소스'], ['general', 'sliders', '공통'], ['users', 'users', '사용자'], ['status', 'heart-pulse', '상태'], ['cache', 'hard-drive', '캐시'], ['look', 'palette', '화면'], ['backup', 'box-archive', '백업'], ['mcp', 'robot', 'MCP'], ['discord', 'comment-dots', '디스코드'], ['mirror', 'cloud-arrow-up', '자동 올리기'], ['logs', 'file-lines', '로그'], ['thanks', 'heart', 'Thanks to']];
     const tabBar = h('div', { class: 'tabs', role: 'tablist' });
     const showTab = (key) => {
         if (!panes[key]) key = 'sources';
@@ -115,6 +116,7 @@ export async function renderSettings(main, _params, query, ctx) {
         if (key === 'mcp') renderMcp(panes.mcp);
         if (key === 'discord') renderDiscord(panes.discord);
         if (key === 'mirror') renderMirror(panes.mirror);
+        if (key === 'logs') renderLogs(panes.logs);
     };
     TABS.forEach(([key, ic, label]) => tabBar.appendChild(h('button', {
         class: 'tab', role: 'tab', dataset: { tab: key }, on: { click: () => showTab(key) },
@@ -948,6 +950,59 @@ async function renderStatus(pane) {
                 h('span', { class: 'warn-time', text: new Date(w.time * 1000).toLocaleString() }),
                 h('span', { class: 'warn-msg', text: w.message, title: w.logger })))
             : h('p', { class: 'muted', text: '서버를 켠 뒤로 경고가 없습니다.' }))));
+}
+
+/** 서버 로그: 최근 로그(메모리, 접속 기록 빼고)를 수준·찾을 말로 걸러 보기, 5초마다 새 줄, 파일로 받기 */
+async function renderLogs(pane) {
+    const state = { level: storeGet('yp_log_level', ''), q: '', last: 0, rows: [], live: true, timer: 0 };
+    const levelSel = h('select', { class: 'select', on: { change: () => { state.level = levelSel.value; storeSet('yp_log_level', state.level); reload(); } } },
+        [['', '전체 (INFO 이상)'], ['WARNING', '경고 이상'], ['ERROR', '오류만']].map(([v, t]) => h('option', { value: v, text: t, selected: v === state.level })));
+    let qTimer = 0;
+    const qInput = h('input', { class: 'input', type: 'search', placeholder: '찾을 말 (내용·모듈)', on: { input: () => {
+        clearTimeout(qTimer); qTimer = setTimeout(() => { state.q = qInput.value.trim(); reload(); }, 300);
+    } } });
+    const liveBtn = h('button', { class: 'btn btn-sm', on: { click: () => { state.live = !state.live; drawLive(); } } });
+    const drawLive = () => clear(liveBtn).append(icon(state.live ? 'pause' : 'play'), state.live ? ' 실시간 (5초)' : ' 멈춤');
+    drawLive();
+    const meta = h('span', { class: 'muted log-meta' });
+    const list = h('div', { class: 'src-card log-list' });
+    clear(pane).append(
+        h('div', { class: 'toolbar pane-toolbar log-tools' }, levelSel, qInput, liveBtn,
+            h('button', { class: 'btn btn-sm', on: { click: () => reload() } }, icon('rotate'), ' 새로고침'),
+            h('a', { class: 'btn btn-sm', href: '/api/admin/logs/download', download: '' }, icon('download'), ' 파일 받기')),
+        meta, list);
+    const fmtTime = (t) => { const d = new Date(t * 1000); return `${d.toLocaleDateString()} ${d.toLocaleTimeString()}`; };
+    const row = (it) => h('div', { class: `log-row ${it.level.toLowerCase()}` },
+        h('span', { class: 'log-time', text: fmtTime(it.time) }),
+        h('span', { class: 'log-level', text: it.level }),
+        h('span', { class: 'log-logger', text: it.logger }),
+        h('span', { class: 'log-msg', text: it.message }));
+    const draw = (fresh, keep) => {
+        meta.textContent = `서버를 켠 뒤 최근 ${keep}줄까지 보관 · 요청마다 찍히는 접속 기록은 빼고 · 새 줄이 위`;
+        if (!state.rows.length) { clear(list).append(h('p', { class: 'muted', text: '보여 줄 로그가 없습니다.' })); return; }
+        if (fresh === null) { clear(list).append(...state.rows.slice().reverse().map(row)); return; }
+        if (list.querySelector('p.muted')) clear(list);
+        fresh.forEach((it) => list.prepend(row(it)));
+        while (list.childElementCount > 1500) list.lastChild.remove();
+    };
+    const fetchRows = async (after) => api(`/api/admin/logs?after=${after}&limit=1500&level=${encodeURIComponent(state.level)}&q=${encodeURIComponent(state.q)}`);
+    async function reload() {
+        try {
+            const res = await fetchRows(0);
+            state.rows = res.items; state.last = res.last; draw(null, res.keep);
+        } catch (e) { clear(list).append(h('p', { class: 'muted error', text: e.message })); }
+    }
+    clearInterval(pane._logTimer);
+    pane._logTimer = setInterval(async () => {
+        if (!pane.isConnected || pane.classList.contains('hidden')) { clearInterval(pane._logTimer); return; }
+        if (!state.live || document.hidden) return;
+        try {
+            const res = await fetchRows(state.last);
+            state.last = res.last;
+            if (res.items.length) { state.rows.push(...res.items); state.rows = state.rows.slice(-1500); draw(res.items, res.keep); }
+        } catch { /* 다음 번에 다시 */ }
+    }, 5000);
+    await reload();
 }
 
 /** 서버가 응답을 만드는 데 오래 걸린 요청 (경로마다 평균이 큰 순, 서버를 켠 뒤로 - 영상·그림·화면 파일은 빼고) */
