@@ -406,6 +406,14 @@ class Mirror:
         self._head_info = {}     # (rclone 원격, 파일) -> 앞부분 ffprobe 결과 (자막 트랙 확인용)
         self._shot_fail = {}     # (규칙, 항목) -> (시각, 오류) - 장면 뽑기에 실패한 것 (SHOT_RETRY_SEC 뒤에 다시)
 
+    _job_task = None      # 지금 올리는 작업 (취소용)
+    _cancel_req = None    # 직접 취소한 (규칙, 키)
+
+    def cancelled(self):
+        """[스레드에서도] 지금 작업을 취소했는지 - 서버로 복사하는 중이면 복사를 멈춘다"""
+        return bool(self._cancel_req and self.current_job and
+                    self._cancel_req == (self.current_job.get("rule"), self.current_job.get("key")))
+
     def wake(self):
         self._wake.set()
 
@@ -507,6 +515,11 @@ class Mirror:
                     errors.append(f"{rule['section_title']}: {e}")
                     continue
                 if "baseline" not in rs:      # 처음: 지금 있는 파일은 올리지 않는다 (이름을 기억해 둠)
+                    if not files:
+                        # 비어 보이면 기준을 잡지 않는다 - 마운트가 아직 안 붙었거나 목록을 못 받은 것일 수 있고, 빈 기준을 잡으면
+                        # 다음 확인 때 폴더 전체가 '새 파일'로 줄에 들어간다. 정말 빈 폴더면 첫 파일이 생길 때 기준을 잡는다
+                        errors.append(f"{rule['section_title']}: 폴더가 비어 보여 아직 기준을 잡지 않았습니다 (마운트·경로 확인)")
+                        continue
                     rs["baseline"] = int(time.time())
                     rs["known"] = [folder_watch.key_hash(f["key"]) for f in files]
                     rs["sizes"] = {}
@@ -666,6 +679,68 @@ class Mirror:
         self.queue = [j for j in self.queue if j is running or not (j["rule"] == rule_id and j["key"] == key)]
         return w.get("title", key)
 
+    def _forget(self, state, rule_id, key, title, note):
+        """다시 올리지 않게 표시하고 기록에 남긴다 (폴더 규칙은 그 파일 이름을 기억해 다시 줄에 넣지 않는다)"""
+        rs = state["rules"].setdefault(rule_id, {"done": [], "fails": {}})
+        rs.setdefault("fails", {})[key] = GIVE_UP
+        (rs.get("retry") or {}).pop(key, None)
+        (rs.get("waiting") or {}).pop(key, None)
+        if "known" in rs:   # 폴더 규칙
+            h = folder_watch.key_hash(key)
+            if h not in rs["known"]:
+                rs["known"].append(h)
+        drop_shot(rule_id, key)
+        state["history"] = [{"title": title, "ok": False, "note": note, "at": int(time.time()), "key": key,
+                             "subs": "", "channel": ""}, *state["history"]][:KEEP_HISTORY]
+
+    def cancel_item(self, rule_id, key):
+        """올릴 차례·자막 기다림·다시 시도 대기·지금 올리는 중인 항목 하나를 올리지 않는다 (다시 들어오지 않게)"""
+        state = load_state()
+        rs = state["rules"].get(rule_id) or {}
+        job = next((j for j in self.queue if j["rule"] == rule_id and j["key"] == key), None)
+        title = (job or {}).get("title") or ((rs.get("waiting") or {}).get(key) or {}).get("title") \
+            or ((rs.get("retry") or {}).get(key) or {}).get("title")
+        running = bool(self.current_job and self.current_job.get("rule") == rule_id and self.current_job.get("key") == key)
+        if not title and not running:
+            raise ValueError("진행 목록에 없는 항목입니다 (이미 끝났거나 빠졌을 수 있음).")
+        title = title or key
+        if running:   # 지금 올리는 중: 그 작업을 멈춘다 (받기·복사·인코딩·올리기 어디에서든) - 기록은 run_queue가 남긴다
+            self._cancel_req = (rule_id, key)
+            if self._job_task and not self._job_task.done():
+                self._job_task.cancel()
+            return title
+        self._forget(state, rule_id, key, title, "건너뜀: 직접 취소")
+        save_state(state)
+        self.queue = [j for j in self.queue if not (j["rule"] == rule_id and j["key"] == key)]
+        return title
+
+    def cancel_all(self, rule_id=None):
+        """진행 목록 전체(rule_id가 있으면 그 규칙만)를 취소한다 - 지금 올리는 중인 것도. 취소한 수를 돌려준다"""
+        state = load_state()
+        items = {}
+        for j in self.queue:
+            if rule_id in (None, j["rule"]):
+                items[(j["rule"], j["key"])] = j["title"]
+        for rid, rs in state["rules"].items():
+            if rule_id not in (None, rid):
+                continue
+            for k, w in list((rs.get("waiting") or {}).items()) + list((rs.get("retry") or {}).items()):
+                items.setdefault((rid, k), w.get("title", k))
+        cur = (self.current_job or {}).get("rule"), (self.current_job or {}).get("key")
+        n = 0
+        for (rid, k), title in items.items():
+            if (rid, k) == cur:
+                continue
+            self._forget(state, rid, k, title, "건너뜀: 직접 취소 (전체 취소)")
+            n += 1
+        save_state(state)
+        keep = [j for j in self.queue if (j["rule"], j["key"]) == cur]
+        self.queue = keep + [j for j in self.queue if j not in keep and rule_id not in (None, j["rule"])]
+        if cur[0] and rule_id in (None, cur[0]):
+            self.cancel_item(*cur)
+            n += 1
+        return n
+
     async def run_queue(self, st):
         rules = {r["id"]: r for r in st["rules"]}
         while self.queue:
@@ -676,10 +751,19 @@ class Mirror:
             rule = rules.get(job["rule"])
             ok, note, waiting = False, "", False
             self.current_job, self.subs_label = {"rule": job["rule"], "key": job["key"]}, ""
+            cancelled = False
+            self._cancel_req = None
             if rule:
                 try:
-                    note = await self.upload(rule, job["key"], st["max_gb"], test=job.get("test") or job.get("force"))
+                    self._job_task = asyncio.ensure_future(self.upload(rule, job["key"], st["max_gb"], test=job.get("test") or job.get("force")))
+                    note = await self._job_task
                     ok = True
+                except asyncio.CancelledError:
+                    if self._cancel_req != (job["rule"], job["key"]):   # 직접 취소가 아니면 (서버 끄기 등) 그대로 멈춘다
+                        if self._job_task and not self._job_task.done():
+                            self._job_task.cancel()
+                        raise
+                    cancelled = True
                 except Waiting:
                     waiting = True
                 except Exception as e:
@@ -690,9 +774,18 @@ class Mirror:
                         continue
                     note = str(e) or type(e).__name__
                     log.warning("자동 올리기 실패 (%s): %s", job["title"], note)
-            self.queue.pop(0)
+            self._job_task = None
+            if self.queue and self.queue[0] is job:
+                self.queue.pop(0)
+            else:
+                self.queue = [j for j in self.queue if j is not job]
             self.current = self.current_job = None
             state = load_state()
+            if cancelled:   # 올리던 중에 직접 취소
+                self._forget(state, job["rule"], job["key"], job["title"], "건너뜀: 올리던 중 직접 취소")
+                save_state(state)
+                self._cancel_req = None
+                continue
             rs = state["rules"].setdefault(job["rule"], {"done": [], "fails": {}})
             if waiting:   # 자막이 생길 때까지 (기록에는 남기지 않고 상태의 "자막 기다리는 중"에)
                 rs.setdefault("waiting", {}).setdefault(job["key"], {"title": job["title"], "since": int(time.time())})
@@ -1109,6 +1202,8 @@ class Mirror:
         self.current = {"title": title, "phase": "서버로 복사하는 중", "done": 0, "total": size}
 
         def got(n):
+            if self.cancelled():   # 복사하는 스레드는 작업 취소로 멈추지 않으므로 직접
+                raise RuntimeError("직접 취소")
             if self.current:
                 self.current["done"] = n
         await asyncio.to_thread(folder_watch.copy_file, src_path, dest, got)

@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 142,
+        "version": "1.1.105",
+        "date": "2026-11-13",
+        "title": "자동 올리기: 진행 목록의 항목마다 [취소](올리는 중인 것도 멈춤)와 [전체 취소], 취소한 것은 다시 올리지 않음. 폴더 규칙이 처음 훑을 때 폴더가 비어 보이면 기준을 잡지 않음(폴더 전체가 올라가던 문제)"
+    },
+    {
         "pr": 141,
         "version": "1.1.104",
         "date": "2026-11-13",

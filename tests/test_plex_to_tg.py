@@ -808,3 +808,108 @@ def test_upload_hours(data):
         assert len(mirror.queue) == 1 and mirror.off_hours == closed     # 처리하지 않고 남겨 둠
         assert mirror.status()["off_hours"] == closed
     asyncio.run(main())
+
+
+def test_cancel_items_and_all(data, monkeypatch):
+    """진행 목록에서 하나씩 / 전체 취소 - 취소한 것은 다시 줄에 들어오지 않는다 (폴더 규칙은 파일 이름을 기억). 올리는 중인 것도 멈춘다"""
+    drive = data / "drive"
+    drive.mkdir()
+    for n in ("A.mkv", "B.mkv", "C.mkv"):
+        (drive / n).write_bytes(b"x")
+    cfg = config_store.load()
+    cfg["plex_to_tg"] = plex_to_tg.clean_settings({"rules": [{"id": "f", "kind": "folder", "folder": str(drive), "tg": "tg", "channel": "-1",
+                                                               "wait_subs": False}]})
+    config_store.save(cfg)
+    mirror = plex_to_tg.Mirror(None, None, lambda sid: FakeTg(), lambda: None)
+    state = plex_to_tg.load_state()
+    state["rules"]["f"] = {"baseline": 1, "known": [], "done": [], "fails": {}, "sizes": {},
+                           "retry": {"R.mkv": {"title": "R", "at": 9e9}}, "waiting": {"W.mkv": {"title": "W", "since": 1}}}
+    plex_to_tg.save_state(state)
+    mirror.queue = [{"rule": "f", "key": k, "title": k[0]} for k in ("A.mkv", "B.mkv", "C.mkv")]
+
+    assert mirror.cancel_item("f", "B.mkv") == "B"
+    assert [j["key"] for j in mirror.queue] == ["A.mkv", "C.mkv"]
+    st = plex_to_tg.load_state()
+    assert st["rules"]["f"]["fails"]["B.mkv"] == plex_to_tg.GIVE_UP and st["history"][0]["note"] == "건너뜀: 직접 취소"
+    assert mirror.cancel_item("f", "R.mkv") == "R" and "R.mkv" not in plex_to_tg.load_state()["rules"]["f"]["retry"]
+    with pytest.raises(ValueError):
+        mirror.cancel_item("f", "nope.mkv")
+
+    async def main():
+        await mirror.check_all()                                 # 다시 훑어도 취소한 B는 줄에 들어오지 않는다
+        assert sorted(j["key"] for j in mirror.queue) == ["A.mkv", "C.mkv", "W.mkv"]   # (자막 기다리던 W도 다시 확인하러 줄에)
+        # 전체 취소: 줄 + 자막 기다림 모두
+        assert mirror.cancel_all() == 3
+        assert mirror.queue == [] and not plex_to_tg.load_state()["rules"]["f"]["waiting"]
+        await mirror.check_all()
+        assert mirror.queue == []                                # 다시 들어오지 않는다
+
+        # 올리는 중인 것 취소: 작업이 멈추고, 기록에 남고, 다음 것은 그대로 올린다
+        started = asyncio.Event()
+        uploaded = []
+
+        async def slow_upload(rule, key, max_gb, test=False):
+            if key == "D.mkv":
+                started.set()
+                await asyncio.sleep(30)
+            uploaded.append(key)
+            return "ok"
+        monkeypatch.setattr(mirror, "upload", slow_upload)
+        mirror.queue = [{"rule": "f", "key": "D.mkv", "title": "D"}, {"rule": "f", "key": "E.mkv", "title": "E"}]
+        st = plex_to_tg.load_settings()
+        run = asyncio.ensure_future(mirror.run_queue(st))
+        await asyncio.wait_for(started.wait(), 5)
+        mirror.current = {"title": "D", "phase": "인코딩 중"}
+        assert mirror.cancel_item("f", "D.mkv") == "D"
+        await asyncio.wait_for(run, 5)
+        assert uploaded == ["E.mkv"] and mirror.queue == []
+        hist = plex_to_tg.load_state()["history"]
+        assert hist[1]["title"] == "D" and hist[1]["note"] == "건너뜀: 올리던 중 직접 취소" and hist[0]["title"] == "E" and hist[0]["ok"]
+    asyncio.run(main())
+
+
+def test_cancel_api(data):
+    from aiohttp import CookieJar
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from ym_player import auth, server
+    auth._fails.clear()
+    auth.create_user("boss", "secret1", "admin")
+
+    async def main():
+        app = server.create_app(require_auth=True)
+        c = TestClient(TestServer(app), cookie_jar=CookieJar(unsafe=True))
+        await c.start_server()
+        try:
+            await c.post("/api/auth/login", json={"username": "boss", "password": "secret1"})
+            app[server.MIRROR].queue = [{"rule": "r", "key": "1", "title": "하나"}, {"rule": "r", "key": "2", "title": "둘"}]
+            r = await (await c.post("/api/admin/plex-tg/item", json={"rule": "r", "key": "1", "action": "cancel"})).json()
+            assert r == {"success": True, "title": "하나"} and [j["key"] for j in app[server.MIRROR].queue] == ["2"]
+            r = await (await c.post("/api/admin/plex-tg/item", json={"action": "cancel_all"})).json()
+            assert r == {"success": True, "count": 1} and app[server.MIRROR].queue == []
+            assert (await c.post("/api/admin/plex-tg/item", json={"rule": "r", "key": "9", "action": "cancel"})).status == 400
+        finally:
+            await c.close()
+    asyncio.run(main())
+
+
+def test_empty_first_scan_does_not_set_baseline(data):
+    """처음 훑을 때 폴더가 비어 보이면(마운트 전) 기준을 잡지 않는다 - 잡으면 다음에 폴더 전체가 올라간다"""
+    drive = data / "late"
+    drive.mkdir()
+    cfg = config_store.load()
+    cfg["plex_to_tg"] = plex_to_tg.clean_settings({"rules": [{"id": "f", "kind": "folder", "folder": str(drive), "tg": "tg", "channel": "-1",
+                                                               "wait_subs": False}]})
+    config_store.save(cfg)
+    mirror = plex_to_tg.Mirror(None, None, lambda sid: FakeTg(), lambda: None)
+
+    async def main():
+        with pytest.raises(RuntimeError, match="비어 보여"):
+            await mirror.check_all()
+        assert "baseline" not in plex_to_tg.load_state()["rules"]["f"]
+        for n in ("old1.mkv", "old2.mkv"):        # 마운트가 붙었다 - 이미 있던 파일들
+            (drive / n).write_bytes(b"x")
+        await mirror.check_all()                  # 이제 기준을 잡고 (올리지 않음)
+        await mirror.check_all()
+        assert mirror.queue == []
+    asyncio.run(main())

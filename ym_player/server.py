@@ -3333,7 +3333,9 @@ async def admin_mirror_check(request):
 
 @admin_only
 async def admin_mirror_item(request):
-    """자막 기다리는 항목 하나: {rule, key, action: "upload"(기다리지 않고 지금 올리기) | "drop"(빼기)}"""
+    """진행 목록의 항목: {rule, key, action}
+    upload(자막 기다리는 것을 지금 올리기) | drop(자막 기다리는 것 빼기) | cancel(올릴 차례·기다림·다시 시도·올리는 중인 것 하나 취소)
+    | cancel_all(진행 목록 전체 취소 - rule이 있으면 그 규칙만)"""
     body = await _json_body(request)
     mirror, rule, key = request.app[MIRROR], str(body.get("rule") or ""), str(body.get("key") or "")
     try:
@@ -3341,8 +3343,13 @@ async def admin_mirror_item(request):
             title = mirror.force_item(rule, key)
         elif body.get("action") == "drop":
             title = mirror.drop_item(rule, key)
+        elif body.get("action") == "cancel":
+            title = mirror.cancel_item(rule, key)
+        elif body.get("action") == "cancel_all":
+            n = mirror.cancel_all(rule or None)
+            return web.json_response({"success": True, "count": n})
         else:
-            return _json_error(400, "action은 upload 또는 drop입니다.")
+            return _json_error(400, "action은 upload, drop, cancel, cancel_all 중 하나입니다.")
     except ValueError as e:
         return _json_error(400, str(e))
     return web.json_response({"success": True, "title": title})

@@ -189,7 +189,10 @@ def test_reading_api(data, monkeypatch):
             async def down(self, url, accept="text/html"):
                 raise brunch.BrunchError("브런치에 연결하지 못했습니다: 테스트")
             monkeypatch.setattr(brunch.Brunch, "_get", down)
-            r = await c.get("/api/brunch/br/list?day=FRIDAY")
+            # 아직 받은 적 없는 요일로 (상태 확인이 오늘 요일 목록을 받아 기억해 두므로 - 금요일에 돌리면 FRIDAY가 이미 있다)
+            import datetime as _dt
+            unseen = [d for d in ("SATURDAY", "SUNDAY") if d != ("MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY")[_dt.datetime.now().weekday()]][0]
+            r = await c.get(f"/api/brunch/br/list?day={unseen}")
             assert r.status == 502 and "연결하지 못했습니다" in (await r.json())["error"]
         finally:
             await c.close()
