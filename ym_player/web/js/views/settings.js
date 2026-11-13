@@ -1488,22 +1488,27 @@ async function renderMirror(pane) {
         }
         const curKey = cur ? `${cur.rule}/${cur.key}` : '';
         const shown = new Set([curKey]);
-        for (const q of s.queue) {
-            const k = `${q.rule}/${q.key}`;
-            if (shown.has(k) || waitKeys.has(k)) continue;
-            shown.add(k);
-            live.push(row(q.title, chip('queue', '올릴 차례'), '확인 전', ''));
-        }
-        // 자막 기다림: 자막을 영상에 입힌 하드섭은 자동으로 알 수 없으니 직접 [지금 올리기] / [빼기]
-        const act = (w, action, label, ask) => h('button', { class: 'btn btn-sm', on: { click: async (e) => {
+        // 항목 단추: 자막 기다림은 [지금 올리기]/[빼기], 나머지는 [취소] (다시 들어오지 않게)
+        const act = (w, action, label, ask) => h('button', { class: `btn btn-sm${action === 'cancel' ? ' danger' : ''}`, on: { click: async (e) => {
             if (ask && !confirm(ask)) return;
             e.currentTarget.disabled = true;
             try {
                 await api('/api/admin/plex-tg/item', { method: 'POST', json: { rule: w.rule, key: w.key, action } });
-                toast(action === 'upload' ? `"${w.title}"을(를) 지금 올립니다.` : `"${w.title}"을(를) 뺐습니다.`);
+                toast(action === 'upload' ? `"${w.title}"을(를) 지금 올립니다.` : action === 'cancel' ? `"${w.title}"을(를) 취소했습니다.` : `"${w.title}"을(를) 뺐습니다.`);
             } catch (err) { toast(err.message, 'error'); }
             paintStatus();
         } } }, label);
+        const cancelBtn = (w, running) => act(w, 'cancel', '취소',
+            running ? `지금 올리는 "${w.title}"을(를) 멈추고 취소할까요? (다시 올리지 않음)` : null);
+        if (cur && live.length) live[0].lastChild.append(h('span', { class: 'mirror-actions' }, cancelBtn({ rule: cur.rule, key: cur.key, title: cur.title }, true)));
+        for (const q of s.queue) {
+            const k = `${q.rule}/${q.key}`;
+            if (shown.has(k) || waitKeys.has(k)) continue;
+            shown.add(k);
+            const r = row(q.title, chip('queue', '올릴 차례'), '확인 전', '');
+            r.lastChild.append(h('span', { class: 'mirror-actions' }, cancelBtn(q)));
+            live.push(r);
+        }
         for (const [k, w] of waitKeys) {
             if (shown.has(k)) continue;
             const r = row(w.title, chip('wait', '자막 기다림'), '없음', `${when(w.since)}부터`);
@@ -1525,7 +1530,9 @@ async function renderMirror(pane) {
         for (const x of s.retry || []) {
             const k = `${x.rule}/${x.key}`;
             if (shown.has(k)) continue;
-            live.push(row(x.title, chip('queue', '다시 시도 대기'), '', `${x.at > Date.now() / 1000 ? `${when(x.at)}에` : '곧'} 다시 (${Math.max(1, x.tries)}/3)`));
+            const r = row(x.title, chip('queue', '다시 시도 대기'), '', `${x.at > Date.now() / 1000 ? `${when(x.at)}에` : '곧'} 다시 (${Math.max(1, x.tries)}/3)`);
+            r.lastChild.append(h('span', { class: 'mirror-actions' }, cancelBtn(x)));
+            live.push(r);
         }
         const hist = s.history.map((x) => row(x.title,
             x.ok ? chip('ok', '완료') : String(x.note || '').startsWith('건너뜀') ? chip('skip', '건너뜀') : chip('fail', '실패'),
@@ -1538,7 +1545,16 @@ async function renderMirror(pane) {
             s.error ? h('p', { class: 'muted error', text: s.error }) : null,
             s.off_hours ? h('p', { class: 'muted', text: `지금은 올리기 시간대(${s.off_hours.replace('-', '시~')}시)가 아니라 쉬는 중 - 줄에 쌓아 두었다가 그 시간에 올립니다.` }) : null,
             h('p', { class: 'muted', text: s.last_check ? `마지막 확인 ${new Date(s.last_check * 1000).toLocaleString()}` : '아직 확인 전' }),
-            h('h4', { text: `진행 (${live.length})` }),
+            h('div', { class: 'mirror-live-head' }, h('h4', { text: `진행 (${live.length})` }),
+                live.length > 1 ? h('button', { class: 'btn btn-sm danger', on: { click: async (e) => {
+                    if (!confirm(`진행 목록 ${live.length}개를 모두 취소할까요? (지금 올리는 것도 멈추고, 취소한 것은 다시 올리지 않음)`)) return;
+                    e.currentTarget.disabled = true;
+                    try {
+                        const r = await api('/api/admin/plex-tg/item', { method: 'POST', json: { action: 'cancel_all' } });
+                        toast(`${r.count}개를 취소했습니다.`);
+                    } catch (err) { toast(err.message, 'error'); }
+                    paintStatus();
+                } } }, icon('ban'), ' 전체 취소') : null),
             live.length ? h('div', { class: 'mirror-table', role: 'table' }, head(), ...live) : h('p', { class: 'muted', text: '올릴 것이 없습니다.' }),
             h('h4', { text: '최근 기록' }),
             hist.length ? h('div', { class: 'mirror-table', role: 'table' }, head(), ...hist) : h('p', { class: 'muted', text: '아직 올린 것이 없습니다.' }),
