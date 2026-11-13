@@ -8,7 +8,7 @@
   (data/plex_to_tg.json).
 - 캡션 첫 줄은 "작품 S01E02 - 제목" / "영화 (2026)" 모양이라 YMPlayer 텔레그램 목록에서 제목·회차 묶기가 그대로 된다.
 - 텔레그램 일반 계정은 파일 하나 2GB(프리미엄 4GB)까지 - 넘는 파일은 ffmpeg로 시간을 나눠(각 조각이 따로 재생되게)
-  "이름 part1.mkv", "이름 part2.mkv"…로 올린다. YMPlayer는 이 조각들을 한 묶음으로 이어서 튼다.
+  "이름_0000.mp4", "이름_0001.mp4"…로 올린다 (0부터, 4자리). YMPlayer는 이 조각들을 한 묶음으로 이어서 튼다.
 - 자막 기다리기(규칙마다, 기본 켬): Plex 항목에 자막(내장이든 외부든)이 하나도 없으면 올리지 않고 기다렸다가
   생기면 올린다 (기다릴 날 수를 정하면 그 뒤엔 자막 없이). 외부 자막 파일은 영상 뒤에 같은 이름으로 같이 올려
   YMPlayer가 영상에 자동으로 붙인다 (나눈 영상이면 자막도 조각 시간에 맞춰 자른다).
@@ -64,6 +64,11 @@ STREAMABLE = {".mp4", ".m4v", ".mov"}   # 텔레그램 앱에서 받기 전에 �
 SUB_EXT = {"srt": "srt", "subrip": "srt", "ass": "ass", "ssa": "ass", "smi": "smi", "sami": "smi", "vtt": "vtt", "webvtt": "vtt"}
 MAX_PARTS = 10
 PART_LIMIT = 1000 * 1024 * 1024   # 텔레그램 한도 1GB 단위 (2GB = 2000MiB = 4000조각 x 512KB) - max_gb를 곱해 쓴다
+
+
+def part_name(stem, index, ext):
+    """나눠 올리는 조각의 이름: "Hope.2026.1080p-KyoGo" 0 ".mp4" -> "Hope.2026.1080p-KyoGo_0000.mp4" (0부터, 4자리)"""
+    return f"{stem}_{index:04d}{ext}"
 
 
 _KO_FONT = None
@@ -1129,7 +1134,7 @@ class Mirror:
         return ", ".join(notes)
 
     async def _send_pieces(self, client, peer, pieces, name, caption, width, height, thumb, sub_files, title, tmp, msgs):
-        """영상 조각들을 차례로 올리고(나눴으면 이름에 partN, 캡션에 (i/n)) 그 뒤에 자막 파일. 올린 메시지 id는 msgs에.
+        """영상 조각들을 차례로 올리고(나눴으면 이름 끝에 _0000, _0001…, 캡션에 (i/n)) 그 뒤에 자막 파일. 올린 메시지 id는 msgs에.
         돌려주는 값: 올린 자막 파일 수"""
         from telethon.tl.types import DocumentAttributeFilename, DocumentAttributeVideo
         stem, ext = os.path.splitext(name)
@@ -1137,7 +1142,7 @@ class Mirror:
         sent_subs = 0
         for i, (path, start, dur) in enumerate(pieces, 1):
             many = len(pieces) > 1
-            vname = f"{stem} part{i}{ext}" if many else name
+            vname = part_name(stem, i - 1, ext) if many else name
             cap = caption
             if many:   # 첫 줄(제목)은 그대로 두고 그 아래에 (1/2)
                 first, _, rest = caption.partition("\n")
@@ -1323,7 +1328,7 @@ class Mirror:
             seg = duration / n
             out = []
             for i in range(n):
-                path = f"{base} part{i + 1}{ext}"
+                path = part_name(base, i, ext)
                 self.current = {"title": title, "phase": f"{n}개로 나누는 중 ({i + 1}/{n})", "done": i, "total": n}
                 args = ["-ss", f"{i * seg:.3f}", "-i", src_path] + (["-t", f"{seg:.3f}"] if i < n - 1 else []) + \
                        ["-map", "0", "-c", "copy", "-avoid_negative_ts", "make_zero"] + \

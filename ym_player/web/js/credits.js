@@ -105,6 +105,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 143,
+        "version": "1.1.106",
+        "date": "2026-11-13",
+        "title": "자동 올리기: 한도(2GB/4GB)를 넘어 나눠 올리는 조각 이름을 '이름 part1/part2' 대신 '이름_0000.mp4', '이름_0001.mp4'로 (자막 파일도 같은 이름)"
+    },
+    {
         "pr": 142,
         "version": "1.1.105",
         "date": "2026-11-13",

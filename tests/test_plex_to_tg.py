@@ -3,7 +3,7 @@ import asyncio
 
 import pytest
 
-from ym_player import config_store, plex_to_tg
+from ym_player import config_store, plex_to_tg, telegram_src
 
 pytest.importorskip("aiohttp")
 pytest.importorskip("telethon")
@@ -159,7 +159,7 @@ def test_mirror_uploads_new_items(data, tmp_path, monkeypatch):
             tg.fail = 1                                  # 첫 번째는 한 번 실패
             await mirror.run_queue(st)
             names = [x["name"] for x in tg.sent]
-            assert names == ["Big part1.mp4", "Big part1.ko.srt", "Big part2.mp4", "Big part2.ko.srt"], names   # 조각도 mp4
+            assert names == ["Big_0000.mp4", "Big_0000.ko.srt", "Big_0001.mp4", "Big_0001.ko.srt"], names   # 조각도 mp4, 이름_0000부터
             p1, s1, p2, s2 = tg.sent
             assert p1["caption"] == "큰 영화 (2026)\n(1/2)\n\n새 영화" and p1["thumb"] == b"\xff\xd8thumb" and p1["stream"] is True
             assert s1["doc"] and "첫 자막" in s1["body"].decode() and "뒤 자막" not in s1["body"].decode()
@@ -913,3 +913,13 @@ def test_empty_first_scan_does_not_set_baseline(data):
         await mirror.check_all()
         assert mirror.queue == []
     asyncio.run(main())
+
+
+def test_part_names_and_grouping():
+    """나눈 조각 이름은 "이름_0000.mp4"부터 - YMPlayer 텔레그램 목록이 한 묶음으로 본다"""
+    stem = "Hope.2026.1080p.AMZN.WEB-DL.DDP5.1.H.264-KyoGo"
+    names = [plex_to_tg.part_name(stem, i, ".mp4") for i in range(2)]
+    assert names == [f"{stem}_0000.mp4", f"{stem}_0001.mp4"]
+    keys = [telegram_src.split_part(n) for n in names]
+    assert keys[0][0] == keys[1][0] == stem.casefold() and [k[1] for k in keys] == [0, 1]
+    assert telegram_src.part_base_title(f"{stem}_0001") == stem
