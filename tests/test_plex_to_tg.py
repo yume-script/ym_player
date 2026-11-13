@@ -475,7 +475,10 @@ def test_wait_hours_force_and_drop(data, tmp_path, monkeypatch):
         assert mirror.queue == [] and plex_to_tg.load_state()["history"][0]["note"] == "건너뜀: 직접 뺌"
         # 시간이 지나면 자막 없이 올림
         st["rules"][0]["wait_hours"] = 1
+        video2 = tmp_path / "Hard.S01E02.mp4"                         # (다른 파일 - 같은 파일은 같은 채널에 두 번 올리지 않는다)
+        _video(video2, 3)
         m["ratingKey"], m["addedAt"] = "7", 70
+        m["Media"][0]["Part"][0].update(file=str(video2), size=video2.stat().st_size)
         await mirror.check_all(st)
         await mirror.run_queue(st)
         state = plex_to_tg.load_state()
@@ -1000,4 +1003,63 @@ def test_korean_file_is_burned_even_with_english_track_inside(data, tmp_path, mo
         note = await mirror.upload(rule, "1", 2)
         assert [x["name"] for x in tg.sent] == ["Movie.2026.1080p.WEB-DL.mp4"] and "자막 입혀 인코딩" in note
         assert mirror.subs_label == "화면에 입힘"
+    asyncio.run(main())
+
+
+def test_no_duplicate_uploads(data, tmp_path, monkeypatch):
+    """겹쳐 올리지 않기: 1) 같은 파일(이름+크기)은 같은 채널에 한 번만 (규칙이 둘이거나 다른 항목으로 다시 들어와도)
+    2) 폴더 안에서 옮긴 파일은 다시 올리지 않는다 3) 반쯤 올리다 실패하면 보낸 메시지를 지우고 처음부터"""
+    drive = data / "drive"
+    (drive / "a").mkdir(parents=True)
+    (drive / "a" / "Old.mkv").write_bytes(b"x" * 10)
+    cfg = config_store.load()
+    cfg["plex_to_tg"] = plex_to_tg.clean_settings({"rules": [{"id": "f", "kind": "folder", "folder": str(drive), "tg": "tg", "channel": "-5",
+                                                               "wait_subs": False}]})
+    config_store.save(cfg)
+    deleted = []
+
+    class Tg(FakeTg):
+        async def delete_messages(self, peer, ids):
+            deleted.append((peer, list(ids)))
+    tg = Tg()
+    mirror = plex_to_tg.Mirror(None, None, lambda sid: tg, lambda: None)
+
+    async def main():
+        st = plex_to_tg.load_settings()
+        await mirror.check_all(st)                                   # 기준: Old.mkv
+        (drive / "b").mkdir()
+        (drive / "a" / "Old.mkv").rename(drive / "b" / "Old.mkv")   # 옮김 -> 다시 올리지 않는다
+        import os as _os
+        import time as _t
+        _os.utime(drive / "b" / "Old.mkv", (_t.time() - 3600, _t.time() - 3600))
+        await mirror.check_all(st)
+        assert mirror.queue == []
+        rule = st["rules"][0]
+        # 같은 채널에 같은 파일을 이미 올렸으면 건너뜀
+        mirror._remember_sent(rule, plex_to_tg.file_sig("x/New.mkv", 99), "New")
+        mirror._job = {"rule": "f", "key": "c/New.mkv", "title": "New", "sig": plex_to_tg.file_sig("c/New.mkv", 99)}
+        assert (await mirror.upload_file(rule, "c/New.mkv", 2)).startswith("건너뜀: 이 채널에 이미 올린 파일")
+        # 반쯤 올리다 실패: 보낸 메시지(영상 조각 1개)를 지우고, 다시 올릴 때 겹치지 않는다
+        calls = {"n": 0}
+
+        async def half_then_fail(rule_, key, max_gb, test=False):
+            mirror._note_sent(777)
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("두 번째 조각에서 끊김")
+            return "ok"
+        monkeypatch.setattr(mirror, "upload", half_then_fail)
+        mirror.queue = [{"rule": "f", "key": "d/Big.mkv", "title": "Big"}]
+        await mirror.run_queue(st)
+        assert deleted == [(("peer", -5), [777])]
+        assert "d/Big.mkv" not in (plex_to_tg.load_state()["rules"]["f"].get("sending") or {})
+        # 서버가 올리던 중에 꺼졌다가 다시 켜진 경우: 다음에 그 항목을 올리기 전에 남은 메시지부터 지운다
+        state = plex_to_tg.load_state()
+        state["rules"]["f"].setdefault("sending", {})["e/Crash.mkv"] = [801, 802]
+        plex_to_tg.save_state(state)
+        mirror.queue = [{"rule": "f", "key": "e/Crash.mkv", "title": "Crash"}]
+        await mirror.run_queue(st)
+        assert deleted[-1] == (("peer", -5), [801, 802])
+        assert plex_to_tg.load_state()["history"][0]["ok"]               # 그 뒤 처음부터 다시 올려 성공
+        assert "e/Crash.mkv" not in (plex_to_tg.load_state()["rules"]["f"].get("sending") or {})
     asyncio.run(main())
