@@ -1,6 +1,7 @@
 // 설정 > Thanks to 탭에 보여 줄 내용 (views/settings.js renderThanks).
 // 참고한 저장소와 쓰는 라이브러리, 그리고 변경 이력(PR마다 한 줄, 새것이 위). 새 PR을 머지하면 CHANGELOG 맨 위에 한 줄 더한다.
-// PR마다 ym_player/__init__.py의 __version__ 셋째 자리를 하나 올리고 그 줄의 version에 같은 값을 적는다
+// PR마다 ym_player/__init__.py의 __version__ 셋째 자리를 하나 올리고 그 줄의 version에 같은 값을 적는다.
+// 셋째 자리는 두 자리(00~99)까지 - 100이 되면 둘째 자리를 올리고 00부터 (1.1.108 -> 1.2.08로 고침, 다음은 1.2.09)
 // (version이 있는 줄은 아이콘 옆 [NEW]를 누르면 "새로워진 점"으로 나온다 - notice.js).
 export const CREDITS = {
     "people": [
@@ -104,6 +105,12 @@ export const CREDITS = {
 export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
+    {
+        "pr": 146,
+        "version": "1.2.09",
+        "date": "2026-11-13",
+        "title": "텔레그램 채널 목록이 바로 나오게: 보여 줄 것이 있으면 텔레그램을 기다리지 않고 바로 보여 주고 오래된 쪽은 뒤에서 훑기, 색인 쓰기를 따로 도는 스레드로 (버전 표기 1.1.108 -> 1.2.08, 셋째 자리는 두 자리까지)"
+    },
     {
         "pr": 145,
         "version": "1.1.108",

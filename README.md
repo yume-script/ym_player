@@ -60,6 +60,7 @@ sudo systemctl enable --now ym_player
 - **버전**: `ym_player/__init__.py`의 `__version__` 한 곳에서 정합니다. 왼쪽 위 아이콘 배지(예: 1.1.93), 설정 > 상태,
   시작 로그에 그대로 나오므로 버전을 올릴 때 아이콘 그림을 다시 만들 필요가 없습니다(배지는 화면에서 글자로 얹음).
   업데이트(PR)마다 셋째 자리를 하나씩 올리고, `web/js/credits.js` CHANGELOG 맨 위 줄에 같은 `version`을 적습니다.
+  셋째 자리는 두 자리(00~99)까지 쓰고, 100이 되면 둘째 자리를 올립니다(1.1.108은 1.2.08로 고쳐 적음 → 그다음 1.2.09).
 - **새 버전 알림**: 아이콘 옆에 **[NEW]**가 뜨면 아직 안 본 새 버전입니다. 누르면 그 뒤로 새로워진 점이 나오고, 본 버전은 사람마다
   서버에 기억합니다(다른 기기에서도 다시 안 뜸). 화면을 열어 둔 사이 서버가 업데이트되면 **[업데이트]**가 떠서 새로고침을 안내합니다
   (10분마다, 그리고 탭으로 돌아올 때 서버 버전을 확인).
@@ -209,7 +210,7 @@ ym_player/                       저장소 루트
 | `GET/PUT/DELETE /api/admin/cache` | 동영상 캐시 설정·사용량 / 저장 / 비우기 (관리자만) |
 | `GET /api/branding`, `GET /brand/icon` · `PUT /api/admin/branding` · `PUT/DELETE /api/admin/branding/icon` | 화면 이름·아이콘·기본 테마(theme/accent) (보기는 로그인 없이, 바꾸기는 관리자만. 아이콘은 PNG/JPG/GIF/WebP/ICO 512KB까지) |
 | `/api/tg/{id}/status · code · sign-in · logout` | 텔레그램 로그인 (코드 → 2단계 비밀번호) |
-| `GET /api/tg/{id}/channels · videos · video/{c}/{m} · home` | 채널 목록, 영상 목록(색인·과거 채우기), 영상 하나, 홈 줄 |
+| `GET /api/tg/{id}/channels · videos · video/{c}/{m} · home` | 채널 목록, 영상 목록(색인·과거 채우기 - 보여 줄 것이 있으면 텔레그램을 기다리지 않고 바로, 오래된 쪽은 뒤에서), 영상 하나, 홈 줄 |
 | `GET /api/tg/{id}/stream/{c}/{m}` · `thumb/{c}/{m}` · `POST progress` | Range 스트림, 썸네일, 재생 위치 저장 (설정에서 고른 채널만) |
 | `GET /api/tg/{id}/video/{c}/{m}?probe=1` · `GET /api/tg/{id}/transcode/{c}/{m}?start=초&mode=` | 재생 방법 판단(ffprobe), ffmpeg 서버 변환 스트림 (조각난 MP4) |
 | `GET/PUT /api/admin/plex-tg` · `GET .../options` · `POST .../check` · `POST .../test` · `POST .../item` · `GET .../shot` | Plex → 텔레그램 자동 올리기 설정·상태 / 고를 라이브러리·소스 / 지금 확인 / 규칙 시험 (관리자만) |
