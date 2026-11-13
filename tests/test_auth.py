@@ -366,11 +366,42 @@ def test_backup_restore_and_status(data):
             await c.post("/api/auth/logout")
             c.session.cookie_jar.clear()
             await c.post("/api/auth/login", json={"username": "kim", "password": "kimpass"})
-            for path in ("/api/admin/status", "/api/admin/backup"):
+            for path in ("/api/admin/status", "/api/admin/backup", "/api/admin/logs", "/api/admin/logs/download"):
                 assert (await c.get(path)).status == 403
             assert (await c.post("/api/admin/restore", json=backup)).status == 403
         finally:
             await origin.close()
+
+    run(flow)
+
+
+def test_admin_logs(data, tmp_path):
+    import logging
+
+    async def flow(c, app):
+        await c.post("/api/auth/setup", json={"username": "admin", "password": "adminpw"})
+        lg = logging.getLogger("ym_player.test")
+        lg.setLevel(logging.INFO)
+        lg.info("보통 로그 하나")
+        lg.warning("경고 로그 둘")
+        logging.getLogger("aiohttp.access").info("GET / 200")   # 접속 기록은 빠진다
+        res = await (await c.get("/api/admin/logs")).json()
+        msgs = [it["message"] for it in res["items"]]
+        assert "보통 로그 하나" in msgs and "경고 로그 둘" in msgs and "GET / 200" not in msgs
+        last = res["last"]
+        warn = await (await c.get("/api/admin/logs?level=WARNING")).json()
+        assert all(it["level"] in ("WARNING", "ERROR", "CRITICAL") for it in warn["items"])
+        assert "경고 로그 둘" in [it["message"] for it in warn["items"]]
+        found = await (await c.get("/api/admin/logs?q=보통")).json()
+        assert [it["message"] for it in found["items"]] == ["보통 로그 하나"]
+        # after: 새 줄만
+        lg.info("새 줄 셋")
+        new = await (await c.get(f"/api/admin/logs?after={last}")).json()
+        assert [it["message"] for it in new["items"]] == ["새 줄 셋"]
+        assert (await c.get("/api/admin/logs?after=x")).status == 400
+        r = await c.get("/api/admin/logs/download")
+        assert r.status == 200 and "attachment" in r.headers["Content-Disposition"]
+        assert "새 줄 셋" in await r.text()
 
     run(flow)
 

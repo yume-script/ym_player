@@ -56,7 +56,10 @@ sudo systemctl enable --now ym_player
   ("로그인 유지"를 켜면 30일, 끄면 브라우저를 닫을 때까지).
 - **관리자**: 사이드바 맨 아래 ⚙️ **설정**에서 탭으로 관리합니다 — **소스** / **사용자**(추가·삭제, 권한, 비밀번호, 볼 수 있는 범위) /
   **상태**(소스마다 실제 연결 점검, 서버 정보, 최근 경고) / **캐시** / **화면**(왼쪽 위 이름과 아이콘 - 로그인 화면과 브라우저 탭에도 쓰임, 아이콘의 버전 배지 켜기/끄기, 모든 사용자의 **기본 테마**) /
-  **백업**(설정·사용자·즐겨찾기·아이콘을 JSON으로 받기, 그 파일로 복원) / **Thanks to**(참고한 저장소, 쓰는 오픈소스, 변경 이력).
+  **백업**(설정·사용자·즐겨찾기·아이콘을 JSON으로 받기, 그 파일로 복원) /
+  **로그**(서버 로그를 수준 - 전체·경고 이상·오류만 - 과 찾을 말로 걸러 보기, 5초마다 새 줄이 위에 붙음, [파일 받기].
+  메모리에 최근 3000줄, 요청마다 찍히는 접속 기록은 뺌. 서버를 다시 켜도 남도록 `데이터 폴더/logs/ymplayer.log`에도 5MB씩 3개까지 돌려 적음) /
+  **Thanks to**(참고한 저장소, 쓰는 오픈소스, 변경 이력).
 - **버전**: `ym_player/__init__.py`의 `__version__` 한 곳에서 정합니다. 왼쪽 위 아이콘 배지(예: 1.1.93), 설정 > 상태,
   시작 로그에 그대로 나오므로 버전을 올릴 때 아이콘 그림을 다시 만들 필요가 없습니다(배지는 화면에서 글자로 얹음).
   업데이트(PR)마다 셋째 자리를 하나씩 올리고, `web/js/credits.js` CHANGELOG 맨 위 줄에 같은 `version`을 적습니다.
@@ -206,6 +209,7 @@ ym_player/                       저장소 루트
 | `/login`, `/api/auth/state · login · setup · logout · me · password` | 로그인 화면, 로그인/로그아웃, 첫 관리자 만들기, 내 비밀번호 변경 |
 | `GET/POST /api/users`, `PUT/DELETE /api/users/{name}` | 사용자 관리 (관리자만). PUT에 `access`(볼 수 있는 소스/라이브러리, `null`=전부) |
 | `GET/PUT /api/me/prefs` | 내 즐겨찾기 채널 |
+| `GET /api/admin/logs?after=&level=&q=` · `GET /api/admin/logs/download` | 최근 서버 로그 (after 뒤 새 줄만, WARNING 등 수준 이상, 찾을 말) / 로그 파일 받기 (관리자만) |
 | `GET /api/admin/status` · `GET /api/admin/backup` · `POST /api/admin/restore` | 상태 점검, 백업 내려받기, 백업 복원 (관리자만) |
 | `GET/PUT/DELETE /api/admin/cache` | 동영상 캐시 설정·사용량 / 저장 / 비우기 (관리자만) |
 | `GET /api/branding`, `GET /brand/icon` · `PUT /api/admin/branding` · `PUT/DELETE /api/admin/branding/icon` | 화면 이름·아이콘·기본 테마(theme/accent) (보기는 로그인 없이, 바꾸기는 관리자만. 아이콘은 PNG/JPG/GIF/WebP/ICO 512KB까지) |
