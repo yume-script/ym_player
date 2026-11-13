@@ -231,7 +231,12 @@ def test_login_channels_index_stream_progress(env):
         assert len(far["items"]) == 40 and far["items"][0]["msg"] == 999 - 150 * 3
         assert any(s[1] for s in env.scans)  # offset_id로 과거 스캔
         # 끝까지
-        last = await (await c.get("/api/tg/tg/videos?channel=777&offset=320&limit=40")).json()
+        # 페이지에 보여 줄 게 있으면 텔레그램을 기다리지 않고 바로 돌려준다 - 끝(complete)은 뒤에서 훑은 다음에 안다
+        for _ in range(50):
+            last = await (await c.get("/api/tg/tg/videos?channel=777&offset=320&limit=40")).json()
+            if not last["more"]:
+                break
+            await asyncio.sleep(0.05)
         assert len(last["items"]) == 13 and last["more"] is False  # 3,6,...,999 = 333개
         # 검색
         found = await (await c.get("/api/tg/tg/videos?q=영상 99")).json()

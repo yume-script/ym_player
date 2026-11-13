@@ -2103,6 +2103,13 @@ class TelegramSource:
     def _lock(self, channel):
         return self._sync_locks.setdefault(channel, asyncio.Lock())
 
+    def _index(self, channel, items):
+        upsert_videos(self.sid, channel, items)
+        if items:
+            link_posters(self.sid, channel)
+            link_subs(self.sid, channel)
+            link_series(self.sid, channel)
+
     async def _scan(self, channel, **kwargs):
         client = await self.authorized_client()
         items, ids = [], []
@@ -2115,11 +2122,9 @@ class TelegramSource:
                     items.append(item)
                     self._remember(channel, msg)
         await self._guard(channel, read())
-        upsert_videos(self.sid, channel, items)
-        if items:
-            link_posters(self.sid, channel)
-            link_subs(self.sid, channel)
-            link_series(self.sid, channel)
+        # 색인 쓰기와 포스터·자막·시리즈 짝짓기는 채널 전체를 다시 보는 무거운 일이라 따로 도는 스레드에서
+        # (예전엔 이 동안 서버 전체가 멈춰서, 뒤에서 새 영상을 받는 동안 목록·재생 요청이 같이 기다렸다)
+        await asyncio.to_thread(self._index, channel, items)
         # 새로 찾은 영상의 썸네일은 화면이 달라고 하기 전에 뒤에서 미리 받아 둔다
         wanted = [it["msg"] for it in items if it["has_thumb"]][:THUMB_PREFETCH]
         if wanted:
@@ -2154,10 +2159,13 @@ class TelegramSource:
         """목록. 이미 색인한 채널은 DB에서 바로 돌려주고 새 영상 받기는 뒤에서 한다 (기다리지 않음).
 
         - 처음 보는 채널만 첫 SCAN_BATCH개를 받을 때까지 기다린다 (보여줄 게 없으니까)
-        - 채널 하나를 최신순으로 내려 보다가 색인이 모자라면 그때만 오래된 쪽을 기다려서 채우고,
-          다음 페이지 몫은 뒤에서 미리 훑어 둔다 -> 다음 스크롤은 바로 나온다
+        - 채널 하나를 최신순으로 내려 보다가 이 페이지에 보여 줄 것이 하나도 없을 때만 오래된 쪽을 기다려서 채운다.
+          조금이라도 있으면 바로 돌려주고 오래된 쪽은 뒤에서 훑는다 -> 다음 스크롤 때 나온다.
+          (예전엔 한 페이지(60개)를 다 채울 때까지 텔레그램을 기다렸다 - 회차를 시리즈로 묶는 목록은 늘 60개보다 적어서
+          채널을 끝까지 훑기 전까지는 목록을 열 때마다 몇 초씩 기다렸다)
         - fill=False(홈 줄)면 오래된 쪽은 건드리지 않는다
         """
+        t0 = time.time()
         channels = [c for c in channels if c in self.channels] if self.channels else []
         syncing = False
         for c in channels:
@@ -2179,13 +2187,16 @@ class TelegramSource:
         if fill and len(channels) == 1 and not q and sort == "latest":
             ch = channels[0]
             for _ in range(OLDER_BATCHES_PER_PAGE):
-                if len(rows) >= limit or not await self.sync_older(ch):
+                if rows or not await self.sync_older(ch):
                     break
                 rows, total = await asyncio.to_thread(query_videos, self.sid, channels, offset, limit, q, sort, user, kind, self.kinds, group)
             ahead = total - (offset + len(rows))
             if ahead < limit * 2 and not sync_state(self.sid, ch)["complete"]:
                 self.background(("older", ch), lambda: self.sync_older(ch))
         complete = all(sync_state(self.sid, c)["complete"] for c in channels)
+        took = time.time() - t0
+        if took > 2:
+            log.info("telegram 목록이 %.1f초 걸림 (채널 %s, offset %s, 받은 %s개)", took, channels, offset, len(rows))
         return {"items": rows, "total": total, "more": (offset + len(rows) < total) or not complete,
                 "syncing": syncing}
 
