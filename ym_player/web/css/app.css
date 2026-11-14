@@ -1301,3 +1301,7 @@ body.docpip { margin: 0; background: #000; overflow: hidden; }
     .log-logger { grid-column: 1 / -1; }
     .log-msg { grid-column: 1 / -1; }
 }
+/* 자동 올리기: BookOasis Assistant에도 같은 기능 안내 */
+.mirror-also { margin: 0 0 0.5rem; padding: 0.5rem 0.75rem; border-radius: var(--radius); background: rgba(var(--accent-rgb), 0.1);
+    border: 1px solid rgba(var(--accent-rgb), 0.35); font-size: 0.88rem; }
+.mirror-also a { color: var(--accent); font-weight: 600; }
