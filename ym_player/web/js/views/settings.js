@@ -1621,6 +1621,9 @@ async function renderMirror(pane) {
     clear(pane).append(
         h('div', { class: 'src-card' },
             h('h3', { class: 'pane-title' }, icon('cloud-arrow-up'), ' 텔레그램 자동 올리기 (Plex · rclone 드라이브)'),
+            h('p', { class: 'mirror-also' }, icon('circle-info'), ' 같은 기능이 ',
+                h('a', { href: 'https://github.com/yume-script/bookoasis_assistant', target: '_blank', rel: 'noopener', text: 'BookOasis Assistant' }),
+                '에도 있습니다 (사이드바 "텔레그램 자동 올리기"). 같은 채널에 둘 다 켜면 두 번 올라가니 한쪽에서만 켜세요.'),
             h('p', { text: '고른 Plex 라이브러리에 새 동영상(영화·에피소드)이 들어오면, 로그인해 둔 텔레그램 계정으로 고른 채널에 파일을 올립니다. '
                 + '규칙을 처음 저장할 때 이미 있던 것은 올리지 않고 그 뒤에 들어온 것부터 올립니다. 한 번에 하나씩 올리고, 실패하면 다음 확인 때 다시(3번까지). '
                 + '한도를 넘는 파일은 ffmpeg로 시간을 나눠 "이름_0000", "이름_0001"…로 올리고(YMPlayer에서 이어서 재생), 외부 자막 파일도 같이 올립니다. '

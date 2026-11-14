@@ -106,6 +106,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 148,
+        "version": "1.2.11",
+        "date": "2026-11-14",
+        "title": "설정 > 자동 올리기 맨 위에 BookOasis Assistant에도 같은 기능이 있다고 표시 (같은 채널에 둘 다 켜면 두 번 올라감)"
+    },
+    {
         "pr": 147,
         "version": "1.2.10",
         "date": "2026-11-13",
