@@ -1,0 +1,11 @@
+# 이미지에 넣지 않는 것 - 설정·비밀번호·세션·캐시는 볼륨(/data)에
+.git
+.venv
+venv
+**/__pycache__
+ym_player/data
+data
+tests
+docs
+docker-compose.yml
+*.log

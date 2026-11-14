@@ -106,6 +106,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 150,
+        "version": "1.2.13",
+        "date": "2026-11-14",
+        "title": "설치·설정 가이드 (docs/): 가상환경 설치 / 도커 설치 / 화면 그림이 있는 설정 가이드, 도커 파일(Dockerfile·docker-compose.example.yml) 추가"
+    },
+    {
         "pr": 149,
         "version": "1.2.12",
         "date": "2026-11-14",
