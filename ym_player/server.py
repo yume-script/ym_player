@@ -3170,6 +3170,25 @@ async def _check_radio(request, src):
     return True, f"방송국 {len(stations)}개 · 곡 정보 받음 {with_info}개"
 
 
+async def _check_kradio(request, src):
+    """공중파 라디오: 채널 목록(공개 저장소)을 받을 수 있는지"""
+    data = await request.app[KRADIO].stations(request.app[HTTP], force=True)
+    n = len(data["stations"])
+    if not n:
+        return False, data["error"] or "채널이 0개입니다"
+    regions = len({s["region"] for s in data["stations"]})
+    note = f"채널 {n}개 · 지역 {regions}곳"
+    return (False, f"{note} (이전 목록) - {data['error']}") if data["error"] else (True, note)
+
+
+async def _check_bookoasis(request, src):
+    try:
+        await request.app[BOOKOASIS].of(src).login()
+    except Exception as e:  # noqa: BLE001
+        return False, f"로그인하지 못했습니다: {e}"
+    return True, "로그인됨"
+
+
 async def _check_iptv(request, src):
     try:
         channels, report = await _load_m3u(request, src, timeout=15)
@@ -3227,8 +3246,16 @@ async def admin_status(request):
             coro = _check_brunch(request, src)
         elif src["type"] == "recipe":
             coro = _check_recipe(request, src)
-        else:
+        elif src["type"] == "kradio":
+            coro = _check_kradio(request, src)
+        elif src["type"] == "bookoasis":
+            coro = _check_bookoasis(request, src)
+        elif src["type"] == "telegram":
             coro = _check_telegram(request, src)
+        else:   # 새 소스 종류에 점검이 아직 없을 때 (예전엔 모두 텔레그램으로 점검해 엉뚱한 오류가 났다)
+            async def _none():
+                return None, "점검 방법 없음"
+            coro = _none()
         ok, detail, ms = await _timed(coro)
         return {"id": src["id"], "name": src["name"], "type": src["type"], "enabled": True,
                 "ok": ok, "detail": detail, "ms": ms}
