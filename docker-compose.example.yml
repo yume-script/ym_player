@@ -1,0 +1,28 @@
+# cp docker-compose.example.yml docker-compose.yml 후 고쳐서 씁니다 (docs/install-docker.md 참고)
+services:
+  ym_player:
+    build: .
+    container_name: ym_player
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Seoul
+      # 사용자가 아직 없을 때만 이 계정으로 첫 관리자를 만든다 (이미 있으면 무시). 처음 띄운 뒤 화면에서 비밀번호를 바꾸세요
+      MP_USER: admin
+      MP_PASSWORD: change-me
+      # MP_UPDATE_CHECK: "0"          # GitHub 새 버전 확인 끄기
+      # MP_ACTIVITY_TOKEN: 긴임의값     # 재생 현황 API(부하 조절 봇)용
+      # MP_RCLONE_CONFIG: /config/rclone/rclone.conf   # 자동 올리기에서 rclone 원격을 쓸 때
+    volumes:
+      - ./data:/data                  # 설정·사용자·텔레그램 세션·색인·동영상 캐시 - 지우면 처음부터. 백업 대상
+      # ── 자동 올리기 (선택) ──
+      # Plex 원본 파일을 바로 읽으려면 Plex가 보는 경로와 "같은 경로"로 (아니면 Plex에서 받아 옴)
+      # - /mnt/media:/mnt/media:ro,rslave
+      # rclone 드라이브 폴더 규칙: 호스트의 rclone mount 폴더 (마운트가 나중에 떠도 보이게 rslave)
+      # - /mnt/gdrive:/mnt/gdrive:ro,rslave
+      # rclone 원격(이름:경로)을 쓰려면 rclone.conf가 든 폴더째
+      # - /root/.config/rclone:/config/rclone:ro
+    ports:
+      - "8899:8899"
+    # 그래픽 카드 인코딩 (Intel Quick Sync / VAAPI) - 호스트에 /dev/dri가 있을 때
+    # devices:
+    #   - /dev/dri:/dev/dri

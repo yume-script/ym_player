@@ -4,6 +4,14 @@ Plex 서버, IPTV(M3U + XMLTV 편성표), **텔레그램 채널 동영상**을 *
 북오아시스 `ym_m3u_player` 플러그인의 재생 엔진(hls.js / mpegts.js / 네이티브)과 M3U·EPG 처리를
 그대로 옮겨 오고, 화면은 Plex 웹처럼 다시 만들었습니다. 북오아시스 없이 파이썬 하나로 돕니다.
 
+## 설치·설정 가이드 (처음이면 여기부터)
+
+| 문서 | 내용 |
+|---|---|
+| 📦 [가상환경(venv) 설치](docs/install-venv.md) | **권장.** 패키지 설치 → 실행 → systemd 서비스 → 업데이트·백업·문제 해결 |
+| 🐳 [도커 설치](docs/install-docker.md) | Docker Compose로 설치 → 볼륨·포트 → 업데이트·백업·문제 해결 |
+| ⚙️ [설정 가이드](docs/setup-guide.md) | 화면 그림과 함께: 소스(Plex·텔레그램·IPTV·라디오…) 넣기, 사용자, 상태·로그, 자동 올리기, 디스코드, MCP |
+
 ## 실행
 
 ```bash
