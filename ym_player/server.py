@@ -102,6 +102,33 @@ class _LogBuffer(logging.Handler):
         except Exception:
             pass
 
+    def load_file(self, paths):
+        """지난 실행의 로그 파일(오래된 것부터)을 읽어 최근 maxlen줄을 채운다 - 업데이트·재시작해도 로그 탭이 비지 않게.
+        한 줄 모양: "2026-11-14 01:02:03,123 INFO 이름: 내용" (여러 줄 오류는 앞 줄에 붙임). 돌려준 수 = 읽은 항목 수"""
+        items = collections.deque(maxlen=self.items.maxlen)
+        pat = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)(?:,(\d{1,3}))? (DEBUG|INFO|WARNING|ERROR|CRITICAL) ([^:\s]+): (.*)$")
+        for path in paths:
+            try:
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        line = line.rstrip("\n")
+                        m = pat.match(line)
+                        if m:
+                            try:
+                                t = time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")) + int(m.group(2) or 0) / 1000
+                            except ValueError:
+                                continue
+                            items.append({"time": t, "level": m.group(3), "logger": m.group(4), "message": m.group(5)[:4000]})
+                        elif items and line:
+                            items[-1]["message"] = (items[-1]["message"] + "\n" + line)[:4000]
+            except OSError:
+                continue
+        self.items = collections.deque([*items, *self.items], maxlen=self.items.maxlen)   # 지금 실행에서 남긴 줄보다 앞에
+        for i, it in enumerate(self.items):   # id는 오래된 것부터 늘어나게 다시
+            it["id"] = i + 1
+        self.seq = len(self.items)
+        return len(items)
+
     def query(self, after=0, level="", q="", limit=500):
         """after보다 새 줄 중 level 이상, q가 들어간 것 (오래된 것부터, 최근 limit줄)"""
         rank = logging.getLevelName(level.upper()) if level else 0
@@ -130,10 +157,20 @@ def setup_file_log():
     except OSError as e:
         log.warning("로그 파일을 열지 못했습니다 (%s): %s", log_file_path(), e)
         return
+    # 지난 실행의 로그를 로그 탭(메모리)으로 - 파일에 이번 실행 줄이 붙기 전에 읽는다
+    path = log_file_path()
+    n = LOGS.load_file([f"{path}.{i}" for i in (3, 2, 1)] + [path])
+    for it in list(LOGS.items)[-RECENT.items.maxlen * 4:]:   # 상태 탭의 최근 경고도
+        if it["level"] in ("WARNING", "ERROR", "CRITICAL"):
+            RECENT.items.append({"time": it["time"], "level": it["level"], "logger": it["logger"], "message": it["message"][:500]})
     fh.setLevel(logging.INFO)
     fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     fh.addFilter(lambda r: r.name != "aiohttp.access")
     logging.getLogger().addHandler(fh)
+    if n:
+        log.info("지난 로그 %s줄을 로그 탭으로 읽어 왔습니다 (%s)", n, path)
+
+
 STARTED = time.time()
 
 HTTP = web.AppKey("http", ClientSession)

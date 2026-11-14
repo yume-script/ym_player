@@ -106,6 +106,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 152,
+        "version": "1.2.15",
+        "date": "2026-11-14",
+        "title": "설정 > 로그: 업데이트·재시작해도 지난 로그가 남음 (켤 때 로그 파일에서 최근 3000줄을 읽어 옴, 상태 탭의 최근 경고도)"
+    },
+    {
         "pr": 151,
         "version": "1.2.14",
         "date": "2026-11-14",
