@@ -2187,9 +2187,13 @@ class TelegramSource:
         if fill and len(channels) == 1 and not q and sort == "latest":
             ch = channels[0]
             for _ in range(OLDER_BATCHES_PER_PAGE):
-                if rows or not await self.sync_older(ch):
+                if rows:
                     break
+                more = await self.sync_older(ch)
+                # 더 받을 게 없다고 해도 다시 읽는다 - 뒤에서 돌던 훑기가 기다리는 사이에 채널 끝까지 채워 두었을 수 있다
                 rows, total = await asyncio.to_thread(query_videos, self.sid, channels, offset, limit, q, sort, user, kind, self.kinds, group)
+                if not more:
+                    break
             ahead = total - (offset + len(rows))
             if ahead < limit * 2 and not sync_state(self.sid, ch)["complete"]:
                 self.background(("older", ch), lambda: self.sync_older(ch))

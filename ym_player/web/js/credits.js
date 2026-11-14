@@ -106,6 +106,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 151,
+        "version": "1.2.14",
+        "date": "2026-11-14",
+        "title": "자동 올리기: 서버를 다시 켜도 올릴 차례 목록이 남음 (파일에 적어 둠, 올리던 것은 처음부터 이어서) · 텔레그램 목록이 가끔 빈 페이지로 끝나던 문제"
+    },
+    {
         "pr": 150,
         "version": "1.2.13",
         "date": "2026-11-14",
