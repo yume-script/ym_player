@@ -106,6 +106,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 154,
+        "version": "1.2.17",
+        "date": "2026-11-15",
+        "title": "설정: 텔레그램 채널·Plex 라이브러리·사용자 권한의 고르기 목록을 한 줄에 하나씩 (구분선, 긴 이름은 줄바꿈)"
+    },
+    {
         "pr": 153,
         "version": "1.2.16",
         "date": "2026-11-14",

@@ -649,10 +649,17 @@ body[data-cue-size="l"] .player video::cue { font-size: 2.2rem; }
 .nav-group.collapsed { margin-top: 0.35rem; }
 
 /* 설정: 가져올 Plex 라이브러리 */
-.lib-picker { display: flex; flex-wrap: wrap; gap: 0.5rem 1.25rem; padding: 0.6rem 0.75rem; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
+/* 고르기 목록 (Plex 라이브러리 / 텔레그램 채널): 한 줄에 하나씩, 줄마다 구분선 */
+.lib-picker { display: flex; flex-direction: column; padding: 0.2rem 0; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); }
+.lib-picker > * { padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); }
+.lib-picker > *:last-child { border-bottom: 0; }
+.lib-picker > label.lib-check, .lib-picker > .lib-check-row { display: flex; align-items: center; gap: 0.5rem; }
+.lib-picker > label.lib-check:hover, .lib-picker > .lib-check-row:hover { background: var(--bg-elev2); }
 .lib-check { color: var(--text); }
 .lib-check i { color: var(--muted); width: 1rem; text-align: center; }
-.lib-check-row { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.lib-check-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.lib-check-row > .lib-check { flex: 1 1 14rem; min-width: 0; white-space: normal; overflow-wrap: anywhere; font-weight: 600; }
+.lib-picker > label.lib-check { white-space: normal; overflow-wrap: anywhere; }
 .select-sm { padding: 0.2rem 1.6rem 0.2rem 0.45rem; font-size: 0.8rem; min-height: 0; }
 .select-sm:disabled { opacity: 0.45; }
 .input-sm { padding: 0.2rem 0.45rem; font-size: 0.8rem; min-height: 0; }
@@ -724,7 +731,9 @@ body.login-body { overflow: auto; min-height: 100vh; display: flex; align-items:
 .acc-list { display: flex; flex-direction: column; gap: 0.5rem; padding: 0.6rem 0.75rem; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); max-height: 50vh; overflow: auto; }
 .acc-list.disabled { opacity: 0.4; pointer-events: none; }
 .acc-libs { display: flex; flex-direction: column; gap: 0.35rem; margin: 0.35rem 0 0.25rem 1.6rem; }
-.acc-lib-items { display: flex; flex-wrap: wrap; gap: 0.35rem 1rem; }
+.acc-lib-items { display: flex; flex-direction: column; gap: 0; border-left: 2px solid var(--border); }
+.acc-lib-items > .lib-check { padding: 0.3rem 0.6rem; }
+.acc-lib-items > .lib-check:hover { background: var(--bg-elev2); }
 .user-add { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.75rem; }
 .user-add .input { flex: 1; min-width: 140px; }
 .section-title { font-size: 1.1rem; margin: 0 0 0.75rem; display: flex; align-items: center; gap: 0.5rem; }
