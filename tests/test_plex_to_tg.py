@@ -1063,3 +1063,30 @@ def test_no_duplicate_uploads(data, tmp_path, monkeypatch):
         assert plex_to_tg.load_state()["history"][0]["ok"]               # 그 뒤 처음부터 다시 올려 성공
         assert "e/Crash.mkv" not in (plex_to_tg.load_state()["rules"]["f"].get("sending") or {})
     asyncio.run(main())
+
+
+def test_queue_survives_restart(data):
+    """올릴 차례 목록은 파일에도 적어 서버를 다시 켜도 그대로 (Plex 최근 목록에서 밀려난 것도), 없어진 규칙의 것은 버린다"""
+    items = {str(i): {"ratingKey": str(i), "type": "movie", "title": f"영화{i}", "year": 2026, "addedAt": 500 + i} for i in range(3)}
+
+    async def plex_json(c, s, path, params=None):
+        if path == "/library/sections":
+            return {"MediaContainer": {"Directory": [{"key": "1", "type": "movie"}]}}
+        return {"MediaContainer": {"Metadata": list(items.values())}}
+    config_store.save({"client_id": "c", "sources": [], "plex_to_tg": {"rules": [{"id": "r", "plex": "px", "section": "1", "tg": "tg", "channel": "-1"}]}})
+    plex_to_tg.save_state({"rules": {"r": {"baseline": 100, "done": [], "fails": {}}}, "history": []})
+    make = lambda: plex_to_tg.Mirror(plex_json, lambda sid: ({"client_id": "c"}, {"id": "px", "url": "http://x"}), lambda sid: None, lambda: None)  # noqa: E731
+
+    async def main():
+        m = make()
+        await m.check_all(plex_to_tg.load_settings())
+        assert [j["key"] for j in m.queue] == ["0", "1", "2"]
+        items.clear()                                           # 다시 켰을 때 Plex 최근 목록에는 이제 없음
+        m2 = make()                                             # 서버를 다시 켬
+        assert [j["key"] for j in m2.queue] == ["0", "1", "2"]
+        assert m2.status()["queue"][0]["title"] == "영화0 (2026)"     # 확인 전에도 화면에 바로
+        m2.cancel_item("r", "1")
+        assert [j["key"] for j in make().queue] == ["0", "2"]   # 취소도 파일에
+        config_store.save({"client_id": "c", "sources": [], "plex_to_tg": {"rules": []}})
+        assert make().queue == []                               # 규칙을 지웠으면 그 목록도 버림
+    asyncio.run(main())

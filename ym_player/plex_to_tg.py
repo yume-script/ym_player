@@ -272,6 +272,46 @@ def save_state(st):
         os.replace(tmp, _state_path())
 
 
+def _queue_path():
+    return os.path.join(config_store.DATA_DIR, "plex_to_tg_queue.json")
+
+
+QUEUE_FIELDS = ("rule", "key", "title", "sig", "test", "force")
+
+
+def load_queue():
+    """서버를 다시 켜기 전의 올릴 차례 목록 (지금 있는 규칙의 것만) - 예전엔 메모리에만 두어 다시 켜면 목록이 사라졌다
+    (Plex 규칙은 최근 SCAN_SIZE개만 다시 보므로 그보다 뒤에 있던 것은 다시 들어오지도 않았다)"""
+    try:
+        with open(_queue_path(), "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return []
+    try:
+        rules = {r["id"] for r in load_settings()["rules"]}
+    except Exception:  # noqa: BLE001 - 설정을 못 읽으면 걸러내지 않는다 (run_queue가 없는 규칙은 건너뜀)
+        rules = None
+    out, seen = [], set()
+    for j in raw if isinstance(raw, list) else []:
+        if not isinstance(j, dict) or not j.get("rule") or not j.get("key"):
+            continue
+        k = (str(j["rule"]), str(j["key"]))
+        if k in seen or (rules is not None and k[0] not in rules):
+            continue
+        seen.add(k)
+        out.append({f: j[f] for f in QUEUE_FIELDS if f in j})
+    return out
+
+
+def save_queue(queue):
+    with _lock:
+        os.makedirs(config_store.DATA_DIR, exist_ok=True)
+        tmp = _queue_path() + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump([{k: j[k] for k in QUEUE_FIELDS if k in j} for j in queue], f, ensure_ascii=False)
+        os.replace(tmp, _queue_path())
+
+
 # ---------------------------------------------------------------------------
 # 캡션
 # ---------------------------------------------------------------------------
@@ -395,7 +435,7 @@ class Mirror:
         playing() -> 지금 누가 서버 변환(재생)으로 보고 있나 - 그동안은 올리기 인코딩을 멈춰 재생이 끊기지 않게"""
         self.plex_json, self.plex_src, self.tg_for, self.http = plex_json, plex_src, tg_for, http
         self.playing = playing or (lambda: False)
-        self.queue = []          # [{rule, key, title, tries}]
+        self.queue = load_queue()   # [{rule, key, title, sig?, test?, force?}] - 파일에도 적어 서버를 다시 켜도 이어 간다
         self.current = None      # {title, phase, done, total}
         self.current_job = None  # {rule, key} - 지금 올리는 것
         self.subs_label = ""     # 마지막으로 올린 것의 자막 (기록의 "자막" 칸)
@@ -420,6 +460,12 @@ class Mirror:
 
     def wake(self):
         self._wake.set()
+
+    def _queue_changed(self):
+        try:
+            save_queue(self.queue)
+        except OSError as e:   # 못 적어도 올리기는 계속 (다시 켜면 목록만 다시 찾는다)
+            log.warning("자동 올리기 목록을 저장하지 못했습니다: %s", e)
 
     def status(self):
         st = load_state()
@@ -562,6 +608,7 @@ class Mirror:
                 queued.add((rule["id"], key))
         self.last_check = int(time.time())
         save_state(state)
+        self._queue_changed()
         if errors:
             raise RuntimeError(" / ".join(errors))
 
@@ -602,6 +649,7 @@ class Mirror:
             f = max(files, key=lambda x: x["mtime"])
             title = folder_watch.file_fields(f["key"])["name"]
             self.queue.append({"rule": rule["id"], "key": f["key"], "title": title, "test": True})
+            self._queue_changed()
             self.wake()
             return title
         items = await self._recent(rule)
@@ -609,6 +657,7 @@ class Mirror:
             raise ValueError("이 라이브러리에 동영상이 없습니다.")
         m = items[0]
         self.queue.append({"rule": rule["id"], "key": str(m["ratingKey"]), "title": item_fields(m)["name"], "test": True})
+        self._queue_changed()
         self.wake()
         return item_fields(m)["name"]
 
@@ -671,6 +720,7 @@ class Mirror:
             job["force"] = True
         else:
             self.queue.append({"rule": rule_id, "key": key, "title": w.get("title", key), "force": True})
+        self._queue_changed()
         self.wake()
         return w.get("title", key)
 
@@ -689,6 +739,7 @@ class Mirror:
         save_state(state)
         running = self.queue[0] if self.current_job and self.queue else None   # 지금 올리는 중인 것은 건드리지 않는다
         self.queue = [j for j in self.queue if j is running or not (j["rule"] == rule_id and j["key"] == key)]
+        self._queue_changed()
         return w.get("title", key)
 
     def _forget(self, state, rule_id, key, title, note):
@@ -724,6 +775,7 @@ class Mirror:
         self._forget(state, rule_id, key, title, "건너뜀: 직접 취소")
         save_state(state)
         self.queue = [j for j in self.queue if not (j["rule"] == rule_id and j["key"] == key)]
+        self._queue_changed()
         return title
 
     def cancel_all(self, rule_id=None):
@@ -748,6 +800,7 @@ class Mirror:
         save_state(state)
         keep = [j for j in self.queue if (j["rule"], j["key"]) == cur]
         self.queue = keep + [j for j in self.queue if j not in keep and rule_id not in (None, j["rule"])]
+        self._queue_changed()
         if cur[0] and rule_id in (None, cur[0]):
             self.cancel_item(*cur)
             n += 1
@@ -846,6 +899,7 @@ class Mirror:
                 self.queue.pop(0)
             else:
                 self.queue = [j for j in self.queue if j is not job]
+            self._queue_changed()
             self.current = self.current_job = None
             state = load_state()
             if cancelled:   # 올리던 중에 직접 취소
