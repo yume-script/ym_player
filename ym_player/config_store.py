@@ -147,6 +147,9 @@ def _clean_source(raw, old):
                 ch = {"id": int(c["id"]), "title": str(c.get("title") or c["id"])[:200]}
                 if c.get("kind") in ("video", "image", "webtoon", "doc"):   # 영상만 / 사진만 / 웹툰(압축 파일) / 책(PDF·EPUB) (없으면 영상+사진)
                     ch["kind"] = c["kind"]
+                name = str(c.get("name") or "").strip()[:200]   # 화면에 보일 이름 (비우면 텔레그램 채널 이름)
+                if name and name != ch["title"]:
+                    ch["name"] = name
                 if c.get("ep_order") in ("asc", "desc"):  # 시리즈 회차 목록 순서 (없으면 1화부터)
                     ch["ep_order"] = c["ep_order"]
                 channels.append(ch)

@@ -998,6 +998,10 @@ def test_channel_kind_limits_lists(monkeypatch, tmp_path):
     src = config_store._clean_source({"id": "t", "type": "telegram", "name": "t", "channels": [
         {"id": 1, "title": "a", "ep_order": "desc"}, {"id": 2, "title": "b", "ep_order": "sideways"}]}, None)
     assert src["channels"] == [{"id": 1, "title": "a", "ep_order": "desc"}, {"id": 2, "title": "b"}]
+    # 화면에 보일 이름: 텔레그램 이름과 다를 때만 저장 (공백은 정리, 비우면 텔레그램 이름)
+    src = config_store._clean_source({"id": "t", "type": "telegram", "name": "t", "channels": [
+        {"id": 1, "title": "a", "name": "  내 영화  "}, {"id": 2, "title": "b", "name": "b"}, {"id": 3, "title": "c", "name": ""}]}, None)
+    assert src["channels"] == [{"id": 1, "title": "a", "name": "내 영화"}, {"id": 2, "title": "b"}, {"id": 3, "title": "c"}]
 
 
 def test_subtitle_files_are_indexed_linked_and_hidden(monkeypatch, tmp_path):

@@ -113,8 +113,9 @@ export class TelegramProvider {
         this.name = src.name;
         this.kind = 'telegram';
         // kind: 관리자가 정한 채널 종류 ("video" 영상만 / "image" 사진만 / "webtoon" 웹툰 압축 파일 / "doc" 책(PDF·EPUB) / "" 영상+사진)
+        // title: 설정에서 바꾼 이름(name)이 있으면 그것, 없으면 텔레그램 채널 이름
         // epOrder: 시리즈 회차 목록 순서 ("asc" 1화부터 / "desc" 최신 회차부터)
-        this.channels = (src.channels || []).map((c) => ({ id: String(c.id), title: c.title, kind: c.kind || '', epOrder: c.ep_order || 'asc' }));
+        this.channels = (src.channels || []).map((c) => ({ id: String(c.id), title: c.name || c.title, kind: c.kind || '', epOrder: c.ep_order || 'asc' }));
         this.base = `/api/tg/${encodeURIComponent(src.id)}`;
         this._warmed = new Set();
         this._seen = new Map(); // 항목 id -> 목록에서 받은 영상 정보 (조각 파일인지 미리 보려고)
