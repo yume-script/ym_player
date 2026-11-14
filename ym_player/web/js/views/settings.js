@@ -243,7 +243,7 @@ export async function renderSettings(main, _params, query, ctx) {
                 paint();
             };
             if (src.type === 'telegram') {
-                fill((src.channels || []).map((c) => ({ id: String(c.id), title: c.title, icon: 'bullhorn' })));
+                fill((src.channels || []).map((c) => ({ id: String(c.id), title: c.name || c.title, icon: 'bullhorn' })));
                 return;
             }
             if (src.type === 'radio') {
@@ -582,23 +582,30 @@ export async function renderSettings(main, _params, query, ctx) {
                     const orderSel = h('select', { class: 'select select-sm', title: '시리즈 회차 목록 순서' },
                         [['asc', '1화부터'], ['desc', '최신 회차부터']].map(([v, label]) =>
                             h('option', { value: v, text: label, selected: ((chosen.get(id) || {}).ep_order || 'asc') === v })));
-                    kindSel.disabled = orderSel.disabled = !chk.checked;
+                    // 화면에 보일 이름 (사이드바·홈·라이브러리). 비우면 텔레그램 채널 이름 그대로
+                    const nameIn = h('input', { class: 'input input-sm tg-ch-name', value: (chosen.get(id) || {}).name || '',
+                        placeholder: c.title, maxlength: 200, title: '화면에 보일 이름 (비우면 텔레그램 채널 이름)' });
+                    const lock = () => { kindSel.disabled = orderSel.disabled = nameIn.disabled = !chk.checked; };
+                    lock();
                     const save = () => {
                         if (chk.checked) {
-                            chosen.set(id, { id: c.id, title: c.title, ...(kindSel.value ? { kind: kindSel.value } : {}),
+                            const name = nameIn.value.trim();
+                            chosen.set(id, { id: c.id, title: c.title, ...(name && name !== c.title ? { name } : {}),
+                                ...(kindSel.value ? { kind: kindSel.value } : {}),
                                 ...(orderSel.value === 'desc' ? { ep_order: 'desc' } : {}) });
                         } else chosen.delete(id);
-                        kindSel.disabled = orderSel.disabled = !chk.checked;
+                        lock();
                         src.channels = [...chosen.values()];
                         touch();
                     };
                     chk.addEventListener('change', save);
                     kindSel.addEventListener('change', save);
                     orderSel.addEventListener('change', save);
+                    nameIn.addEventListener('input', save);
                     list.appendChild(h('div', { class: 'lib-check-row' },
                         h('label', { class: 'check lib-check', title: c.username ? `@${c.username}` : '' },
                             chk, icon(c.kind === 'group' ? 'users' : 'bullhorn'), ` ${c.title}`),
-                        kindSel, orderSel));
+                        nameIn, kindSel, orderSel));
                 });
             } catch (e) {
                 clear(list).appendChild(say(`채널 목록 실패: ${e.message}`, 'muted error'));

@@ -106,6 +106,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 153,
+        "version": "1.2.16",
+        "date": "2026-11-14",
+        "title": "텔레그램 소스: 채널 이름을 바꿀 수 있음 (설정 > 소스 > 볼 채널의 이름 칸, 비우면 텔레그램 채널 이름)"
+    },
+    {
         "pr": 152,
         "version": "1.2.15",
         "date": "2026-11-14",
