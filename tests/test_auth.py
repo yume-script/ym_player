@@ -411,6 +411,39 @@ def test_admin_logs(data, tmp_path):
     run(flow)
 
 
+def test_logs_survive_restart(data, tmp_path):
+    """지난 실행의 로그 파일을 읽어 로그 탭과 상태 탭의 최근 경고를 채운다 (업데이트·재시작해도 비지 않게)"""
+    import logging
+    from ym_player import server
+    path = server.log_file_path()
+    import os
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path + ".1", "w", encoding="utf-8") as f:
+        f.write("2026-11-13 10:00:00,001 INFO ym_player: 아주 예전 줄\n")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("2026-11-14 01:02:03,123 INFO ym_player.telegram: 지난번 줄\n"
+                "2026-11-14 01:02:04,000 ERROR ym_player: 오류 났음\nTraceback (most recent call last):\n  File x\n"
+                "엉뚱한 줄 없이 시작하는 것도 앞 줄에 붙음\n")
+    buf, recent = server._LogBuffer(), server.RECENT
+    old_logs, server.LOGS = server.LOGS, buf
+    try:
+        recent.items.clear()
+        server.setup_file_log()
+        msgs = [it["message"].split("\n")[0] for it in buf.items]
+        assert msgs[:3] == ["아주 예전 줄", "지난번 줄", "오류 났음"]
+        assert "Traceback" in buf.items[2]["message"] and buf.items[2]["level"] == "ERROR"
+        assert [it["id"] for it in buf.items][:3] == [1, 2, 3]
+        assert any(w["message"].startswith("오류 났음") for w in recent.items)
+        assert buf.query(level="ERROR")[0]["logger"] == "ym_player"
+    finally:
+        server.LOGS = old_logs
+        root = logging.getLogger()
+        for h in list(root.handlers):
+            if isinstance(h, logging.FileHandler):
+                root.removeHandler(h)
+                h.close()
+
+
 def test_branding_title_and_icon(data):
     png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
 
