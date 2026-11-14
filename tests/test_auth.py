@@ -335,13 +335,18 @@ def test_backup_restore_and_status(data):
             await c.put("/api/config", json={"sources": [
                 {"id": "px", "type": "plex", "name": "집", "url": str(origin.make_url("")).rstrip("/"), "token": "T"},
                 {"id": "tv", "type": "iptv", "name": "TV", "m3u": "http://127.0.0.1:9/x.m3u"},
+                {"id": "kr", "type": "kradio", "name": "공중파 라디오"},
             ]})
+            from ym_player import server
+            app[server.KRADIO].base = "http://127.0.0.1:9/"   # 저장소에 닿지 않게
             await c.put("/api/me/prefs", json={"fav_channels": ["tv:1"]})
 
             st = await (await c.get("/api/admin/status")).json()
             by_id = {s["id"]: s for s in st["sources"]}
             assert by_id["px"]["ok"] is False  # 가짜 Plex에는 /identity가 없다
             assert by_id["tv"]["ok"] is False and st["server"]["users"] == 2
+            # 공중파 라디오는 자기 방법으로 점검한다 (예전엔 텔레그램으로 점검해 "Telegram API ID…" 오류가 났다)
+            assert "Telegram" not in by_id["kr"]["detail"] and "채널" in by_id["kr"]["detail"]
 
             r = await c.get("/api/admin/backup")
             assert r.status == 200 and "attachment" in r.headers["Content-Disposition"]

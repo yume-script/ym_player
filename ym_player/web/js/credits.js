@@ -106,6 +106,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 149,
+        "version": "1.2.12",
+        "date": "2026-11-14",
+        "title": "설정 > 상태: 공중파 라디오가 \"Telegram API ID…\" 오류로 나오던 문제 - 채널 목록을 받아 보는 점검으로 (BookOasis 소스도 로그인 점검)"
+    },
+    {
         "pr": 148,
         "version": "1.2.11",
         "date": "2026-11-14",
