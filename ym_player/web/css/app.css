@@ -1317,3 +1317,21 @@ body.docpip { margin: 0; background: #000; overflow: hidden; }
 .mirror-also { margin: 0 0 0.5rem; padding: 0.5rem 0.75rem; border-radius: var(--radius); background: rgba(var(--accent-rgb), 0.1);
     border: 1px solid rgba(var(--accent-rgb), 0.35); font-size: 0.88rem; }
 .mirror-also a { color: var(--accent); font-weight: 600; }
+
+/* 자동 올리기: 계정별 현황 · 다시 올리기 · 포스터 고르기 */
+.mirror-accounts { display: flex; flex-wrap: wrap; gap: 0.4rem 1rem; margin: 0.4rem 0; font-size: 0.85rem; }
+.mirror-acct { padding: 0.25rem 0.6rem; border-radius: 999px; background: var(--bg-elev2); color: var(--muted); }
+.mirror-acct b { color: var(--text); }
+.mirror-hist-tabs { gap: 0.3rem; }
+.mirror-posters { display: flex; flex-direction: column; gap: 0.4rem; margin: 0.4rem 0; }
+.mirror-excluded { display: flex; flex-direction: column; gap: 0.3rem; max-height: 60vh; overflow: auto; font-size: 0.88rem; }
+.mirror-pick-dlg { display: flex; flex-direction: column; gap: 0.6rem; min-width: min(560px, 86vw); }
+.mirror-pick-dlg .toolbar .input { flex: 1; min-width: 0; }
+.mirror-pick-list { display: flex; flex-direction: column; gap: 0.3rem; max-height: 55vh; overflow: auto; }
+.mirror-pick-item { display: flex; align-items: center; gap: 0.7rem; padding: 0.35rem; border: 1px solid var(--border); border-radius: var(--radius);
+    background: none; color: var(--text); text-align: left; cursor: pointer; font: inherit; }
+.mirror-pick-item:hover { background: var(--bg-elev2); }
+.mirror-pick-item img, .mirror-pick-noimg { width: 46px; height: 69px; object-fit: cover; border-radius: 4px; flex: 0 0 46px; background: var(--bg-elev2);
+    display: flex; align-items: center; justify-content: center; color: var(--muted); }
+.mirror-pick-item span { display: flex; flex-direction: column; min-width: 0; }
+.mirror-pick-dlg .toolbar { flex-wrap: wrap; }

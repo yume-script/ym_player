@@ -3517,6 +3517,45 @@ async def admin_mirror_shot(request):
 
 
 @admin_only
+async def admin_mirror_requeue(request):
+    """취소·건너뛴 항목 다시 올리기 {days: 7 | 30 | 0(전체), rule(비우면 모든 규칙)}
+    -> {queued: [제목], excluded: [{title, reason}]} (이미 올린 같은 파일·같은 회차는 빼고)"""
+    body = await _json_body(request)
+    try:
+        days = int(body.get("days") or 0)
+    except (TypeError, ValueError):
+        days = 0
+    if days not in (0, 7, 30):
+        return _json_error(400, "기간은 7, 30, 0(전체) 중 하나입니다.")
+    res = request.app[MIRROR].requeue_skipped(days or None, str(body.get("rule") or "") or None)
+    return web.json_response({"success": True, **res})
+
+
+@admin_only
+async def admin_mirror_posters(request):
+    """rclone(폴더) 규칙의 TMDB 포스터 {action}
+    backfill(예전에 올린 것 한꺼번에 찾기, rule) | search(tg, kind, q, year) | set(tg, mkey, kind, tmdb_id - 0이면 정보 없음)"""
+    body = await _json_body(request)
+    mirror, action = request.app[MIRROR], body.get("action")
+    try:
+        if action == "backfill":
+            return web.json_response({"success": True, "poster": mirror.start_poster_backfill(str(body.get("rule") or "") or None)})
+        if action == "search":
+            res = await mirror.search_poster(str(body.get("tg") or ""), body.get("kind"), str(body.get("q") or "").strip()[:200],
+                                             str(body.get("year") or "")[:4])
+            return web.json_response({"success": True, "results": res})
+        if action == "set":
+            tg, mkey = str(body.get("tg") or ""), str(body.get("mkey") or "")
+            if not mkey or not config_store.get_source(config_store.load(), tg):
+                return _json_error(400, "작품을 찾을 수 없습니다.")
+            data = await mirror.set_poster(tg, mkey, body.get("kind"), int(body.get("tmdb_id") or 0))
+            return web.json_response({"success": True, "meta": data})
+    except ValueError as e:
+        return _json_error(400, str(e))
+    return _json_error(400, "action은 backfill, search, set 중 하나입니다.")
+
+
+@admin_only
 async def admin_mirror_test(request):
     body = await _json_body(request)
     try:
@@ -4103,6 +4142,8 @@ def create_app(require_auth=True):
     app.router.add_post("/api/admin/plex-tg/check", admin_mirror_check)
     app.router.add_post("/api/admin/plex-tg/test", admin_mirror_test)
     app.router.add_post("/api/admin/plex-tg/item", admin_mirror_item)
+    app.router.add_post("/api/admin/plex-tg/requeue", admin_mirror_requeue)
+    app.router.add_post("/api/admin/plex-tg/posters", admin_mirror_posters)
     app.router.add_get("/api/admin/plex-tg/shot", admin_mirror_shot)
     app.router.add_put("/api/admin/general", admin_general_put)
     app.router.add_get("/api/admin/discord", admin_discord_get)

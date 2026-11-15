@@ -226,7 +226,7 @@ ym_player/                       저장소 루트
 | `GET /api/tg/{id}/channels · videos · video/{c}/{m} · home` | 채널 목록, 영상 목록(색인·과거 채우기 - 보여 줄 것이 있으면 텔레그램을 기다리지 않고 바로, 오래된 쪽은 뒤에서), 영상 하나, 홈 줄 |
 | `GET /api/tg/{id}/stream/{c}/{m}` · `thumb/{c}/{m}` · `POST progress` | Range 스트림, 썸네일, 재생 위치 저장 (설정에서 고른 채널만) |
 | `GET /api/tg/{id}/video/{c}/{m}?probe=1` · `GET /api/tg/{id}/transcode/{c}/{m}?start=초&mode=` | 재생 방법 판단(ffprobe), ffmpeg 서버 변환 스트림 (조각난 MP4) |
-| `GET/PUT /api/admin/plex-tg` · `GET .../options` · `POST .../check` · `POST .../test` · `POST .../item` · `GET .../shot` | Plex → 텔레그램 자동 올리기 설정·상태 / 고를 라이브러리·소스 / 지금 확인 / 규칙 시험 (관리자만) |
+| `GET/PUT /api/admin/plex-tg` · `GET .../options` · `POST .../check` · `POST .../test` · `POST .../item` · `GET .../shot` · `POST .../requeue` · `POST .../posters` | Plex → 텔레그램 자동 올리기 설정·상태 / 고를 라이브러리·소스 / 지금 확인 / 규칙 시험 / 취소·건너뛴 것 다시 올리기 / rclone 업로드 포스터 복구·검색·고르기 (관리자만) |
 | `GET /api/activity` · `POST /api/activity/report` | 지금 재생 중인 스트림 수와 최근 5분 버벅임(`stalls`·`retries`) (숫자만, 헤더 `X-Activity-Token`(= `MP_ACTIVITY_TOKEN`) 또는 관리자 로그인) / 재생기가 버벅임을 알림 |
 | `GET/PUT /api/admin/general` | 공통 설정 (웹툰 BL·GL 숨기기 `hide_bl_gl`, 관리자만) |
 | `GET /api/ticker?after=&boot=` · `GET/PUT /api/admin/discord`, `POST /api/admin/discord/test` | 아래쪽에 흘릴 디스코드 새 글 / 디스코드 설정·상태·시험 글 (관리자만) |

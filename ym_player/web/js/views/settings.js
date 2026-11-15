@@ -1437,6 +1437,10 @@ async function renderMirror(pane) {
         h('option', { value: v, text: t, selected: (st.cpu_preset || 'superfast') === v })));
     const maxSel = h('select', { class: 'select' }, [[0, '자동 (프리미엄 계정이면 4GB, 아니면 2GB)'], [2, '2GB로 고정 (일반 계정)'], [4, '4GB로 고정 (텔레그램 프리미엄)']].map(([v, t]) =>
         h('option', { value: String(v), text: t, selected: st.max_gb === v })));
+    const slotSel = h('select', { class: 'select mirror-slots' }, [[1, '1개 (서버 부하 적게, 기본)'], [2, '2개'], [3, '3개 (CPU·그래픽 카드가 넉넉할 때)']].map(([v, t]) =>
+        h('option', { value: String(v), text: t, selected: (st.encode_slots || 1) === v })));
+    const acctName = (tg) => (opts.telegram.find((t) => t.id === tg) || {}).name || tg || '규칙 없음';
+    let histFilter = '';   // 기록을 볼 계정 ('' = 전체)
     const rulesBox = h('div', { class: 'mirror-rules' });
     const rows = [];
     const opt = (v, t, sel, name) => h('option', { value: v, text: t, selected: sel, dataset: { name: name || t } });
@@ -1519,7 +1523,7 @@ async function renderMirror(pane) {
     save.addEventListener('click', async () => {
         save.disabled = true;
         try {
-            const r = await api('/api/admin/plex-tg', { method: 'PUT', json: { interval: Number(intervalIn.value), max_gb: Number(maxSel.value), max_gb_v: 1, encoder: encSel.value, cpu_preset: presetSel.value, hours: hoursSel.value, rules: rows.map((x) => x.get()) } });
+            const r = await api('/api/admin/plex-tg', { method: 'PUT', json: { interval: Number(intervalIn.value), max_gb: Number(maxSel.value), max_gb_v: 1, encoder: encSel.value, cpu_preset: presetSel.value, hours: hoursSel.value, encode_slots: Number(slotSel.value), rules: rows.map((x) => x.get()) } });
             r.settings.rules.forEach((x, i) => { if (rows[i]) rows[i].id = x.id; });
             toast('저장했습니다. 새 규칙은 지금 있는 것 다음부터 올립니다.', 'success', 5000);
             setTimeout(paintStatus, 1500);
@@ -1532,7 +1536,9 @@ async function renderMirror(pane) {
         if (!statusBox.isConnected && pane.isConnected === false) return;
         let s;
         try { s = (await api('/api/admin/plex-tg')).status; } catch (e) { return; }
-        const cur = s.current;
+        const lanes = s.lanes || (s.current ? [{ tg: '', current: s.current }] : []);
+        const cur = lanes.find((l) => l.current) ? lanes.find((l) => l.current).current : null;
+        const many = Object.keys(s.accounts || {}).length > 1 || lanes.length > 1;
         const when = (t) => (t ? new Date(t * 1000).toLocaleString([], { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '');
         const chip = (cls, text) => h('span', { class: `mirror-chip ${cls}`, text });
         const row = (title, status, subs, note, extra = null) => h('div', { class: 'mirror-row', role: 'row' },
@@ -1543,13 +1549,21 @@ async function renderMirror(pane) {
         // 진행: 지금 올리는 것 -> 올릴 차례 -> 자막 기다리는 것 (자막을 기다리는 것은 확인할 때마다 대기열에 다시 들어가므로 한 줄로)
         const waitKeys = new Map((s.waiting || []).map((w) => [`${w.rule}/${w.key}`, w]));
         const live = [];
-        if (cur) {
-            const pct = cur.total ? Math.min(100, (cur.done / cur.total) * 100) : 0;
-            live.push(row(cur.title, chip('run', '올리는 중'), '', `${cur.phase}${cur.speed && /인코딩/.test(cur.phase) ? ` · ${cur.speed}` : ''}${cur.total && /올리는|받는/.test(cur.phase) ? ` · ${fmtB(cur.done)} / ${fmtB(cur.total)}` : ''}`,
-                h('div', { class: 'cache-bar mirror-bar' }, h('div', { style: { width: `${pct}%` } }))));
+        const shown = new Set();
+        const laneRows = [];
+        // 계정마다 지금 올리는 것 (같은 계정은 차례로, 다른 계정은 동시에)
+        for (const l of lanes) {
+            const c = l.current;
+            if (!c) continue;
+            const pct = c.total ? Math.min(100, (c.done / c.total) * 100) : 0;
+            const flood = l.flood_until && /요청 제한/.test(c.phase || '');
+            const r = row(c.title, chip(flood ? 'wait' : 'run', flood ? '계정 대기' : '올리는 중'), '',
+                `${many ? `[${acctName(l.tg)}] ` : ''}${c.phase}${c.speed && /인코딩/.test(c.phase) ? ` · ${c.speed}` : ''}${c.total && /올리는|받는/.test(c.phase) ? ` · ${fmtB(c.done)} / ${fmtB(c.total)}` : ''}${flood ? ` · ${when(l.flood_until)}까지` : ''}`,
+                h('div', { class: 'cache-bar mirror-bar' }, h('div', { style: { width: `${pct}%` } })));
+            live.push(r);
+            laneRows.push([r, c]);
+            shown.add(`${c.rule}/${c.key}`);
         }
-        const curKey = cur ? `${cur.rule}/${cur.key}` : '';
-        const shown = new Set([curKey]);
         // 항목 단추: 자막 기다림은 [지금 올리기]/[빼기], 나머지는 [취소] (다시 들어오지 않게)
         const act = (w, action, label, ask) => h('button', { class: `btn btn-sm${action === 'cancel' ? ' danger' : ''}`, on: { click: async (e) => {
             if (ask && !confirm(ask)) return;
@@ -1562,12 +1576,12 @@ async function renderMirror(pane) {
         } } }, label);
         const cancelBtn = (w, running) => act(w, 'cancel', '취소',
             running ? `지금 올리는 "${w.title}"을(를) 멈추고 취소할까요? (다시 올리지 않음)` : null);
-        if (cur && live.length) live[0].lastChild.append(h('span', { class: 'mirror-actions' }, cancelBtn({ rule: cur.rule, key: cur.key, title: cur.title }, true)));
+        for (const [r, c] of laneRows) if (c.rule) r.lastChild.append(h('span', { class: 'mirror-actions' }, cancelBtn({ rule: c.rule, key: c.key, title: c.title }, true)));
         for (const q of s.queue) {
             const k = `${q.rule}/${q.key}`;
             if (shown.has(k) || waitKeys.has(k)) continue;
             shown.add(k);
-            const r = row(q.title, chip('queue', '올릴 차례'), '확인 전', '');
+            const r = row(q.title, chip('queue', '올릴 차례'), '확인 전', many ? acctName(q.tg) : '');
             r.lastChild.append(h('span', { class: 'mirror-actions' }, cancelBtn(q)));
             live.push(r);
         }
@@ -1596,11 +1610,11 @@ async function renderMirror(pane) {
             r.lastChild.append(h('span', { class: 'mirror-actions' }, cancelBtn(x)));
             live.push(r);
         }
-        const hist = s.history.map((x) => row(x.title,
+        const hist = s.history.filter((x) => !histFilter || (x.tg || '') === histFilter).map((x) => row(x.title,
             x.ok ? chip('ok', '완료') : String(x.note || '').startsWith('건너뜀') ? chip('skip', '건너뜀') : chip('fail', '실패'),
             x.subs || (x.ok ? '' : '-'),
             // 자막 이야기는 자막 칸에 있으니 비고에서는 뺀다
-            [when(x.at), x.channel ? `→ ${x.channel}` : '',
+            [when(x.at), many && x.tg !== undefined ? acctName(x.tg) : '', x.channel ? `→ ${x.channel}` : '', x.again ? '다시 올림' : '',
                 ...String(x.note || '').split(', ').filter((n) => n && !(x.subs && /^(자막 파일 \d+개 첨부|내장 자막|자막 없음|자막 입혀 인코딩)$/.test(n)))]
                 .filter(Boolean).join(' · ')));
         statusBox.replaceChildren(...[
@@ -1618,11 +1632,112 @@ async function renderMirror(pane) {
                     paintStatus();
                 } } }, icon('ban'), ' 전체 취소') : null),
             live.length ? h('div', { class: 'mirror-table', role: 'table' }, head(), ...live) : h('p', { class: 'muted', text: '올릴 것이 없습니다.' }),
-            h('h4', { text: '최근 기록' }),
+            accountsBox(s),
+            againBox(s),
+            postersBox(s),
+            h('div', { class: 'mirror-live-head' }, h('h4', { text: '최근 기록' }), histTabs(s)),
             hist.length ? h('div', { class: 'mirror-table', role: 'table' }, head(), ...hist) : h('p', { class: 'muted', text: '아직 올린 것이 없습니다.' }),
         ].filter(Boolean));
         clearTimeout(pane._mirrorTimer);
-        if (pane.isConnected && !pane.classList.contains('hidden')) pane._mirrorTimer = setTimeout(paintStatus, cur || s.queue.length ? 2000 : 15000);
+        const busy = cur || s.queue.length || (s.poster && s.poster.running);
+        if (pane.isConnected && !pane.classList.contains('hidden')) pane._mirrorTimer = setTimeout(paintStatus, busy ? 2000 : 15000);
+    }
+
+    // 계정별 현황: 대기·성공·실패 (계정이 둘 이상일 때)
+    function accountsBox(s) {
+        const acc = Object.entries(s.accounts || {});
+        if (acc.length < 2) return null;
+        return h('div', { class: 'mirror-accounts' }, acc.map(([tg, a]) => {
+            const lane = (s.lanes || []).find((l) => l.tg === tg && l.current);
+            const flood = lane && lane.flood_until;
+            return h('span', { class: 'mirror-acct' }, h('b', { text: acctName(tg) }),
+                ` ${flood ? '요청 제한으로 대기' : lane ? '올리는 중' : '쉬는 중'} · 대기 ${a.queued || 0} · 성공 ${a.ok || 0} · 실패 ${a.fail || 0}`);
+        }));
+    }
+    function histTabs(s) {
+        const tgs = [...new Set((s.history || []).map((x) => x.tg || ''))];
+        if (tgs.length < 2) return null;
+        return h('div', { class: 'toolbar mirror-hist-tabs' }, [['', '전체'], ...tgs.map((t) => [t, acctName(t)])].map(([v, t]) =>
+            h('button', { class: `btn btn-sm${histFilter === v ? ' btn-accent' : ''}`, type: 'button', text: t,
+                on: { click: () => { histFilter = v; paintStatus(); } } })));
+    }
+    // 취소·건너뛴 항목 다시 올리기 (이미 올린 같은 파일·회차는 빼고)
+    function againBox(s) {
+        if (!s.skipped) return null;
+        const daysSel = h('select', { class: 'select select-sm' }, [['7', '최근 7일'], ['30', '최근 30일'], ['0', '전체']].map(([v, t]) => h('option', { value: v, text: t })));
+        const go = h('button', { class: 'btn btn-sm', type: 'button' }, icon('rotate-left'), ' 다시 올리기');
+        go.addEventListener('click', async () => {
+            go.disabled = true;
+            try {
+                const r = await api('/api/admin/plex-tg/requeue', { method: 'POST', json: { days: Number(daysSel.value) } });
+                toast(`${r.queued.length}개를 다시 올릴 차례에 넣었습니다${r.excluded.length ? ` (${r.excluded.length}개는 이미 올라가 있어 뺌)` : ''}.`, 'success', 6000);
+                if (r.excluded.length) {
+                    modal('다시 올리지 않은 것', h('div', { class: 'mirror-excluded' }, r.excluded.slice(0, 200).map((x) =>
+                        h('div', {}, h('b', { text: x.title }), h('span', { class: 'muted', text: ` - ${x.reason}` })))));
+                }
+            } catch (e) { toast(e.message, 'error'); } finally { go.disabled = false; }
+            paintStatus();
+        });
+        return h('div', { class: 'mirror-wait' }, h('span', { class: 'muted', text: `취소·건너뛴 항목 ${s.skipped}개:` }), daysSel, go,
+            h('span', { class: 'muted', text: '이미 올린 같은 회차는 빼고 바로 올릴 차례에 넣습니다.' }));
+    }
+    // rclone(폴더) 규칙의 TMDB 포스터: 복구 진행 · 못 찾은 것 직접 고르기
+    function postersBox(s) {
+        const chip = (cls, text) => h('span', { class: `mirror-chip ${cls}`, text });
+        const when = (t) => (t ? new Date(t * 1000).toLocaleString([], { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '');
+        const hasFolder = st.rules.some((r) => r.kind === 'folder');
+        const miss = s.poster_missing || [];
+        if (!hasFolder && !miss.length) return null;
+        const p = s.poster;
+        const btn = h('button', { class: 'btn btn-sm', type: 'button', disabled: !!(p && p.running) }, icon('image'), ' 포스터 복구');
+        btn.addEventListener('click', async () => {
+            btn.disabled = true;
+            try { await api('/api/admin/plex-tg/posters', { method: 'POST', json: { action: 'backfill' } }); toast('rclone으로 올린 영상의 포스터를 TMDB에서 찾습니다.'); }
+            catch (e) { toast(e.message, 'error', 6000); }
+            paintStatus();
+        });
+        const prog = p ? (p.running ? `찾는 중 ${p.done}/${p.total} (찾음 ${p.found} · 못 찾음 ${p.missing})`
+            : `마지막 복구: ${p.total}개 중 ${p.found}개 찾음${p.missing ? ` · ${p.missing}개 못 찾음` : ''}${p.error ? ` · ${p.error}` : ''}`) : '';
+        const list = miss.map((m) => {
+            const pick = h('button', { class: 'btn btn-sm', type: 'button' }, icon('magnifying-glass'), ' 직접 고르기');
+            pick.addEventListener('click', () => pickPoster(m));
+            return h('div', { class: 'mirror-row' }, h('span', { class: 'mirror-title', title: m.title, text: m.title }),
+                h('span', {}, chip(m.gave_up ? 'fail' : 'wait', m.gave_up ? '못 찾음' : '다시 찾을 예정')), h('span', { text: m.kind === 'tv' ? '드라마' : '영화' }),
+                h('span', { class: 'mirror-note muted', text: `${m.error || ''}${!m.gave_up && m.at ? ` · ${when(m.at)}에 다시` : ''}` }, h('span', { class: 'mirror-actions' }, pick)));
+        });
+        return h('div', { class: 'mirror-posters' },
+            h('div', { class: 'mirror-wait' }, h('span', { class: 'muted', text: 'rclone 업로드 포스터(TMDB):' }), btn, h('span', { class: 'muted', text: prog || '예전에 올린 것 중 포스터가 없는 작품을 한꺼번에 찾습니다.' })),
+            list.length ? h('div', { class: 'mirror-table', role: 'table' }, ...list) : null);
+    }
+    function pickPoster(m) {
+        const kindSel = h('select', { class: 'select select-sm' }, [['tv', '드라마·TV'], ['movie', '영화']].map(([v, t]) => h('option', { value: v, text: t, selected: m.kind === v })));
+        const qIn = h('input', { class: 'input', value: (m.titles || [])[0] || m.title || '' });
+        const yIn = h('input', { class: 'input input-sm', placeholder: '연도', value: m.year || '', style: { width: '5rem' } });
+        const out = h('div', { class: 'mirror-pick-list' });
+        const choose = async (id, label) => {
+            try {
+                await api('/api/admin/plex-tg/posters', { method: 'POST', json: { action: 'set', tg: m.tg, mkey: m.mkey, kind: kindSel.value, tmdb_id: id } });
+                toast(id ? `"${label}"(으)로 정했습니다.` : '작품 정보 없음으로 정했습니다.', 'success');
+                dlg.close(); paintStatus();
+            } catch (e) { toast(e.message, 'error'); }
+        };
+        const search = async () => {
+            clear(out).appendChild(h('span', { class: 'muted', text: '찾는 중...' }));
+            try {
+                const r = await api('/api/admin/plex-tg/posters', { method: 'POST', json: { action: 'search', tg: m.tg, kind: kindSel.value, q: qIn.value, year: yIn.value } });
+                clear(out);
+                if (!r.results.length) out.appendChild(h('span', { class: 'muted', text: '결과가 없습니다. 이름을 바꿔 찾아 보세요.' }));
+                for (const x of r.results) {
+                    out.appendChild(h('button', { class: 'mirror-pick-item', type: 'button', on: { click: () => choose(x.id, x.title) } },
+                        x.poster ? h('img', { src: x.poster, alt: '', loading: 'lazy' }) : h('span', { class: 'mirror-pick-noimg' }, icon('image')),
+                        h('span', {}, h('b', { text: `${x.title}${x.year ? ` (${x.year})` : ''}` }), h('small', { class: 'muted', text: x.original && x.original !== x.title ? x.original : '' }))));
+                }
+            } catch (e) { clear(out).appendChild(h('span', { class: 'muted error', text: e.message })); }
+        };
+        const dlg = modal(`포스터 고르기 - ${m.title}`, h('div', { class: 'mirror-pick-dlg' },
+            h('div', { class: 'toolbar' }, kindSel, qIn, yIn, h('button', { class: 'btn btn-accent', type: 'button', on: { click: search } }, icon('magnifying-glass'), ' 찾기')), out),
+            [h('button', { class: 'btn', on: { click: () => choose(0, '') } }, '작품 정보 없음으로')]);
+        search();
     }
     const plexErr = opts.plex.filter((p) => p.error).map((p) => h('p', { class: 'muted error', text: `${p.name}: ${p.error}` }));
     clear(pane).append(
@@ -1632,16 +1747,18 @@ async function renderMirror(pane) {
                 h('a', { href: 'https://github.com/yume-script/bookoasis_assistant', target: '_blank', rel: 'noopener', text: 'BookOasis Assistant' }),
                 '에도 있습니다 (사이드바 "텔레그램 자동 올리기"). 같은 채널에 둘 다 켜면 두 번 올라가니 한쪽에서만 켜세요.'),
             h('p', { text: '고른 Plex 라이브러리에 새 동영상(영화·에피소드)이 들어오면, 로그인해 둔 텔레그램 계정으로 고른 채널에 파일을 올립니다. '
-                + '규칙을 처음 저장할 때 이미 있던 것은 올리지 않고 그 뒤에 들어온 것부터 올립니다. 한 번에 하나씩 올리고, 실패하면 다음 확인 때 다시(3번까지). '
+                + '규칙을 처음 저장할 때 이미 있던 것은 올리지 않고 그 뒤에 들어온 것부터 올립니다. 같은 텔레그램 계정은 하나씩 차례로, 다른 계정은 동시에 올리고(한 계정이 요청 제한에 걸려도 다른 계정은 계속), 실패하면 다음 확인 때 다시(3번까지). '
+                + '드라마는 작품·시즌·회차가 같으면(ST/SW 태그, mp4/mkv, 해상도와 상관없이) 이미 올린 것으로 보고 건너뜁니다. '
                 + '한도를 넘는 파일은 ffmpeg로 시간을 나눠 "이름_0000", "이름_0001"…로 올리고(YMPlayer에서 이어서 재생), 외부 자막 파일도 같이 올립니다. '
                 + 'Plex의 포스터·줄거리·장르·출연·회차 정보를 같이 남겨 텔레그램 화면에서 Plex처럼 보입니다. '
                 + '규칙을 "rclone 드라이브 · 폴더"로 바꾸면 그 폴더에 새로 올라온 동영상을 텔레그램에서 바로 재생되는 mp4(H.264/AAC)로 바꿔 올립니다 '
-                + '(큰 파일은 720p로 줄이고, 같은 이름의 SRT 자막이 있으면 화면에 입힘).' }),
+                + '(큰 파일은 720p로 줄이고, 같은 이름의 SRT 자막이 있으면 화면에 입힘). rclone 업로드는 Plex 정보가 없어서 파일 이름으로 TMDB에서 작품을 찾아 포스터를 붙입니다(같은 드라마는 처음 찾은 것을 그대로).' }),
             ...(opts.telegram.length ? [] : [h('p', { class: 'muted error', text: '텔레그램 소스(로그인까지)가 있어야 합니다.' })]),
             ...plexErr,
             h('div', { class: 'row-2' }, field('확인 간격 (분)', intervalIn, '2~1440'), field('파일 크기 한도', maxSel, '넘는 파일은 한도의 몇 배인지만큼 같은 길이로 나눠 올립니다 (2배까지는 반씩, 서버에 ffmpeg 필요). 자동은 규칙마다 올리는 텔레그램 계정을 봅니다.')),
             h('div', { class: 'row-2' }, field('인코더', encSel, '그래픽 카드로 인코딩하면 CPU보다 몇 배 빠릅니다. 자동은 이 서버에서 실제로 되는 것을 골라 쓰고, 실패하면 CPU로 다시 합니다.'),
                 field('CPU 인코딩 빠르기', presetSel, 'CPU로 할 때만. 빠를수록 같은 화질에 파일이 조금 커집니다.')),
+            field('동시 인코딩', slotSel, '텔레그램 계정이 여럿이면 계정마다 따로 동시에 올립니다(같은 계정은 차례로). 인코딩은 CPU를 많이 써서 이만큼만 동시에 하고, 나머지는 차례를 기다립니다.'),
             field('올리기 시간대', hoursSel, '받기·인코딩·올리기를 이 시간에만 합니다 (사람들이 보는 시간에 서버를 쉬게). 새 항목 찾기는 늘 하고, 줄에 쌓아 두었다가 이 시간에 올립니다. 시험 올리기도 이 시간에만.'),
             rulesBox,
             h('div', { class: 'toolbar' }, h('button', { class: 'btn', on: { click: () => addRule() } }, icon('plus'), ' 규칙 추가'), save, check),

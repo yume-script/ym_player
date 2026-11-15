@@ -1106,15 +1106,67 @@ def meta_target(sid, channel, msg=None, series_key=None):
     if srow:
         return {"mkey": f"tv:{srow['skey']}", "kind": "tv", "titles": [srow["title"], poster_title],
                 "year": "", "season": srow["season"], "ep": srow["ep"]}
-    name, ep, year = _media_key(r["title"], r["file_name"])
-    titles = [poster_title, _display_title(r["title"]), _display_title(r["file_name"])]
+    return meta_target_for(r["title"], r["file_name"], poster_title)
+
+
+def meta_target_for(title, file_name, poster_title=""):
+    """제목·파일 이름만으로 찾을 것 (색인에 아직 없는 방금 올린 영상 - 자동 올리기가 TMDB 정보를 미리 찾을 때)"""
+    name, ep, year = _media_key(title, file_name)
+    titles = [poster_title, _display_title(title), _display_title(file_name)]
     titles = [t for i, t in enumerate(titles) if t and t not in titles[:i]]
     if not name:
         return None
-    info = _episode_info(r["title"], r["file_name"])
+    info = _episode_info(title, file_name)
     if info:
         return {"mkey": f"tv:{info[0]}", "kind": "tv", "titles": titles, "year": "", "season": info[1], "ep": info[2]}
     return {"mkey": f"movie:{name}:{year}", "kind": "movie", "titles": titles, "year": year, "season": None, "ep": None}
+
+
+def tmdb_targets(sid, channel):
+    """이 채널 영상들의 찾을 작품 (TMDB) - 같은 작품(드라마 회차들)은 하나로. Plex 정보가 붙은 영상은 뺀다.
+    [{mkey, kind, titles, year, have(찾아 둔 정보가 있나), fetched, manual}]"""
+    with db() as conn:
+        msgs = [r["msg"] for r in conn.execute(
+            "SELECT v.msg FROM videos v LEFT JOIN plex_meta p ON p.source=v.source AND p.channel=v.channel AND p.msg=v.msg "
+            "WHERE v.source=? AND v.channel=? AND v.kind='video' AND p.msg IS NULL ORDER BY v.msg DESC", (sid, channel)).fetchall()]
+    out = {}
+    for msg in msgs:
+        t = meta_target(sid, channel, msg=msg)
+        if t and t["mkey"] not in out:
+            out[t["mkey"]] = t
+    if out:
+        with db() as conn:
+            for mk in list(out):
+                hit = conn.execute("SELECT data IS NOT NULL AS have, fetched, manual FROM meta WHERE source=? AND mkey=?", (sid, mk)).fetchone()
+                out[mk].update(have=bool(hit and hit["have"]), fetched=(hit["fetched"] if hit else 0) or 0,
+                               manual=bool(hit and hit["manual"]))
+    return [{**t, "have": t.get("have", False), "fetched": t.get("fetched", 0), "manual": t.get("manual", False)} for t in out.values()]
+
+
+_EP_CACHE = {}   # (소스, 채널) -> (영상 수, 마지막 메시지, {(작품 키, 시즌, 회차): 제목})
+
+
+def channel_episode(sid, channel, name_key, season, ep):
+    """이 채널에 같은 작품·시즌·회차 영상이 이미 있으면 그 제목 (없으면 "") - 자동 올리기의 회차 중복 막기.
+    태그(ST/SW)·확장자(mp4/mkv)·해상도와 상관없이 파일 이름에서 읽은 작품 이름 키·시즌·회차로 본다 (특별회차는 빼고)"""
+    if not name_key or ep is None:
+        return ""
+    key = (sid, int(channel))
+    with db() as conn:
+        n, last = conn.execute("SELECT COUNT(*), COALESCE(MAX(msg), 0) FROM videos WHERE source=? AND channel=? AND kind='video'",
+                               key).fetchone()
+        hit = _EP_CACHE.get(key)
+        if not hit or hit[0] != n or hit[1] != last:
+            eps = {}
+            for r in conn.execute("SELECT title, file_name FROM videos WHERE source=? AND channel=? AND kind='video' ORDER BY msg",
+                                  key):
+                if _special_info(r["title"], r["file_name"]):
+                    continue
+                info = _episode_info(r["title"], r["file_name"])
+                if info:
+                    eps.setdefault(info, r["title"] or r["file_name"])
+            hit = _EP_CACHE[key] = (n, last, eps)
+    return hit[2].get((name_key, int(season or 1), int(ep)), "")
 
 
 # ---------------------------------------------------------------------------
@@ -1285,7 +1337,8 @@ def _first_part(found, how):
 
 
 def _plex_posters(conn, sid, keys):
-    """{(채널, 메시지): Plex 포스터 주소} - 목록 카드용"""
+    """{(채널, 메시지): 포스터 주소} - 목록 카드용. Plex 자동 올리기가 붙인 Plex 포스터, 없으면 찾아 둔 TMDB 포스터
+    (rclone 자동 올리기는 올릴 때 TMDB에서 찾아 둔다 - 정보 고치기로 직접 고른 것도 여기로)"""
     keys = list(keys)
     if not keys:
         return {}
@@ -1297,7 +1350,42 @@ def _plex_posters(conn, sid, keys):
             poster = (json.loads(r["meta"]) or {}).get("poster")
             if poster:
                 out[(c, r["msg"])] = poster
+    missing = [k for k in keys if k not in out]
+    if missing:
+        out.update(_tmdb_posters(conn, sid, missing))
     return out
+
+
+def _tmdb_posters(conn, sid, keys):
+    """{(채널, 메시지): TMDB 포스터} - 찾아 둔 작품 정보(meta 표)에서. 회차는 작품(tv:키), 그 밖은 이름·연도(movie:…)"""
+    want = {}
+    for c in {c for c, _m in keys}:
+        msgs = [m for cc, m in keys if cc == c]
+        for r in conn.execute(
+                f"SELECT v.msg, v.title, v.file_name, v.kind, s.skey FROM videos v LEFT JOIN series s ON s.source=v.source "
+                f"AND s.channel=v.channel AND s.video=v.msg WHERE v.source=? AND v.channel=? AND v.msg IN ({','.join('?' * len(msgs))})",
+                [sid, c, *msgs]):
+            if r["kind"] != "video":
+                continue
+            if r["skey"]:
+                mk = f"tv:{r['skey']}"
+            else:
+                t = meta_target_for(r["title"], r["file_name"])
+                mk = t["mkey"] if t else ""
+            if mk:
+                want[(c, r["msg"])] = mk
+    if not want:
+        return {}
+    mks = sorted(set(want.values()))
+    posters = {}
+    for i in range(0, len(mks), 400):
+        part = mks[i:i + 400]
+        for r in conn.execute(f"SELECT mkey, data FROM meta WHERE source=? AND data IS NOT NULL AND mkey IN ({','.join('?' * len(part))})",
+                              [sid, *part]):
+            poster = (json.loads(r["data"]) or {}).get("poster") or ""
+            if poster:
+                posters[r["mkey"]] = poster.replace("/w500/", "/w342/")
+    return {k: posters[mk] for k, mk in want.items() if mk in posters}
 
 
 def meta_get(sid, mkey):
