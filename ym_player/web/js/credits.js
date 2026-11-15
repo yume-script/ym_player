@@ -106,6 +106,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 155,
+        "version": "1.2.18",
+        "date": "2026-11-15",
+        "title": "브런치: 글 안에 <input>·<iframe/> 같은 태그가 있으면 그 뒤 본문이 사라지던 문제 수정"
+    },
+    {
         "pr": 154,
         "version": "1.2.17",
         "date": "2026-11-15",

@@ -99,8 +99,10 @@ _ALLOWED = {"p", "br", "b", "strong", "i", "em", "u", "s", "strike", "del", "sub
             "h1", "h2", "h3", "h4", "blockquote", "ul", "ol", "li", "hr", "a", "img", "div",
             "figure", "figcaption", "table", "thead", "tbody", "tr", "td", "th", "small"}
 _VOID = {"br", "hr", "img"}
-_DROP = {"script", "style", "noscript", "button", "svg", "iframe", "object", "embed", "form",
-         "input", "select", "textarea", "video", "audio", "template"}
+_DROP = {"script", "style", "noscript", "button", "svg", "iframe", "object", "form",
+         "select", "textarea", "video", "audio", "template"}
+# 닫는 태그가 없는 것 - 그 태그만 버린다 (_DROP에 두면 닫는 태그를 기다리다 그 뒤 본문이 전부 사라짐)
+_DROP_VOID = {"input", "embed", "source", "track", "link", "meta"}
 _KEEP_CLASS = re.compile(r"^(item_type_\w+|blockquote_type\d|hr_type_\d|img_align_\w+)$")
 
 
@@ -112,6 +114,8 @@ class _Sanitizer(HTMLParser):
         self.out, self.stack, self.drop = [], [], 0
 
     def handle_starttag(self, tag, attrs):
+        if tag in _DROP_VOID:
+            return
         if self.drop:
             self.drop += tag in _DROP
             return
@@ -141,6 +145,10 @@ class _Sanitizer(HTMLParser):
             self.stack.append(tag)
 
     def handle_startendtag(self, tag, attrs):
+        """<br/> <img .../> <iframe/> 처럼 스스로 닫는 태그. 버리는 태그는 안에 든 것이 없으니 무시만 한다
+        (handle_starttag로 넘기면 닫는 태그가 오지 않아 그 뒤 본문이 전부 버려짐)"""
+        if self.drop or tag in _DROP:
+            return
         self.handle_starttag(tag, attrs)
         if tag not in _VOID and self.stack and self.stack[-1] == tag:
             self.stack.pop()
