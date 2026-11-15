@@ -271,5 +271,21 @@ def replace_sources(cfg, raw_sources):
             out.append(old_by_id[rid])
             continue
         out.append(_clean_source(r, old_by_id.get(rid)))
+    _share_telegram_api(out)
     cfg["sources"] = out
     return cfg
+
+
+def _share_telegram_api(sources):
+    """텔레그램 계정을 더 넣을 때 API ID/Hash를 비워 두면 다른 텔레그램 소스의 값을 같이 쓴다
+    (my.telegram.org의 앱 하나로 여러 계정이 로그인할 수 있다 - 계정마다 다시 발급받지 않아도 되게)"""
+    tgs = [s for s in sources if s.get("type") == "telegram"]
+    have = [s for s in tgs if s.get("api_id") and s.get("api_hash")]
+    if not have:
+        return
+    for s in tgs:
+        if s.get("api_hash"):
+            continue
+        donor = next((d for d in have if d["api_id"] == s.get("api_id")), None) or (have[0] if not s.get("api_id") else None)
+        if donor:
+            s["api_id"], s["api_hash"] = donor["api_id"], donor["api_hash"]
