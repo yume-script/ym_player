@@ -69,6 +69,9 @@ def test_brunch_article_is_sanitized():
     for bad in (("../x", 1), ("ab", "1; drop"), ("", 3)):
         with pytest.raises(ValueError):
             brunch.article_url(*bad)
+    # 닫는 태그가 없는 <input>이나 스스로 닫는 <iframe/> 뒤의 본문이 사라지지 않음
+    for odd in ('<input type="hidden" value="x">', '<embed src="x">', '<iframe src="x"/>', '<script/>'):
+        assert brunch.sanitize("<p>앞</p>%s<p>뒤 문단</p>" % odd) == "<p>앞</p><p>뒤 문단</p>", odd
     locked = ARTICLE_PAGE.replace('"isMembershipContent": false', '"isMembershipContent": true')
     assert brunch.parse_article(locked, "u")["restricted"] is True
 
