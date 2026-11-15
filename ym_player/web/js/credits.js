@@ -106,6 +106,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 156,
+        "version": "1.2.19",
+        "date": "2026-11-15",
+        "title": "자동 올리기: 텔레그램 계정마다 따로 동시에 올리기(요청 제한은 그 계정만 대기·동시 인코딩 수), 드라마 같은 회차 중복 막기, 취소·건너뛴 것 다시 올리기(7일/30일/전체), rclone 업로드에도 TMDB 포스터(복구·직접 고르기)"
+    },
+    {
         "pr": 155,
         "version": "1.2.18",
         "date": "2026-11-15",
