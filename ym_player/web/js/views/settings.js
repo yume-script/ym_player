@@ -37,9 +37,15 @@ export async function renderSettings(main, _params, query, ctx) {
         ['telegram', 'paper-plane', '텔레그램', () => [
             h('button', {
                 class: 'btn',
-                on: { click: () => add({ type: 'telegram', name: 'Telegram', api_id: '', api_hash: '', phone: '', channels: [], enabled: true }) },
+                on: { click: () => {
+                    // 계정을 더 넣을 때: 다른 텔레그램 소스의 API ID를 미리 채운다 (Hash는 비워 두면 서버가 같은 값을 같이 씀)
+                    const other = registry.config.sources.find((s) => s.type === 'telegram' && s.api_id);
+                    const n = registry.config.sources.filter((s) => s.type === 'telegram').length;
+                    add({ type: 'telegram', name: n ? `Telegram ${n + 1}` : 'Telegram', api_id: other ? other.api_id : '', api_hash: '', phone: '', channels: [], enabled: true });
+                } },
             }, icon('paper-plane'), ' 텔레그램 추가')],
-        'API Hash는 이 서버에만 저장됩니다. 칸을 비워두고 저장하면 기존 값을 그대로 씁니다.'],
+        '텔레그램 계정을 여러 개 넣을 수 있습니다 (소스 하나 = 계정 하나, 계정마다 따로 로그인). 두 번째 계정부터는 API ID/Hash를 비워 두면 '
+            + '먼저 넣은 계정의 값을 같이 씁니다. 자동 올리기 규칙마다 올릴 계정을 고르면 계정마다 따로 동시에 올립니다. API Hash는 이 서버에만 저장됩니다.'],
         ['radio', 'radio', '라디오', () => [
             h('button', { class: 'btn', on: { click: () => add({ type: 'radio', name: '라디오', enabled: true }) } },
                 icon('radio'), ' 라디오 추가')],

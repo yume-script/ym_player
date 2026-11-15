@@ -106,6 +106,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 157,
+        "version": "1.2.20",
+        "date": "2026-11-15",
+        "title": "텔레그램 계정 여러 개: 두 번째 계정부터는 API ID/Hash를 비워 두면 먼저 넣은 계정 것을 같이 씀, TMDB 키도 한 곳에만"
+    },
+    {
         "pr": 156,
         "version": "1.2.19",
         "date": "2026-11-15",

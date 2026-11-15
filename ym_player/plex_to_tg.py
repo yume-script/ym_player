@@ -1272,7 +1272,11 @@ class Mirror:
         get = getattr(config_store, "get_source", None)
         if not get:
             return ""
-        return str((get(config_store.load(), tg_id) or {}).get("tmdb_key") or "").strip()
+        cfg = config_store.load()
+        key = str((get(cfg, tg_id) or {}).get("tmdb_key") or "").strip()
+        if not key:   # 계정이 여럿이면 TMDB 키는 한 곳에만 넣어도 되게 (다른 텔레그램 소스의 키)
+            key = next((str(s.get("tmdb_key")).strip() for s in cfg.get("sources", []) if s.get("type") == "telegram" and s.get("tmdb_key")), "")
+        return key
 
     @staticmethod
     def _poster_on():

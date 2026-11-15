@@ -199,8 +199,8 @@ def test_rclone_poster_from_tmdb(data, monkeypatch):
         await mirror.set_poster("tgA", mk, "tv", 7)
         assert mirror._poster_missing(plex_to_tg.load_state()) == []
         assert telegram_src.meta_get("tgA", mk)["manual"]
-        # B 계정은 TMDB 키가 없다
-        assert "TMDB 키 없음" in await mirror._find_poster({"tg": "tgB", "channel": "-200"}, "작품 X", "X.mkv")
+        # B 계정은 TMDB 키가 없지만 A 계정의 키를 같이 쓴다 (작품명이면 찾음)
+        assert await mirror._find_poster({"tg": "tgB", "channel": "-200"}, "작품명 S01E01", "작품명.S01E01.mkv") == "포스터 찾음 (TMDB)"
     asyncio.run(main())
     # 목록 카드: Plex 정보가 없는 영상도 찾아 둔 TMDB 포스터로
     with telegram_src.db() as conn:
@@ -236,3 +236,20 @@ def test_poster_backfill(data, monkeypatch):
         return mirror.poster_job
     job = asyncio.run(main())
     assert job["total"] == 2 and job["found"] == 1 and job["missing"] == 1 and not job["running"]   # 드라마 회차 둘은 작품 하나
+
+
+def test_second_telegram_account_shares_api(data):
+    """텔레그램 계정을 더 넣을 때 API ID/Hash를 비워 두면 먼저 넣은 계정의 값을 같이 쓴다 (세션 파일은 소스마다 따로)"""
+    cfg = config_store.load()
+    raw = [{"id": "tgA", "keep": True},
+           {"type": "telegram", "name": "둘째", "api_id": "", "api_hash": "", "channels": []},
+           {"type": "telegram", "name": "다른 앱", "api_id": "999", "api_hash": "", "channels": []}]
+    cfg["sources"] = [{**s, "api_hash": "h"} for s in cfg["sources"]]
+    config_store.replace_sources(cfg, raw)
+    tg = [s for s in cfg["sources"] if s["type"] == "telegram"]
+    assert (tg[1]["api_id"], tg[1]["api_hash"]) == ("1", "h")      # 비워 두면 같이 씀
+    assert (tg[2]["api_id"], tg[2]["api_hash"]) == ("999", "")      # 다른 API ID를 적었으면 남의 Hash를 붙이지 않음
+    assert tg[0]["id"] != tg[1]["id"]
+    assert telegram_src.TelegramSource(tg[0]).session_path != telegram_src.TelegramSource(tg[1]).session_path
+    # TMDB 키는 한 계정에만 넣어도 rclone 포스터에 같이 씀
+    assert plex_to_tg.Mirror._tmdb_key("tgB") == "k" * 32
