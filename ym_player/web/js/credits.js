@@ -106,6 +106,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 158,
+        "version": "1.2.21",
+        "date": "2026-11-16",
+        "title": "텔레그램 자동 올리기 기능 제거."
+    },    
+    {
         "pr": 157,
         "version": "1.2.20",
         "date": "2026-11-15",
