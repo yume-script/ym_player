@@ -106,7 +106,7 @@ export async function renderSettings(main, _params, query, ctx) {
         logs: h('div', { class: 'settings-pane' }),
         thanks: h('div', { class: 'settings-pane' }),
     };
-    #const TABS = [['sources', 'layer-group', '소스'], ['general', 'sliders', '공통'], ['users', 'users', '사용자'], ['status', 'heart-pulse', '상태'], ['cache', 'hard-drive', '캐시'], ['look', 'palette', '화면'], ['backup', 'box-archive', '백업'], ['mcp', 'robot', 'MCP'], ['discord', 'comment-dots', '디스코드'], ['mirror', 'cloud-arrow-up', '자동 올리기'], ['logs', 'file-lines', '로그'], ['thanks', 'heart', 'Thanks to']];
+    //const TABS = [['sources', 'layer-group', '소스'], ['general', 'sliders', '공통'], ['users', 'users', '사용자'], ['status', 'heart-pulse', '상태'], ['cache', 'hard-drive', '캐시'], ['look', 'palette', '화면'], ['backup', 'box-archive', '백업'], ['mcp', 'robot', 'MCP'], ['discord', 'comment-dots', '디스코드'], ['mirror', 'cloud-arrow-up', '자동 올리기'], ['logs', 'file-lines', '로그'], ['thanks', 'heart', 'Thanks to']];
     const HIDE_MIRROR = true; // 자동 올리기 탭 숨김 (false로 바꾸면 다시 보임)
     const TABS = [['sources', 'layer-group', '소스'], ['general', 'sliders', '공통'], ['users', 'users', '사용자'], ['status', 'heart-pulse', '상태'], ['cache', 'hard-drive', '캐시'], ['look', 'palette', '화면'], ['backup', 'box-archive', '백업'], ['mcp', 'robot', 'MCP'], ['discord', 'comment-dots', '디스코드'], ['mirror', 'cloud-arrow-up', '자동 올리기'], ['logs', 'file-lines', '로그'], ['thanks', 'heart', 'Thanks to']]
         .filter(([key]) => !(HIDE_MIRROR && key === 'mirror'));
