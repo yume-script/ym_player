@@ -392,3 +392,39 @@ def test_data_saver_switch(page, server):
     page.evaluate(f"import('{base}theme.js').then(m => m.openThemeDialog())")
     page.wait_for_selector(".modal select option[value='on']", state="attached")
     assert "데이터 절약" in page.inner_text(".modal")
+
+
+def test_split_movie_resume_and_part_list(page, server):
+    """나눠 올린 영화: [재생]은 보다 만 조각부터, 상세 화면에 "(1/3) 재생"처럼 조각마다 줄, 고른 조각은 그대로, [처음부터]는 첫 조각"""
+    set_sources(page, server, [{"id": "tg", "type": "telegram", "name": "텔레", "api_id": "1", "api_hash": "h", "enabled": True,
+                                "channels": [{"id": 777, "title": "영화 > 최신"}]}])
+    parts = [{"msg": 10, "part": 1, "title": "쥬라기 (1/3)", "duration": 2700, "position": 0, "watched": True, "size": 1, "mime": "video/mp4"},
+             {"msg": 11, "part": 2, "title": "쥬라기 (2/3)", "duration": 2700, "position": 600, "watched": False, "size": 1, "mime": "video/mp4"},
+             {"msg": 12, "part": 3, "title": "쥬라기 (3/3)", "duration": 2700, "position": 0, "watched": False, "size": 1, "mime": "video/mp4"}]
+
+    def route(r):
+        u = r.request.url
+        for p in parts:
+            if f"/api/tg/tg/video/777/{p['msg']}" in u:
+                return r.fulfill(json={"success": True, "item": {"channel": 777, "msg": p["msg"], "title": "쥬라기 월드", "duration": 2700,
+                                                                 "position": p["position"], "watched": p["watched"], "file_name": f"j_{p['msg']}.mp4",
+                                                                 "play": {"mode": "direct"}, "subs": [], "parts": parts, "caption": ""}})
+        if "/api/tg/tg/meta/" in u:
+            return r.fulfill(json={"success": True, "meta": None})
+        return r.continue_()
+    page.route("**/api/tg/**", route)
+    page.goto(server + "/#/home")
+    page.wait_for_timeout(800)
+    js_modules(page)
+    tg = "window._reg.byId('tg')"
+    assert page.evaluate(f"{tg}.confirmPlay('777:10', {{}})") == "777:11"            # 목록 카드: 보다 만 2번째부터
+    assert page.evaluate(f"{tg}.confirmPlay('777:10:p', {{}})") == "777:10"          # 조각 목록에서 고른 1번째는 그대로
+    assert page.evaluate(f"{tg}.confirmPlay('777:11', {{fromStart: true}})") == "777:10"   # [처음부터]는 첫 조각
+    d = page.evaluate(f"{tg}.getDetail('777:10').then(d => ({{id: d.id, off: d.viewOffset, kids: d.children.map(c => [c.id, c.raw.index, c.raw.title])}}))")
+    assert d["id"] == "777:11" and d["off"] == 600000
+    assert [k[1] for k in d["kids"]] == ["(1/3)", "(2/3)", "(3/3)"] and d["kids"][0][0] == "777:10:p"
+    assert "다 봄" in d["kids"][0][2] and "이어 볼 곳" in d["kids"][1][2]
+    # 화면: 상세에 조각 줄 3개
+    page.goto(server + "/#/item/tg/777%3A10")
+    page.wait_for_selector(".track-row")
+    assert page.locator(".track-row").count() == 3 and "(2/3)" in page.inner_text(".track-list")

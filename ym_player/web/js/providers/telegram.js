@@ -70,6 +70,15 @@ function looksLikePart(v) {
 const ORDINAL = ['첫', '두', '세', '네', '다섯', '여섯', '일곱', '여덟', '아홉', '열'];
 const nth = (n) => `${ORDINAL[n - 1] || n} 번째`;
 
+/** 나눠 올린 영상에서 이어 볼 조각: 보다 만 조각 -> 다 보지 않은 첫 조각 -> 첫 조각 */
+function resumePart(parts) {
+    const unfinished = (p) => !p.watched && !(p.duration && p.position >= p.duration * 0.95);
+    return parts.find((p) => p.position > 30 && unfinished(p)) || parts.find(unfinished) || parts[0];
+}
+// 조각 목록의 "(2/3) 재생"처럼 그 조각을 골라 틀 때 붙는 표시 - 이어 볼 조각으로 바꾸지 않는다
+const EXACT = ':p';
+const plainId = (id) => String(id).replace(/:p$/, '');
+
 /** "pdf" / "epub" (파일 이름, 없으면 형식으로) */
 function docFormat(v) {
     const name = String(v.file_name || '').toLowerCase();
@@ -646,13 +655,40 @@ export class TelegramProvider {
             extraActions: this._fixAction({ channel: v.channel, msg: v.msg }, t && t.kind === 'tv' && v.series ? v.series.title : (m ? m.title : item.title),
                 t ? t.kind : 'movie'),
         };
-        if (!m) return base;
+        if (!m) return this._withParts({ ...base, extraFacts: [['파일', v.file_name || v.title]] }, v);
         const d = this._withMeta(base, m);
         if (t && t.season != null) {
             d.metaLine = [`시즌 ${t.season} · ${t.ep}화${epInfo && epInfo.name ? ` ${epInfo.name}` : ''}`, ...d.metaLine];
             if (epInfo && epInfo.overview) d.summary = epInfo.overview;
         }
         d.extraFacts = [['파일', v.file_name || v.title]];
+        return this._withParts(d, v);
+    }
+
+    /** 나눠 올린 영상: [재생]은 이어 볼 조각으로, 아래에 조각마다 "(1/3) 재생" 줄 */
+    _withParts(d, v) {
+        const parts = v.parts || [];
+        if (parts.length < 2) return d;
+        const n = parts.length;
+        const cur = resumePart(parts);
+        const ci = parts.indexOf(cur);
+        d.id = `${v.channel}:${cur.msg}`;
+        d.viewOffset = (cur.position || 0) * 1000;
+        d.duration = (cur.duration || 0) * 1000;
+        d.watched = parts.every((p) => p.watched);
+        d.metaLine = [...(d.metaLine || []), `${n}개 파일 · 이어 볼 곳 (${ci + 1}/${n})`];
+        d.childrenStyle = 'track';
+        d.childrenTitle = `파일 ${n}개 - 골라서 재생`;
+        d.children = parts.map((p, i) => ({
+            id: `${v.channel}:${p.msg}${EXACT}`,
+            title: `(${i + 1}/${n}) 재생`,
+            raw: {
+                index: `(${i + 1}/${n})`,
+                title: `재생${p.watched ? ' · 다 봄' : p.position > 30 ? ` · ${fmtDuration(p.position * 1000)}까지 봄` : ''}${i === ci ? ' · 이어 볼 곳' : ''}`,
+                duration: (p.duration || 0) * 1000,
+            },
+        }));
+        d.extraFacts = [['파일', parts.map((p, i) => `(${i + 1}/${n}) ${p.title}`).join('\n')]];
         return d;
     }
 
@@ -663,8 +699,13 @@ export class TelegramProvider {
             for (const ep of d.children) await this.setWatched(ep.id, watched);
             return;
         }
-        const [channel, msg] = String(id).split(':');
-        await api(`${this.base}/progress`, { method: 'POST', json: { channel, msg, position: 0, duration: 0, watched } });
+        const [channel, msg] = plainId(id).split(':');
+        let msgs = [msg];
+        try {   // 나눠 올린 영상은 조각 전부를
+            const v = await this._video(plainId(id));
+            if ((v.parts || []).length > 1) msgs = v.parts.map((p) => p.msg);
+        } catch (e) { /* 그 조각만 */ }
+        for (const m of msgs) await api(`${this.base}/progress`, { method: 'POST', json: { channel, msg: m, position: 0, duration: 0, watched } });
     }
 
     /**
@@ -675,13 +716,21 @@ export class TelegramProvider {
     async confirmPlay(id, opts = {}) {
         // 시리즈 카드의 [재생] 등 시리즈 아이디로 오면 다음 볼 회차(보던 회차 -> 안 본 첫 회차)로 바꿔서
         if (String(id).startsWith('series:')) return this._seriesNext(id);
+        if (String(id).endsWith(EXACT)) return plainId(id);   // 조각 목록에서 고른 조각은 그대로
         if (opts.auto) return id;
         const seen = this._seen.get(id);
-        if (seen && !looksLikePart(seen)) return id;
+        if (seen && !looksLikePart(seen) && !(seen.parts_count > 1)) return id;
         let v;
         try { v = await this._video(id); } catch (e) { return id; } // 재생 단계에서 오류를 보여 준다
         const parts = v.parts || [];
         const idx = parts.findIndex((p) => p.msg === v.msg);
+        // 목록 카드(첫 조각)의 [재생]: 보다 만 조각이나 다 보지 않은 첫 조각부터 (예전엔 첫 조각을 처음부터 다시 틀었다)
+        if (idx === 0 && parts.length > 1 && !opts.fromStart) {
+            const cur = resumePart(parts);
+            if (cur.msg !== v.msg) return `${v.channel}:${cur.msg}`;
+        }
+        // [처음부터]: 나눠 올린 영상은 첫 조각의 처음부터
+        if (opts.fromStart && idx > 0) return `${v.channel}:${parts[0].msg}`;
         if (idx <= 0) return id;
         const resumable = v.position > 30 && (!v.duration || v.position < v.duration * 0.95);
         if (resumable && !opts.fromStart) return id;
@@ -717,6 +766,7 @@ export class TelegramProvider {
      */
     async getPlayback(id, { fromStart = false, startAt = null } = {}) {
         if (String(id).startsWith('series:')) id = await this._seriesNext(id);   // (confirmPlay를 거치지 않은 경우에도)
+        id = plainId(id);
         const v = await this._video(id, true);
         const [channel, msg] = String(id).split(':');
         const play = v.play || { mode: 'direct' };

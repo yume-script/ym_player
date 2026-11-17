@@ -106,6 +106,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 163,
+        "version": "1.3.5",
+        "date": "2026-11-17",
+        "title": "나눠 올린 영화: [재생]은 보다 만 조각부터, 상세 화면에 (1/3) 재생처럼 조각마다 재생 줄"
+    },
+    {
         "pr": 162,
         "version": "1.3.4",
         "date": "2026-11-17",
