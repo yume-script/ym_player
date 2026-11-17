@@ -235,10 +235,13 @@ def test_chat_bookmarklet(page, server, upstream):
 
 
 def test_mirror_folder_rule(page, server):
-    """자동 올리기: 규칙을 "rclone 드라이브 · 폴더"로 바꾸면 폴더 칸과 720p 줄이기 칸이 보이고 Plex 칸은 숨는다"""
+    """자동 올리기: 규칙을 "rclone 드라이브 · 폴더"로 바꾸면 폴더 칸과 720p 줄이기 칸이 보이고 Plex 칸은 숨는다.
+    설정의 [자동 올리기] 탭은 숨겨 두었다(1.2.21, HIDE_MIRROR - BookOasis Assistant로 옮김). 화면은 주소(?tab=mirror)로 연다"""
     page.goto(server + "/#/settings")
     page.wait_for_selector(".src-tabs")
-    page.click(".tabs:not(.src-tabs) > .tab:has-text('자동 올리기')")
+    assert page.locator(".tabs:not(.src-tabs) > .tab:has-text('자동 올리기')").count() == 0   # 탭은 숨김
+    page.goto(server + "/#/settings?tab=mirror")
+    page.wait_for_selector("button:has-text('규칙 추가')")
     page.click("button:has-text('규칙 추가')")
     rule = page.locator(".mirror-rule").last
     assert rule.locator(".mirror-folder").is_hidden() and rule.locator(".mirror-height").input_value() == "720"   # Plex도 720p로
