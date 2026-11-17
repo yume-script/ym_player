@@ -267,6 +267,8 @@ class Player {
         v.addEventListener('volumechange', () => this._syncVolume());
         v.addEventListener('waiting', () => { if (this.pb && !this.msgEl.classList.contains('error')) this._spinner(true); });
         v.addEventListener('playing', () => this._spinner(false));
+        // 재생 준비 중 소스가 알리는 문구 (MP4로 바꾸는 중 n% 등 - util.js prepStatus)
+        window.addEventListener('yp-prep', (e) => { if (!this.pb) this._showMsg(String(e.detail || ''), { spinner: true }); });
         // 버벅임: 한 번 재생이 시작된 뒤 버퍼가 바닥나 멈춘 것만 (처음 불러오기·탐색 직후는 빼고, 한 번 멈춤에 한 번)
         v.addEventListener('playing', () => { this._played = true; this._stalled = false; });
         v.addEventListener('waiting', () => {

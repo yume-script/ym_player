@@ -183,3 +183,41 @@ export function dataSaver() {
     const c = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
     return !!c && (c.saveData || c.type === 'cellular' || ['slow-2g', '2g', '3g'].includes(c.effectiveType));
 }
+
+// ---------------------------------------------------------------------------
+// MP4 우선 재생: 그릇만 바꾸면 되는 영상(MKV 안의 H.264 등, Safari는 HEVC도)을 서버가 MP4 파일로 바꿔 두고 원본처럼
+// 튼다 - HLS 서버 변환보다 매끄럽다 (아이패드 Safari에서 HLS가 끊기던 문제). 설정 > 공통에서 끌 수 있다.
+// ---------------------------------------------------------------------------
+export const PREFER_MP4_KEY = 'yp_prefer_mp4';
+export function preferMp4() {
+    return storeGet(PREFER_MP4_KEY, true) !== false;
+}
+
+/** 재생 준비 문구를 재생기에 (player.js가 'yp-prep'을 듣는다) */
+export function prepStatus(text) {
+    window.dispatchEvent(new CustomEvent('yp-prep', { detail: text }));
+}
+
+/**
+ * 서버에 MP4 파일을 만들게 하고 다 될 때까지 기다린다 (진행은 재생기에). 만들 수 없는 형식이면 null -> 호출한 쪽은 예전처럼 HLS 등.
+ * isCurrent(): 그사이 다른 영상을 고르면 false -> 기다리기를 그만두고 null
+ */
+export async function prepareMp4(path, body = {}, isCurrent = () => true) {
+    if (!preferMp4()) return null;
+    let j;
+    try {
+        j = await api(path, { method: 'POST', json: { ...body, safari: IS_SAFARI } });
+    } catch (e) {
+        return null;
+    }
+    const deadline = Date.now() + 30 * 60 * 1000;
+    while (j && j.state === 'running') {
+        if (!isCurrent() || Date.now() > deadline) return null;
+        const pct = Math.round((j.progress || 0) * 100);
+        prepStatus(`MP4로 바꾸는 중... ${pct}%${j.left ? ` (남은 약 ${j.left >= 60 ? `${Math.ceil(j.left / 60)}분` : `${j.left}초`})` : ''}`
+            + ' - 한 번 바꾸면 다음부터는 바로 틉니다');
+        await new Promise((r) => setTimeout(r, 1000));
+        try { j = await api(`/api/mp4/job/${j.key}`); } catch (e) { return null; }
+    }
+    return j && j.state === 'done' && j.url ? j : null;
+}

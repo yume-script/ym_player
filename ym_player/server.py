@@ -44,7 +44,7 @@ from urllib.parse import quote, urlencode
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
 from yarl import URL
 
-from . import __version__, activity, auth, bookoasis, brunch, perf, cctv, chatfind, config_store, discord_feed, folder_watch, iptv, kradio, mcp, media_cache, plex_to_tg, podcast, prefs, radio, recipe, subtitles, telegram_src, tmdb, transcode, updates
+from . import __version__, activity, auth, bookoasis, brunch, perf, cctv, chatfind, config_store, discord_feed, folder_watch, iptv, kradio, mcp, media_cache, mp4cache, plex_to_tg, podcast, prefs, radio, recipe, subtitles, telegram_src, tmdb, transcode, updates
 
 log = logging.getLogger("ym_player")
 
@@ -1828,6 +1828,120 @@ async def tg_videos(request, tg):
     return web.json_response({"success": True, **data})
 
 
+# ---------------------------------------------------------------------------
+# MP4로 바꿔 두고 원본처럼 틀기 (mp4cache) - HLS 서버 변환 대신. 아이패드 Safari에서 HLS가 끊기던 문제
+#   POST /api/mp4/plex/{sid}  {id: Plex 항목 번호, safari}       -> 작업 {key, state, progress, left, url} 또는 {mode: null}
+#   POST /api/mp4/tg/{sid}/{channel}/{msg}  {safari}             -> 위와 같음 (텔레그램 영상)
+#   GET  /api/mp4/job/{key}                                      -> 진행
+#   GET  /api/mp4/file/{key}.mp4                                 -> 다 만든 MP4 (Range)
+# ---------------------------------------------------------------------------
+def _mp4_reply(job, size_gb=0.0):
+    return web.json_response({"success": True, **job.public(), "size_gb": round(size_gb, 2)})
+
+
+async def mp4_plex(request):
+    if not transcode.available():
+        return _json_error(501, "서버에 ffmpeg가 없습니다.")
+    body = await _json_body(request)
+    cfg = config_store.load()
+    src = config_store.get_source(cfg, request.match_info["sid"])
+    if not src or src.get("type") != "plex":
+        return _json_error(404, "Plex 소스를 찾을 수 없습니다.")
+    require_source(request, src["id"])
+    rid = str(body.get("id") or "")
+    if not rid.isdigit():
+        return _json_error(400, "Plex 항목 번호가 필요합니다.")
+    data = await _plex_json(request.app, cfg, src, f"/library/metadata/{rid}")
+    m = ((data.get("MediaContainer") or {}).get("Metadata") or [None])[0]
+    allowed = auth.allowed_libraries(request.get("user"), src["id"])
+    if not m or (allowed is not None and str(m.get("librarySectionID") or "") not in allowed):
+        return _json_error(404, "볼 수 없는 항목입니다.")
+    media = (m.get("Media") or [{}])[0]
+    part = (media.get("Part") or [{}])[0]
+    if not part.get("key"):
+        return _json_error(404, "Plex 항목에 파일이 없습니다.")
+    size_gb = int(part.get("size") or 0) / 1024 ** 3
+    if size_gb > mp4cache.max_source_gb():
+        return web.json_response({"success": True, "mode": None, "reason": f"파일이 커서({size_gb:.1f}GB) MP4로 만들지 않음"})
+    url = f"{src['url']}{part['key']}?X-Plex-Token={quote(str(src.get('token') or ''))}"
+    key = mp4cache.make_key("plex", src["id"], part.get("id") or part["key"], part.get("size") or 0, part.get("updatedAt") or m.get("updatedAt") or "")
+    job = mp4cache.job(key)
+    if job is None or job.state == "error":
+        try:
+            info = await transcode.probe(url)
+        except Exception as e:  # noqa: BLE001
+            return web.json_response({"success": True, "mode": None, "reason": f"형식 확인 실패: {e}"[:200]})
+        mode, copy_audio = mp4cache.mode_from_decision(transcode.decide(info), bool(body.get("safari")))
+        if not mode:
+            return web.json_response({"success": True, "mode": None, "reason": "다시 압축해야 하는 형식"})
+        job = await mp4cache.ensure(key, url, mode, (m.get("duration") or media.get("duration") or 0) / 1000, copy_audio)
+    return _mp4_reply(job, size_gb)
+
+
+@telegram_api
+async def mp4_tg(request, tg):
+    if not transcode.available():
+        return _json_error(501, "서버에 ffmpeg가 없습니다.")
+    channel, msg = _ids(request, tg)
+    row = telegram_src.get_video(tg.sid, channel, msg)
+    if not row:
+        return _json_error(404, "색인에 없는 영상입니다.")
+    body = await _json_body(request)
+    size_gb = int(row.get("size") or 0) / 1024 ** 3
+    if size_gb > mp4cache.max_source_gb():
+        return web.json_response({"success": True, "mode": None, "reason": f"파일이 커서({size_gb:.1f}GB) MP4로 만들지 않음"})
+    key = mp4cache.make_key("tg", tg.sid, channel, msg, row.get("size") or 0)
+    job = mp4cache.job(key)
+    if job is None or job.state == "error":
+        decision = await _tg_decision(request, tg, channel, msg)
+        mode, copy_audio = mp4cache.mode_from_decision(decision, bool(body.get("safari")))
+        if not mode:
+            return web.json_response({"success": True, "mode": None, "reason": decision.get("reason") or ""})
+        await tg.authorized_client()
+        _token, url = _internal_url(request, tg, channel, msg)
+        job = await mp4cache.ensure(key, url, mode, float(row.get("duration") or 0), copy_audio)
+    return _mp4_reply(job, size_gb)
+
+
+async def mp4_job(request):
+    job = mp4cache.job(request.match_info["key"])
+    if not job:
+        return _json_error(404, "없는 작업입니다.")
+    return web.json_response({"success": True, **job.public()})
+
+
+async def mp4_file(request):
+    try:
+        path = mp4cache.path_of(request.match_info["key"])
+    except ValueError:
+        return web.Response(status=404)
+    if not os.path.isfile(path):
+        return web.Response(status=404)
+    try:
+        os.utime(path)
+    except OSError:
+        pass
+    return web.FileResponse(path, headers={"Cache-Control": "private, max-age=3600", "Content-Type": "video/mp4"})
+
+
+@telegram_api
+async def tg_refresh(request, tg):
+    """POST /api/tg/{sid}/refresh {channel} - [목록 새로 고침]: 채널의 새 메시지를 지금 받아 색인하고(평소엔 몇 분에 한 번),
+    작품 정보(TMDB)가 없는 영상도 뒤에서 찾게 한다. channel이 없으면 볼 수 있는 채널 전부"""
+    body = await _json_body(request)
+    mine = _user_channels(request, tg)
+    ch = str(body.get("channel") or request.query.get("channel") or "")
+    channels = [int(ch)] if ch.lstrip("-").isdigit() and int(ch) in mine else ([] if ch else mine)
+    if not channels:
+        return _json_error(404, "설정에서 고르지 않은 채널입니다.")
+    for c in channels:
+        await asyncio.wait_for(tg.sync_latest(c, force=True), 120)
+    mirror = request.app.get(MIRROR)
+    if mirror is not None:   # 포스터가 없는 새 영상의 작품 정보를 뒤에서 (기다리지 않음)
+        asyncio.ensure_future(mirror.auto_tmdb(force=True))
+    return web.json_response({"success": True, "channels": channels})
+
+
 @telegram_api
 async def tg_random(request, tg):
     """랜덤 재생할 영상 하나. channel(없으면 볼 수 있는 채널 전부), unwatched=1, exclude="채널:메시지,..." """
@@ -3485,7 +3599,7 @@ async def admin_mirror_check(request):
 async def admin_mirror_item(request):
     """진행 목록의 항목: {rule, key, action}
     upload(자막 기다리는 것을 지금 올리기) | drop(자막 기다리는 것 빼기) | cancel(올릴 차례·기다림·다시 시도·올리는 중인 것 하나 취소)
-    | cancel_all(진행 목록 전체 취소 - rule이 있으면 그 규칙만)"""
+    | cancel_all(진행 목록 전체 취소 - rule이 있으면 그 규칙만) | move(순서 바꾸기, where) | assign(올릴 계정 고르기, account)"""
     body = await _json_body(request)
     mirror, rule, key = request.app[MIRROR], str(body.get("rule") or ""), str(body.get("key") or "")
     try:
@@ -3498,8 +3612,12 @@ async def admin_mirror_item(request):
         elif body.get("action") == "cancel_all":
             n = mirror.cancel_all(rule or None)
             return web.json_response({"success": True, "count": n})
+        elif body.get("action") == "move":   # 진행 목록 순서 바꾸기 {where: up|down|top|bottom}
+            title = mirror.move_item(rule, key, str(body.get("where") or ""))
+        elif body.get("action") == "assign":   # 올릴 텔레그램 계정 직접 고르기 {account} ("" = 규칙대로, 놀고 있는 계정)
+            title = mirror.assign_item(rule, key, str(body.get("account") or ""))
         else:
-            return _json_error(400, "action은 upload, drop, cancel, cancel_all 중 하나입니다.")
+            return _json_error(400, "action은 upload, drop, cancel, cancel_all, move, assign 중 하나입니다.")
     except ValueError as e:
         return _json_error(400, str(e))
     return web.json_response({"success": True, "title": title})
@@ -4194,6 +4312,11 @@ def create_app(require_auth=True):
     app.router.add_get("/api/tg/{sid}/channels", tg_channels)
     app.router.add_get("/api/tg/{sid}/videos", tg_videos)
     app.router.add_get("/api/tg/{sid}/random", tg_random)
+    app.router.add_post("/api/tg/{sid}/refresh", tg_refresh)
+    app.router.add_post("/api/mp4/plex/{sid}", mp4_plex)
+    app.router.add_post(r"/api/mp4/tg/{sid}/{channel:-?\d+}/{msg:\d+}", mp4_tg)
+    app.router.add_get("/api/mp4/job/{key}", mp4_job)
+    app.router.add_get(r"/api/mp4/file/{key:[0-9a-f]{24}}.mp4", mp4_file)
     app.router.add_get("/api/tg/{sid}/home", tg_home)
     app.router.add_get(r"/api/tg/{sid}/video/{channel:-?\d+}/{msg:\d+}", tg_video)
     app.router.add_get(r"/api/tg/{sid}/stream/{channel:-?\d+}/{msg:\d+}", tg_stream)

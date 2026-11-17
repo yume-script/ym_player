@@ -1122,6 +1122,14 @@ def meta_target_for(title, file_name, poster_title=""):
     return {"mkey": f"movie:{name}:{year}", "kind": "movie", "titles": titles, "year": year, "season": None, "ep": None}
 
 
+def channel_sig(sid, channel):
+    """채널 영상의 모양 (영상 수, 마지막 메시지) - 바뀌었는지 볼 때"""
+    with db() as conn:
+        r = conn.execute("SELECT COUNT(*), COALESCE(MAX(msg), 0) FROM videos WHERE source=? AND channel=? AND kind='video'",
+                         (sid, int(channel))).fetchone()
+    return (int(r[0]), int(r[1]))
+
+
 def tmdb_targets(sid, channel):
     """이 채널 영상들의 찾을 작품 (TMDB) - 같은 작품(드라마 회차들)은 하나로. Plex 정보가 붙은 영상은 뺀다.
     [{mkey, kind, titles, year, have(찾아 둔 정보가 있나), fetched, manual}]"""
@@ -1167,6 +1175,35 @@ def channel_episode(sid, channel, name_key, season, ep):
                     eps.setdefault(info, r["title"] or r["file_name"])
             hit = _EP_CACHE[key] = (n, last, eps)
     return hit[2].get((name_key, int(season or 1), int(ep)), "")
+
+
+def file_stem_key(file_name):
+    """같은 파일 이름 비교용: 확장자·나눈 조각 꼬리(_0000)를 떼고 대소문자 무시 - "Show.S01E01.mkv"와 "Show.S01E01_0000.mp4"는 같다"""
+    stem = os.path.splitext(os.path.basename(str(file_name or "")))[0]
+    return re.sub(r"_\d{4}$", "", stem).casefold()
+
+
+_FILE_CACHE = {}
+
+
+def channel_file(sid, channel, file_name):
+    """이 채널에 같은 이름(확장자·조각 꼬리 무시)의 영상이 이미 있으면 그 제목 (없으면 "") - 자동 올리기의 중복 막기"""
+    want = file_stem_key(file_name)
+    if not want:
+        return ""
+    key = (sid, int(channel))
+    with db() as conn:
+        n, last = conn.execute("SELECT COUNT(*), COALESCE(MAX(msg), 0) FROM videos WHERE source=? AND channel=? AND kind='video'",
+                               key).fetchone()
+        hit = _FILE_CACHE.get(key)
+        if not hit or hit[0] != n or hit[1] != last:
+            names = {}
+            for r in conn.execute("SELECT title, file_name FROM videos WHERE source=? AND channel=? AND kind='video' ORDER BY msg", key):
+                k = file_stem_key(r["file_name"])
+                if k:
+                    names.setdefault(k, r["title"] or r["file_name"])
+            hit = _FILE_CACHE[key] = (n, last, names)
+    return hit[2].get(want, "")
 
 
 # ---------------------------------------------------------------------------
@@ -1271,7 +1308,7 @@ def find_plex_copy(allowed, plex_src, key, info):
                 if str(epi.get("season")) == season and str(epi.get("ep")) == ep:
                     tiers[2].append(hit)
         if tiers[1] or tiers[2]:
-            return _first_part(tiers[1] or tiers[2], "자동 올리기 사본")
+            return _first_part(tiers[1] + tiers[2], "자동 올리기 사본")
         # (Plex 작품 정보가 붙은 자동 올리기 사본은 위에서 그 정보로만 맞춘다 - 이름이 같아도 다른 판일 수 있어서)
         mirrored = {(r["source"], int(r["channel"]), int(r["msg"])) for r in conn.execute(
             f"SELECT source, channel, msg FROM plex_meta WHERE source IN ({marks})", sids)}
@@ -1330,10 +1367,17 @@ def find_plex_copy(allowed, plex_src, key, info):
 
 
 def _first_part(found, how):
-    """같은 채널의 첫 조각(가장 작은 메시지 번호) - 여러 채널에 있으면 처음 찾은 채널"""
-    src, ch = found[0][0], found[0][1]
-    first = min((f for f in found if f[0] == src and f[1] == ch), key=lambda f: f[2])
-    return {"tg": first[0], "channel": first[1], "msg": first[2], "title": first[3], "how": how}
+    """같은 채널의 첫 조각(가장 작은 메시지 번호) - 여러 채널에 있으면 처음 찾은 채널.
+    all: 찾은 곳(소스·채널)마다 하나씩 [{tg, channel, msg, title, how}] - 두 곳 이상이면 재생할 곳을 고를 수 있게"""
+    places = []
+    for f in found:
+        if (f[0], f[1]) not in places:
+            places.append((f[0], f[1]))
+    out = []
+    for src, ch in places:
+        first = min((f for f in found if f[0] == src and f[1] == ch), key=lambda f: f[2])
+        out.append({"tg": first[0], "channel": first[1], "msg": first[2], "title": first[3], "how": how})
+    return {**out[0], "all": out}
 
 
 def _plex_posters(conn, sid, keys):

@@ -427,11 +427,12 @@ def test_soft_subtitle_inside_file_counts(data, tmp_path, monkeypatch):
 
 
 def test_wait_hours_force_and_drop(data, tmp_path, monkeypatch):
-    """자막 기다리기는 시간 단위(예전 일 단위는 x24), 하드섭처럼 알 수 없는 것은 [지금 올리기] / [빼기]"""
+    """자막 기다리기는 분 단위(예전 시간 x60, 일 x1440), 하드섭처럼 알 수 없는 것은 [지금 올리기] / [빼기]"""
     base = {"plex": "px", "section": "1", "tg": "tg", "channel": "-1"}
     rules = plex_to_tg.clean_settings({"rules": [{**base, "id": "a"}, {**base, "id": "b", "wait_days": 2},
-                                                 {**base, "id": "c", "wait_hours": 3}, {**base, "id": "d", "wait_days": 0}]})["rules"]
-    assert [r["wait_hours"] for r in rules] == [12, 48, 3, 0]
+                                                 {**base, "id": "c", "wait_hours": 3}, {**base, "id": "d", "wait_days": 0},
+                                                 {**base, "id": "e", "wait_min": 30}]})["rules"]
+    assert [r["wait_min"] for r in rules] == [720, 2880, 180, 0, 30]
     import shutil as _sh
     if not _sh.which("ffmpeg"):
         pytest.skip("ffmpeg 없음")
@@ -465,19 +466,22 @@ def test_wait_hours_force_and_drop(data, tmp_path, monkeypatch):
         assert [x["name"] for x in tg.sent] == ["Hard.S01E01.mp4"]
         state = plex_to_tg.load_state()
         assert state["rules"]["r"]["waiting"] == {} and "5" in state["rules"]["r"]["done"] and state["history"][0]["ok"]
-        # 빼기: 다시 들어오지 않는다
-        m["ratingKey"], m["addedAt"] = "6", 60
+        # 빼기: 다시 들어오지 않는다 (같은 파일·회차는 자막을 기다리기 전에 중복으로 건너뛰므로 다른 회차로)
+        video3 = tmp_path / "Hard.S01E03.mp4"
+        _video(video3, 4)
+        m["ratingKey"], m["addedAt"], m["index"] = "6", 60, 3
+        m["Media"][0]["Part"][0].update(file=str(video3), size=video3.stat().st_size)
         await mirror.check_all(st)
         await mirror.run_queue(st)
         assert list(plex_to_tg.load_state()["rules"]["r"]["waiting"]) == ["6"]
-        assert mirror.drop_item("r", "6") == "하드 S01E01"
+        assert mirror.drop_item("r", "6") == "하드 S01E03"
         await mirror.check_all(st)
         assert mirror.queue == [] and plex_to_tg.load_state()["history"][0]["note"] == "건너뜀: 직접 뺌"
         # 시간이 지나면 자막 없이 올림
-        st["rules"][0]["wait_hours"] = 1
+        st["rules"][0]["wait_min"] = 60
         video2 = tmp_path / "Hard.S01E02.mp4"                         # (다른 파일 - 같은 파일은 같은 채널에 두 번 올리지 않는다)
         _video(video2, 3)
-        m["ratingKey"], m["addedAt"] = "7", 70
+        m["ratingKey"], m["addedAt"], m["index"] = "7", 70, 2
         m["Media"][0]["Part"][0].update(file=str(video2), size=video2.stat().st_size)
         await mirror.check_all(st)
         await mirror.run_queue(st)
@@ -618,6 +622,16 @@ def test_prefer_telegram_any_channel(data):
     # 나눠진 파일: 첫 조각, 조각이라 원본보다 짧아도
     assert f("movie", title="Some Movie", year="2020", duration=6000)["msg"] == 7
     assert telegram_src.find_plex_copy({"tg": {902}}, "px", "1", {"kind": "movie", "title": "인셉션", "year": "2010"}) is None
+    # 두 곳 이상(다른 채널)에 있으면 곳마다 하나씩 all에 - 재생할 곳을 고르게
+    with telegram_src.db() as conn:
+        conn.execute("INSERT INTO videos(source,channel,msg,title,caption,file_name,mime,duration,size,width,height,date,has_thumb,kind)"
+                     " VALUES('tg',903,9,'기생충 (2019)','','parasite.1080p.mp4','video/mp4',7920,1,1,1,'2026-10-02T00:00:00+00:00',0,'video')")
+    got = telegram_src.find_plex_copy({"tg": {900, 903}}, "px", "1", {"kind": "movie", "title": "기생충", "year": "2019", "duration": 7900})
+    assert [(x["channel"], x["msg"]) for x in got["all"]] == [(900, 3), (903, 9)] and got["msg"] == 3
+    # 채널에 같은 파일 이름이 있나 (확장자·조각 꼬리 무시) - 자동 올리기 중복 막기
+    assert telegram_src.channel_file("tg", 903, "parasite.1080p.mkv") == "기생충 (2019)"
+    assert telegram_src.channel_file("tg", 903, "parasite.1080p_0001.mp4") == "기생충 (2019)"
+    assert telegram_src.channel_file("tg", 903, "other.mp4") == ""
 
 
 def test_retry_three_times(data):
@@ -1038,7 +1052,7 @@ def test_no_duplicate_uploads(data, tmp_path, monkeypatch):
         # 같은 채널에 같은 파일을 이미 올렸으면 건너뜀
         mirror._remember_sent(rule, plex_to_tg.file_sig("x/New.mkv", 99), "New")
         mirror._job = {"rule": "f", "key": "c/New.mkv", "title": "New", "sig": plex_to_tg.file_sig("c/New.mkv", 99)}
-        assert (await mirror.upload_file(rule, "c/New.mkv", 2)).startswith("건너뜀: 이 채널에 이미 올린 파일")
+        assert (await mirror.upload_file(rule, "c/New.mkv", 2)).startswith("건너뜀: 중복 - 이 채널에 이미 올린 파일")
         # 반쯤 올리다 실패: 보낸 메시지(영상 조각 1개)를 지우고, 다시 올릴 때 겹치지 않는다
         calls = {"n": 0}
 
@@ -1089,4 +1103,116 @@ def test_queue_survives_restart(data):
         assert [j["key"] for j in make().queue] == ["0", "2"]   # 취소도 파일에
         config_store.save({"client_id": "c", "sources": [], "plex_to_tg": {"rules": []}})
         assert make().queue == []                               # 규칙을 지웠으면 그 목록도 버림
+    asyncio.run(main())
+
+
+def test_exclude_regex_and_settings(data):
+    """제외 정규식 (기본 S101·S201) - 맞으면 '건너뜀: 제외'로 기록. 틀린 정규식은 저장하지 않는다. 동시 인코딩은 4개까지"""
+    st = plex_to_tg.clean_settings({})
+    assert st["exclude"] == ["S101", "S201"] and st["encode_slots"] == 1
+    assert plex_to_tg.clean_settings({"exclude": "a\n\n(?i)b\na", "encode_slots": 9})["exclude"] == ["a", "(?i)b"]
+    assert plex_to_tg.clean_settings({"encode_slots": 9})["encode_slots"] == plex_to_tg.MAX_ENCODE_SLOTS
+    with pytest.raises(ValueError):
+        plex_to_tg.clean_settings({"exclude": ["("]})
+    assert plex_to_tg.excluded_by(["S101", "S201"], "Show.S101.1080p.mkv") == "S101"
+    assert plex_to_tg.excluded_by(["S101", "S201"], "Show.S01E01.mkv", "Show S01E01") == ""
+
+    drive = data / "drive"
+    drive.mkdir()
+    cfg = config_store.load()
+    cfg["plex_to_tg"] = plex_to_tg.clean_settings({"rules": [{"id": "f", "kind": "folder", "folder": str(drive), "tg": "tg", "channel": "-5",
+                                                               "wait_subs": False}]})
+    config_store.save(cfg)
+    tg = FakeTg()
+    mirror = plex_to_tg.Mirror(None, None, lambda sid: tg, lambda: None)
+
+    async def main():
+        st = plex_to_tg.load_settings()
+        mirror.queue = [{"rule": "f", "key": "Show.S201.mkv", "title": "Show"}]
+        await mirror.run_queue(st)
+        h = plex_to_tg.load_state()["history"][0]
+        assert h["note"].startswith("건너뜀: 제외 - 제외 정규식 'S201'") and not h["ok"] and tg.sent == []
+        assert "elapsed" in h and "times" in h
+    asyncio.run(main())
+
+
+def test_handover_to_idle_account_and_reorder(data, monkeypatch):
+    """놀고 있는 계정이 진행 목록 앞에서부터 가져가고, 계정에 문제가 생기면 다른 계정에 넘긴다. 순서 바꾸기·계정 고르기"""
+    cfg = config_store.load()
+    cfg["plex_to_tg"] = plex_to_tg.clean_settings({"rules": [{"id": "f", "kind": "folder", "folder": str(data), "tg": "tg",
+                                                               "tg_alt": ["tg2", "tg"], "channel": "-5", "wait_subs": False}]})
+    config_store.save(cfg)
+    assert plex_to_tg.load_settings()["rules"][0]["tg_alt"] == ["tg2"]
+    tgs = {"tg": FakeTg(), "tg2": FakeTg()}
+    mirror = plex_to_tg.Mirror(None, None, lambda sid: tgs[sid], lambda: None)
+    done = []
+
+    class AuthKeyUnregisteredError(Exception):
+        pass
+
+    async def fake_upload(rule, key, max_gb, test=False):
+        if rule["tg"] == "tg" and key == "a":
+            raise AuthKeyUnregisteredError("세션 만료")
+        await asyncio.sleep(0.01)
+        done.append((rule["tg"], key))
+        return "ok"
+    monkeypatch.setattr(mirror, "upload", fake_upload)
+
+    async def main():
+        st = plex_to_tg.load_settings()
+        mirror.queue = [{"rule": "f", "key": k, "title": k.upper()} for k in ("a", "b", "c")]
+        mirror._queue_changed()
+        # 순서 바꾸기: c를 맨 앞으로, a를 한 칸 아래로
+        assert mirror.move_item("f", "c", "top") == "C"
+        mirror.move_item("f", "a", "down")
+        assert [j["key"] for j in mirror.queue] == ["c", "b", "a"]
+        mirror.move_item("f", "a", "up")
+        assert [j["key"] for j in mirror.queue] == ["c", "a", "b"]
+        with pytest.raises(ValueError):
+            mirror.move_item("f", "a", "left")
+        mirror.move_item("f", "a", "top")                       # a, c, b
+        s = mirror.status()
+        assert s["queue"][0]["tgs"] == ["tg", "tg2"] and s["accounts"]["tg2"]["queued"] == 3
+        await mirror.run_queue(st)
+        # 첫 계정(tg)이 a를 잡았다가 세션 문제 -> tg는 쉬고, a는 놀던 tg2가 이어 올림 (c·b도 tg2)
+        assert sorted(done) == [("tg2", "a"), ("tg2", "b"), ("tg2", "c")]
+        hist = plex_to_tg.load_state()["history"]
+        assert any(h.get("handed") and h["tg"] == "tg" and "다른 계정에 넘김" in h["note"] for h in hist)
+        ok_a = next(h for h in hist if h["key"] == "a" and h["ok"])
+        assert ok_a["tg"] == "tg2" and ok_a["handover"] == ["tg"]
+        assert mirror.status()["accounts"]["tg"]["down"].startswith("계정 문제")
+        # 직접 계정 고르기 (쉬던 계정도 바로 써 봄)
+        mirror.queue = [{"rule": "f", "key": "d", "title": "D"}]
+        mirror.assign_item("f", "d", "tg2")
+        assert mirror.queue[0]["pin"] == "tg2"
+        await mirror.run_queue(st)
+        assert done[-1] == ("tg2", "d")
+    asyncio.run(main())
+
+
+def test_auto_tmdb_fills_channel_posters(data, monkeypatch):
+    """채널 영상 중 작품 정보(TMDB)가 없는 것은 뒤에서 찾아 둔다 - 영상을 열거나 [정보 고치기]를 하지 않아도 목록에 포스터"""
+    telegram_src._migrated.discard(str(data))
+    with telegram_src.db() as conn:
+        conn.executemany(
+            "INSERT INTO videos(source,channel,msg,title,caption,file_name,mime,duration,size,width,height,date,has_thumb,kind)"
+            " VALUES('tg',?,?,?,'',?,'video/mp4',100,1,1,1,'2026-10-01T00:00:00+00:00',0,'video')",
+            [(910, 1, "인셉션 (2010)", "Inception.2010.1080p.mp4"), (910, 2, "없는영화 (2001)", "Nothing.2001.mp4")])
+    config_store.save({"client_id": "c", "sources": [{"id": "tg", "type": "telegram", "tmdb_key": "k", "channels": [{"id": 910}]}]})
+    tg = type("Tg", (), {"channels": [910]})()
+    mirror = plex_to_tg.Mirror(None, None, lambda sid: tg, lambda: None)
+    asked = []
+
+    async def lookup(sid, t, force=False):
+        asked.append(t["mkey"])
+        if "inception" in t["mkey"] or "인셉션" in t["mkey"]:
+            telegram_src.meta_put(sid, t["mkey"], t["kind"], 27205, {"title": "인셉션", "poster": "p.jpg"})
+            return "ok"
+        return "TMDB에서 못 찾음"
+    monkeypatch.setattr(mirror, "_lookup_poster", lookup)
+
+    async def main():
+        assert await mirror.auto_tmdb() == 1 and len(asked) == 2
+        assert await mirror.auto_tmdb() == 0 and len(asked) == 2        # 간격 안이면 쉼
+        assert await mirror.auto_tmdb(force=True) == 0 and len(asked) == 2   # 채널이 그대로면 다시 훑지 않음 (못 찾은 것도 7일 뒤)
     asyncio.run(main())
