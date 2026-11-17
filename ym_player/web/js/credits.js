@@ -106,6 +106,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 159,
+        "version": "1.3.1",
+        "date": "2026-11-17",
+        "title": "자동 올리기 제외 정규식이 경로도 봄 (예: Featurettes 폴더 아래 빼기)"
+    },
+    {
         "pr": 158,
         "version": "1.3.0",
         "date": "2026-11-17",

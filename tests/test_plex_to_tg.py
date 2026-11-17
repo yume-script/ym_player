@@ -1133,6 +1133,18 @@ def test_exclude_regex_and_settings(data):
         h = plex_to_tg.load_state()["history"][0]
         assert h["note"].startswith("건너뜀: 제외 - 제외 정규식 'S201'") and not h["ok"] and tg.sent == []
         assert "elapsed" in h and "times" in h
+        # 경로도 본다: Featurettes 폴더 아래는 빼고, 같은 이름이 파일 이름에만 있는 것은 그대로
+        feat = r"(?i)(^|[\\/])featurettes[\\/]"
+        cfg = config_store.load()
+        cfg["plex_to_tg"]["exclude"] = [feat]
+        config_store.save(cfg)
+        st = plex_to_tg.load_settings()
+        mirror.queue = [{"rule": "f", "key": "Dune (2021)/Featurettes/Making Of.mkv", "title": "Making Of"}]
+        await mirror.run_queue(st)
+        h = plex_to_tg.load_state()["history"][0]
+        assert h["note"] == f"건너뜀: 제외 - 제외 정규식 '{feat}'에 맞음" and tg.sent == []
+        assert plex_to_tg.excluded_by([feat], "Making Of.mkv", r"D:\Movies\Dune\Featurettes\Making Of.mkv") == feat
+        assert plex_to_tg.excluded_by([feat], "Featurettes Collection.mkv", "/mnt/Movies/Featurettes Collection.mkv") == ""
     asyncio.run(main())
 
 
