@@ -295,7 +295,7 @@ def clean_exclude(raw):
 
 
 def excluded_by(patterns, *texts):
-    """제외 정규식 중 파일 이름·제목에 맞는 첫 정규식 (없으면 "")"""
+    """제외 정규식 중 파일 이름·제목·경로에 맞는 첫 정규식 (없으면 "") - 예: "(?i)(^|[\\/])featurettes[\\/]"는 Featurettes 폴더 아래"""
     for pat in patterns or []:
         try:
             rx = re.compile(pat)
@@ -1857,7 +1857,9 @@ class Mirror:
         if dup:
             return f"건너뜀: 중복 - {dup}"
         # 2) 제외 정규식 (파일 이름·제목)
-        pat = "" if test else excluded_by(load_settings()["exclude"], os.path.basename(local_file), fields["name"], fields["title"])
+        # (파일 이름·제목·전체 경로 - 경로로 "Featurettes 폴더 아래" 같은 것도 뺄 수 있게)
+        pat = "" if test else excluded_by(load_settings()["exclude"], os.path.basename(local_file), fields["name"], fields["title"],
+                                          local_file, str(part.get("file") or ""))
         if pat:
             return f"건너뜀: 제외 - 제외 정규식 '{pat}'에 맞음"
         local_ok = bool(local_file and os.path.isfile(local_file) and os.access(local_file, os.R_OK))
@@ -2021,7 +2023,10 @@ class Mirror:
         dup = "" if test else await self._duplicate(rule, fields, os.path.basename(key))
         if dup:
             return f"건너뜀: 중복 - {dup}"
-        pat = "" if test else excluded_by(load_settings()["exclude"], os.path.basename(key), fields["name"])
+        # (파일 이름·제목·폴더 안 경로·전체 경로 - 경로로 "Featurettes 폴더 아래" 같은 것도 뺄 수 있게)
+        pat = "" if test else excluded_by(load_settings()["exclude"], os.path.basename(key), fields["name"], key,
+                                          folder_watch._join_remote(folder, key) if folder_watch.is_remote(folder)
+                                          else os.path.join(folder, key))
         if pat:
             return f"건너뜀: 제외 - 제외 정규식 '{pat}'에 맞음"
         if not transcode.ffmpeg_path():   # (중복·제외 확인은 ffmpeg 없이도 - 처리 순서대로)
