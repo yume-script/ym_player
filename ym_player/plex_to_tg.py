@@ -2012,8 +2012,6 @@ class Mirror:
     async def upload_file(self, rule, key, max_gb, test=False):
         """폴더 규칙(rclone 드라이브 등)의 파일 하나: 텔레그램에서 바로 재생되게 H.264/AAC mp4로 (필요할 때만 인코딩),
         크면 720p로 줄이고, 자막 파일이 있으면 화면에 입혀서 올린다"""
-        if not transcode.ffmpeg_path():
-            raise RuntimeError("서버에 ffmpeg가 없어 인코딩할 수 없습니다.")
         folder = rule["folder"]
         remote = folder_watch.is_remote(folder)
         copied = False
@@ -2026,6 +2024,8 @@ class Mirror:
         pat = "" if test else excluded_by(load_settings()["exclude"], os.path.basename(key), fields["name"])
         if pat:
             return f"건너뜀: 제외 - 제외 정규식 '{pat}'에 맞음"
+        if not transcode.ffmpeg_path():   # (중복·제외 확인은 ffmpeg 없이도 - 처리 순서대로)
+            raise RuntimeError("서버에 ffmpeg가 없어 인코딩할 수 없습니다.")
         name = re.sub(r'[\\/:*?"<>|]', "_", os.path.basename(key)) or "video.mp4"
         stem, ext = os.path.splitext(name)
         self.current = {"title": fields["name"], "phase": "준비 중", "done": 0, "total": 0}
