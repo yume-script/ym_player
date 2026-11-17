@@ -106,6 +106,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 162,
+        "version": "1.3.4",
+        "date": "2026-11-17",
+        "title": "나눠 올린 영화 조각을 캡션의 (1/3) 표시로도 한 묶음으로 (파일 이름이 없는 조각이 따로 보이던 것)"
+    },
+    {
         "pr": 161,
         "version": "1.3.3",
         "date": "2026-11-17",

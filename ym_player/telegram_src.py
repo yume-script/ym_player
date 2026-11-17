@@ -1606,8 +1606,32 @@ def split_part(name):
     return m.group(1).casefold(), int(m.group(2) or m.group(3))
 
 
+# 캡션의 조각 표시: 첫 줄(제목) 바로 다음 줄이 "(2/3)" - 자동 올리기(BookOasis Assistant·YMPlayer)가 나눠 올릴 때 쓰는 모양
+_CAPTION_PART_RE = re.compile(r"^\s*\((\d{1,2})\s*/\s*(\d{1,2})\)\s*$")
+
+
+def split_caption_part(caption):
+    """"Jurassic World (2025)\n(2/3)\n…" -> ("jurassic world (2025)|3", 1). 조각 캡션이 아니면 None.
+    파일 이름이 없거나(텔레그램이 영상의 파일 이름을 안 남긴 경우) 조각 표시가 없어도 캡션으로 묶는다"""
+    lines = str(caption or "").splitlines()
+    if len(lines) < 2:
+        return None
+    m = _CAPTION_PART_RE.match(lines[1])
+    title = lines[0].strip()
+    if not m or len(title) < 2:
+        return None
+    i, n = int(m.group(1)), int(m.group(2))
+    if not (1 <= i <= n and n >= 2):
+        return None
+    return f"{title.casefold()}|{n}", i - 1
+
+
 def _part_key(r):
-    return split_part(r["file_name"]) or split_part(r["title"])
+    try:
+        caption = r["caption"]
+    except (KeyError, IndexError):
+        caption = ""
+    return split_part(r["file_name"]) or split_part(r["title"]) or split_caption_part(caption)
 
 
 _GROUPS = {}   # (소스, 채널) -> (표시, {묶음 이름: [조각 행 (번호순)]}) - 채널의 영상 수·마지막 번호가 그대로면 다시 계산하지 않는다
@@ -1621,7 +1645,7 @@ def _part_groups(conn, sid, channel):
     if hit and hit[0] == sig:
         return hit[1]
     found = {}
-    for r in conn.execute("SELECT msg, file_name, title, duration, size, mime FROM videos WHERE source=? AND channel=? "
+    for r in conn.execute("SELECT msg, file_name, title, caption, duration, size, mime FROM videos WHERE source=? AND channel=? "
                           "AND kind='video' ORDER BY msg", (sid, channel)):
         k = _part_key(r)
         if k:

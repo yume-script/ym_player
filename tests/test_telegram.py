@@ -1864,3 +1864,21 @@ def test_prune_deleted_messages(monkeypatch, tmp_path):
         alive.clear()   # 모두 없다고 나옴 -> 지우지 않는다
         assert await tg.prune_deleted(7) == 0 and len(telegram_src.indexed_ids("tg", 7)) == 23
     asyncio.run(main())
+
+
+def test_split_parts_grouped_by_caption(monkeypatch, tmp_path):
+    """나눠 올린 영화의 조각에 파일 이름이 없어도(또는 조각 표시가 없어도) 캡션의 "(i/n)" 줄로 한 묶음 - 목록에서 하나로"""
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    telegram_src._migrated.discard(str(tmp_path))
+    cap = "Jurassic World Rebirth (2025)\n(%d/3)\n\n줄거리"
+    with telegram_src.db() as conn:
+        conn.executemany("INSERT INTO videos(source,channel,msg,title,caption,file_name,mime,duration,size,width,height,date,has_thumb,kind)"
+                         " VALUES('tg',5,?,?,?,'','video/mp4',2700,100,1,1,?,1,'video')",
+                         [(10 + i, "Jurassic World Rebirth (2025)", cap % (i + 1), "2026-11-17T0%d:00:00" % i) for i in range(3)]
+                         + [(20, "Other (2020)", "Other (2020)\n\n줄거리", "2026-11-16T00:00:00")])
+    assert telegram_src.split_caption_part(cap % 2) == ("jurassic world rebirth (2025)|3", 1)
+    assert telegram_src.split_caption_part("제목\n\n(1/3)") is None and telegram_src.split_caption_part("제목\n(4/3)") is None
+    rows, total = telegram_src.query_videos("tg", [5], group=True)
+    assert total == 2 and [(d["msg"], d.get("parts_count")) for d in rows] == [(10, 3), (20, None)]
+    assert rows[0]["duration"] == 8100
+    assert [p["msg"] for p in telegram_src.video_parts("tg", 5, 12)] == [10, 11, 12]
