@@ -1934,8 +1934,11 @@ async def tg_refresh(request, tg):
     channels = [int(ch)] if ch.lstrip("-").isdigit() and int(ch) in mine else ([] if ch else mine)
     if not channels:
         return _json_error(404, "설정에서 고르지 않은 채널입니다.")
+    removed = 0
     for c in channels:
         await asyncio.wait_for(tg.sync_latest(c, force=True), 120)
+        # 텔레그램에서 지운 메시지도 목록에서 뺀다 (새 메시지만 받아서는 알 수 없음)
+        removed += await asyncio.wait_for(tg.prune_deleted(c), 300)
     # 작품 정보(TMDB)가 없는 영상을 지금 찾는다 (예전에 못 찾은 것도 다시) - 다 찾은 뒤 목록을 그리게 기다린다.
     # 예전엔 뒤에서 돌려 놓고 바로 목록을 그려서 새로 고침해도 포스터가 안 붙은 것처럼 보였다
     tmdb_res = {"found": 0, "tried": 0, "left": 0, "missing": [], "error": ""}
@@ -1949,7 +1952,7 @@ async def tg_refresh(request, tg):
             tmdb_res["missing"] += r["missing"]
             tmdb_res["error"] = tmdb_res["error"] or r["error"]
     tmdb_res["missing"] = tmdb_res["missing"][:30]
-    return web.json_response({"success": True, "channels": channels, "tmdb": tmdb_res})
+    return web.json_response({"success": True, "channels": channels, "removed": removed, "tmdb": tmdb_res})
 
 
 @telegram_api

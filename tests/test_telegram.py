@@ -1831,3 +1831,36 @@ def test_transcode_max_height_for_data_saver():
     assert "-vf" not in transcode.build_args("http://x/y", "remux", 0, 720)
     a = transcode.build_args("http://x/y", "transcode", 0)
     assert a[a.index("-vf") + 1] == "scale='min(1920,iw)':-2"
+
+
+def test_prune_deleted_messages(monkeypatch, tmp_path):
+    """[목록 새로 고침]: 텔레그램에서 지운 메시지를 색인에서 뺀다 (새 메시지만 받아서는 알 수 없어 목록에 남았다).
+    시리즈 짝도 다시 맞추고, 확인한 것이 모두 없다고 나오면(권한·연결 문제일 수 있음) 지우지 않는다"""
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    telegram_src._migrated.discard(str(tmp_path))
+    rows = [(m, f"작품 S01E{m:02d}", f"Show.S01E{m:02d}.mp4") for m in range(1, 26)]
+    with telegram_src.db() as conn:
+        conn.executemany("INSERT INTO videos(source,channel,msg,title,caption,file_name,mime,duration,size,width,height,date,has_thumb,kind)"
+                         " VALUES('tg',7,?,?,'',?,'video/mp4',100,1,1,1,'2026-10-01',1,'video')", rows)
+        conn.execute("INSERT INTO user_progress(source,user,channel,msg,position,duration,watched,updated) VALUES('tg','u',7,3,50,100,0,1)")
+    telegram_src.link_series("tg", 7)
+    alive = set(range(1, 26)) - {3, 4}
+
+    class Client:
+        async def get_messages(self, peer, ids):
+            return [SimpleNamespace(id=i) if i in alive else None for i in ids]
+
+    tg = telegram_src.TelegramSource({"id": "tg", "type": "telegram", "channels": [{"id": 7}]})
+    monkeypatch.setattr(tg, "authorized_client", lambda: asyncio.sleep(0, Client()))
+    monkeypatch.setattr(tg, "peer", lambda ch: asyncio.sleep(0, ch))
+
+    async def main():
+        assert await tg.prune_deleted(7, batch=10) == 2
+        assert sorted(telegram_src.indexed_ids("tg", 7)) == sorted(alive)
+        with telegram_src.db() as conn:
+            assert conn.execute("SELECT COUNT(*) FROM series WHERE source='tg' AND channel=7 AND video IN (3,4)").fetchone()[0] == 0
+            assert conn.execute("SELECT COUNT(*) FROM series WHERE source='tg' AND channel=7").fetchone()[0] == 23
+            assert conn.execute("SELECT COUNT(*) FROM user_progress WHERE msg=3").fetchone()[0] == 0
+        alive.clear()   # 모두 없다고 나옴 -> 지우지 않는다
+        assert await tg.prune_deleted(7) == 0 and len(telegram_src.indexed_ids("tg", 7)) == 23
+    asyncio.run(main())

@@ -1831,6 +1831,35 @@ def index_counts(sid):
     return {int(r[0]): int(r[1]) for r in rows}
 
 
+def indexed_ids(sid, channel):
+    """이 채널에서 색인해 둔 메시지 번호 전부 (새것부터)"""
+    with db() as conn:
+        return [int(r[0]) for r in conn.execute("SELECT msg FROM videos WHERE source=? AND channel=? ORDER BY msg DESC",
+                                                (sid, int(channel))).fetchall()]
+
+
+def forget_messages(sid, channel, msgs):
+    """텔레그램에서 지워진 메시지를 색인에서 뺀다 (영상·그림·자막과 그 짝·진행 기록) - 포스터·자막·시리즈 짝은 다시 맞춘다"""
+    msgs = sorted({int(m) for m in msgs})
+    if not msgs:
+        return 0
+    channel = int(channel)
+    with db() as conn:
+        for i in range(0, len(msgs), 500):
+            part = msgs[i:i + 500]
+            marks = ",".join("?" * len(part))
+            args = [sid, channel, *part]
+            conn.execute(f"DELETE FROM videos WHERE source=? AND channel=? AND msg IN ({marks})", args)
+            for table in ("progress", "probes", "user_progress", "plex_meta", "meta_flags"):
+                conn.execute(f"DELETE FROM {table} WHERE source=? AND channel=? AND msg IN ({marks})", args)
+        _link_posters(conn, sid, channel)
+        _link_subs(conn, sid, channel)
+        _link_series(conn, sid, channel)
+    for m in msgs:
+        media_cache.STORE.drop_prefix(f"tg:{sid}:{channel}:{m}:")
+    return len(msgs)
+
+
 def forget_source(sid):
     """소스를 지우면 그 색인/진행 기록도 지운다 (세션 파일은 TelegramSource.logout이)."""
     media_cache.STORE.drop_prefix(f"tg:{sid}:")
@@ -2263,6 +2292,34 @@ class TelegramSource:
             self.background(("thumbs", channel, wanted[0]), lambda: self.prefetch_thumbs(channel, wanted))
         return items, ids
 
+    async def prune_deleted(self, channel, batch=100):
+        """색인해 둔 메시지가 텔레그램에 아직 있는지 확인해 지워진 것을 색인에서 뺀다 ([목록 새로 고침]).
+        새 메시지만 받는 sync_latest로는 지운 것을 알 수 없어서 목록에 그대로 남았다. 뺀 수"""
+        ids = await asyncio.to_thread(indexed_ids, self.sid, channel)
+        if not ids:
+            return 0
+        client = await self.authorized_client()
+        peer = await self.peer(channel)
+        gone = []
+        for i in range(0, len(ids), batch):
+            part = ids[i:i + batch]
+
+            async def get(part=part):
+                return await client.get_messages(peer, ids=part)
+            got = await self._guard(channel, get())
+            got = list(got) if isinstance(got, (list, tuple)) else [got]
+            gone += [m for m, x in zip(part, got) if x is None or type(x).__name__ == "MessageEmpty"]
+        # 확인한 것이 모두 없다고 나오면(권한·연결 문제일 수 있음) 지우지 않는다 - 채널을 정말 다 비웠으면 다음에 하나씩 정리
+        if len(ids) >= 20 and len(gone) == len(ids):
+            log.warning("텔레그램 %s 채널 %s: 색인한 메시지가 모두 없다고 나와 지우지 않았습니다 (권한·연결 확인)", self.sid, channel)
+            return 0
+        if gone:
+            for m in gone:
+                self._msgs.pop((channel, int(m)), None)
+            await asyncio.to_thread(forget_messages, self.sid, channel, gone)
+            log.info("텔레그램 %s 채널 %s: 지워진 메시지 %d개를 목록에서 뺐습니다", self.sid, channel, len(gone))
+        return len(gone)
+
     async def sync_latest(self, channel, force=False):
         """새로 올라온 것 받기 (LATEST_SYNC_SEC 안에 이미 했으면 건너뜀)."""
         async with self._lock(channel):
@@ -2356,8 +2413,9 @@ class TelegramSource:
         async def get():
             return await client.get_messages(await self.peer(channel), ids=int(msg))
         m = await self._guard(channel, get())
-        if not m:
-            raise TgError("텔레그램에서 이 메시지를 찾을 수 없습니다 (지워졌을 수 있음).")
+        if not m or type(m).__name__ == "MessageEmpty":
+            await asyncio.to_thread(forget_messages, self.sid, channel, [msg])   # 지워진 것 - 목록에서도 뺀다
+            raise TgError("텔레그램에서 이 메시지를 찾을 수 없습니다 (지워져서 목록에서 뺐습니다).")
         self._remember(channel, m)
         return m
 

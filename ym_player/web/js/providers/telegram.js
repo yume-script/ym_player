@@ -271,6 +271,7 @@ export class TelegramProvider {
                 const r = await api(`${this.base}/refresh`, { method: 'POST', json: { channel } });
                 reset();
                 const t = r.tmdb || {};
+                if (r.removed) toast(`텔레그램에서 지워진 ${r.removed}개를 목록에서 뺐습니다.`, 'info', 6000);
                 if (t.error) toast(`작품 정보(TMDB): ${t.error}`, 'error', 8000);
                 else if (t.tried) {
                     toast(`작품 정보 ${t.found}개를 찾았습니다${t.missing.length ? ` · 못 찾음 ${t.missing.length}개: ${t.missing.slice(0, 5).join(', ')}`

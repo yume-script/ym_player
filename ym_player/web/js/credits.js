@@ -106,6 +106,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 161,
+        "version": "1.3.3",
+        "date": "2026-11-17",
+        "title": "텔레그램 [목록 새로 고침]이 텔레그램에서 지운 영상·파일을 목록에서 뺌 (지워진 것을 틀려고 해도 뺌)"
+    },
+    {
         "pr": 160,
         "version": "1.3.2",
         "date": "2026-11-17",
