@@ -107,6 +107,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 export const CHANGELOG = [
     {
         "pr": 158,
+        "version": "1.3.0",
+        "date": "2026-11-17",
+        "title": "MKV 등은 HLS 대신 MP4로 바꿔 재생(아이패드 Safari 끊김), 텔레그램 목록 새로 고침·포스터 자동 찾기, Plex→텔레그램 사본 여러 곳 고르기 (자동 올리기 코드: 계정 넘기기·순서 바꾸기·제외 정규식·자막 대기 분 단위 - BookOasis Assistant와 같게)"
+    },
+    {
+        "pr": 158,
         "version": "1.2.21",
         "date": "2026-11-16",
         "title": "텔레그램 자동 올리기 기능 제거."

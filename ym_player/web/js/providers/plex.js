@@ -6,7 +6,7 @@
 //              playable, viewOffset, duration, children[], childrenTitle, childrenStyle, parent }
 //   playback = { url, kind, live, startTime, title, subtitle, poster, audioOnly,
 //                onProgress(state, sec), onStop(sec), getNext() }
-import { api, h, icon, modal, fmtDuration, uuid, storeGet, storeSet, IS_SAFARI, dataSaver } from '../util.js';
+import { api, h, icon, modal, fmtDuration, uuid, storeGet, storeSet, IS_SAFARI, dataSaver, prepareMp4 } from '../util.js';
 import { registry } from './index.js';
 
 const PRODUCT = 'YMPlayer';
@@ -397,8 +397,17 @@ export class PlexProvider {
         const vo = m.viewOffset || 0;
         const resumable = vo > 30000 && (!m.duration || vo < m.duration * 0.95);
         const startTime = startAt != null ? startAt : (!fromStart && resumable ? vo / 1000 : 0);
-        let url, kind;
-        if (canDirectPlay(media, audioOnly) && !burn && !otherAudio && q.id === 'original') {
+        let url, kind, mp4 = null;
+        const original = !burn && !otherAudio && q.id === 'original';
+        // 브라우저가 그대로 못 여는 원본(MKV 안의 H.264 등)은 HLS 변환보다 먼저 서버가 MP4로 바꿔 둔 파일로
+        // (다시 압축하지 않아 빠르고, 원본처럼 탐색돼 아이패드 Safari에서도 끊기지 않는다). 못 바꾸는 형식이면 예전처럼 HLS
+        if (!(canDirectPlay(media, audioOnly) && original) && original && !audioOnly) {
+            mp4 = await prepareMp4(`/api/mp4/plex/${encodeURIComponent(this.id)}`, { id });
+        }
+        if (mp4) {
+            url = mp4.url;
+            kind = 'direct';
+        } else if (canDirectPlay(media, audioOnly) && original) {
             url = this.base + part.key;
             kind = 'direct';
         } else {
@@ -463,6 +472,7 @@ export class PlexProvider {
             qualities: audioOnly ? [] : QUALITIES,
             activeQuality: q.id,
             transcoding: kind === 'hls',
+            ...(mp4 ? { engineNote: `MP4로 바꿔 재생 (${{ remux: '포장만', audio: '음성 AAC', hevc: 'HEVC 그대로' }[mp4.mode] || '다시 압축 안 함'})` } : {}),
             // 음성/화질을 바꾸면 그 위치부터 다시 불러온다 (자막 선택은 Plex에 저장돼 있어 그대로)
             selectAudio: async (aid, atSec) => ({ reload: await this.getPlayback(id, { startAt: atSec, audioId: aid }) }),
             selectQuality: async (qid, atSec) => ({ reload: await this.getPlayback(id, { startAt: atSec, quality: qid }) }),
@@ -517,43 +527,56 @@ export class PlexProvider {
         if (opts.plexOnly) return id;
         let m;
         try { m = ((await this.req(`/library/metadata/${id}`, { includeGuids: 1 })).Metadata || [])[0]; } catch (e) { return id; }
-        const hit = await this._findCopy(m);
+        let hit = await this._findCopy(m);
         if (!hit) return id;
         const pref = storeGet(PLEX_TG_CHOICE_KEY, 'ask');
+        const many = (hit.all || []).length > 1;
         let via = pref === 'telegram' || pref === 'plex' ? pref : null;
-        if (!via) via = opts.auto ? (this._lastVia || 'telegram') : await this._askSource(m, hit);
-        if (!via) return null;
+        // 텔레그램 사본이 두 곳 이상이면(채널·계정이 다름) '텔레그램으로'를 기억해 뒀어도 어느 곳에서 틀지 고르게 한다
+        if (via === 'telegram' && many && !opts.auto) via = null;
+        if (!via && opts.auto) via = this._lastVia || 'telegram';
+        if (!via) {
+            const ans = await this._askSource(m, hit, pref === 'telegram');
+            if (!ans) return null;
+            via = ans.via;
+            hit = ans.hit || hit;
+        }
         this._lastVia = via;
         this._route.set(String(id), { via, hit });
         return id;
     }
 
-    _askSource(m, hit) {
-        const tg = registry.byId(hit.tg);
+    /** 재생할 곳을 묻는다 -> {via: 'telegram'|'plex', hit: 고른 텔레그램 사본} 또는 null(취소).
+     *  텔레그램 사본이 여러 곳(다른 채널·계정)에 있으면 곳마다 단추를 하나씩 */
+    _askSource(m, hit, rememberedTg = false) {
         const name = m.type === 'episode' ? `${m.grandparentTitle} S${m.parentIndex} · E${m.index}` : `${m.title}${m.year ? ` (${m.year})` : ''}`;
-        const where = [tg.name, tg.channelTitle ? tg.channelTitle(hit.channel) : '', hit.how].filter(Boolean).join(' · ');
+        const places = (hit.all && hit.all.length ? hit.all : [hit]).filter((x) => { const t = registry.byId(x.tg); return t && t.kind === 'telegram'; });
+        const whereOf = (x) => { const tg = registry.byId(x.tg); return [tg.name, tg.channelTitle ? tg.channelTitle(x.channel) : '', x.how].filter(Boolean).join(' · '); };
         return new Promise((resolve) => {
             let answer = null;
             const remember = h('input', { type: 'checkbox' });
-            const pick = (via) => {
-                answer = via;
+            const pick = (via, x) => {
+                answer = { via, hit: x || null };
                 if (remember.checked) storeSet(PLEX_TG_CHOICE_KEY, via);
                 dlg.close();
             };
-            const choice = (via, ic, label, sub, accent) => h('button', { class: `btn source-pick${accent ? ' btn-accent' : ''}`, on: { click: () => pick(via) } },
+            const choice = (via, x, ic, label, sub, accent) => h('button', { class: `btn source-pick${accent ? ' btn-accent' : ''}`, on: { click: () => pick(via, x) } },
                 icon(ic), h('span', { class: 'source-pick-text' }, h('b', { text: label }), h('small', { text: sub })));
+            const many = places.length > 1;
             const body = h('div', { class: 'source-ask' },
-                h('p', { text: `"${name}"은(는) 텔레그램에도 있습니다. 어디서 재생할까요?` }),
+                h('p', { text: many ? `"${name}"은(는) 텔레그램 ${places.length}곳에도 있습니다. 어디서 재생할까요?` : `"${name}"은(는) 텔레그램에도 있습니다. 어디서 재생할까요?` }),
                 h('div', { class: 'source-picks' },
-                    choice('telegram', 'paper-plane', '텔레그램으로 재생', where || hit.title || '', true),
-                    choice('plex', 'server', 'Plex로 재생', `${this.name} · 음성·화질·자막을 Plex에서 고를 수 있음`, false)),
-                h('label', { class: 'check' }, remember, ' 다음부터 묻지 않기 (이 브라우저, 사이드바 [테마] 창에서 바꿈)'));
+                    ...places.map((x, i) => choice('telegram', x, 'paper-plane', many ? `텔레그램 ${i + 1}: ${registry.byId(x.tg).channelTitle ? registry.byId(x.tg).channelTitle(x.channel) : registry.byId(x.tg).name}` : '텔레그램으로 재생',
+                        whereOf(x) || x.title || '', i === 0)),
+                    choice('plex', null, 'server', 'Plex로 재생', `${this.name} · 음성·화질·자막을 Plex에서 고를 수 있음`, false)),
+                rememberedTg ? null : h('label', { class: 'check' }, remember, ' 다음부터 묻지 않기 (이 브라우저, 사이드바 [테마] 창에서 바꿈 - 텔레그램이 여러 곳이면 그래도 물음)'));
             const dlg = modal('재생할 곳 고르기', body);
             // 바깥을 누르거나 X로 닫으면 취소
             new MutationObserver((_, obs) => {
                 if (!dlg.el.isConnected) { obs.disconnect(); resolve(answer); }
             }).observe(document.body, { childList: true });
-            dlg.el.querySelector('.btn-accent').focus();
+            const first = dlg.el.querySelector('.btn-accent');
+            if (first) first.focus();
         });
     }
 

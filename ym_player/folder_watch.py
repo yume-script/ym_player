@@ -31,10 +31,18 @@ class FolderError(Exception):
     pass
 
 
-def is_remote(folder):
-    """rclone 원격("이름:경로")인지. 이 컴퓨터의 폴더는 /로 시작한다"""
+def is_local_abs(folder):
+    """이 컴퓨터의 절대 경로인지: /로 시작 (리눅스·맥), 윈도우는 "D:\\영상"·"D:/영상"·"\\\\서버\\공유"도"""
     folder = str(folder or "")
-    return not folder.startswith("/") and bool(_REMOTE_RE.fullmatch(folder))
+    if folder.startswith("/"):
+        return True
+    return os.name == "nt" and bool(re.match(r"^(?:[A-Za-z]:[\\/]|\\\\[^\\]+\\)", folder))
+
+
+def is_remote(folder):
+    """rclone 원격("이름:경로")인지. 이 컴퓨터의 폴더는 /로 시작한다 (윈도우는 드라이브 문자 "D:\\"도 이 컴퓨터)"""
+    folder = str(folder or "")
+    return not is_local_abs(folder) and bool(_REMOTE_RE.fullmatch(folder))
 
 
 def clean_folder(folder):
@@ -46,9 +54,11 @@ def clean_folder(folder):
         raise ValueError("폴더 이름에 쓸 수 없는 글자가 있습니다.")
     if folder.startswith("/"):
         return folder.rstrip("/") or "/"
+    if is_local_abs(folder):   # 윈도우 "D:\\영상"
+        return folder.rstrip("\\/") + ("\\" if re.fullmatch(r"[A-Za-z]:", folder.rstrip("\\/")) else "")
     if is_remote(folder):
         return folder
-    raise ValueError("폴더는 /로 시작하는 경로(예: /mnt/gdrive/영화)나 rclone 원격(예: gdrive:영화)으로 적어 주세요.")
+    raise ValueError("폴더는 /로 시작하는 경로(예: /mnt/gdrive/영화, 윈도우는 D:\\영화)나 rclone 원격(예: gdrive:영화)으로 적어 주세요.")
 
 
 def key_hash(key):
@@ -116,8 +126,8 @@ async def list_dirs(path):
     if is_remote(path):
         rows = await _lsjson_dirs(path)
         return sorted(str(r.get("Name") or r.get("Path") or "") for r in rows if not str(r.get("Name") or "").startswith("."))[:1000]
-    if not path.startswith("/"):
-        raise FolderError("폴더는 /로 시작해야 합니다.")
+    if not is_local_abs(path):
+        raise FolderError("폴더는 /로 시작해야 합니다 (윈도우는 D:\\처럼 드라이브 문자로).")
     def scan_dirs():
         try:
             with os.scandir(path) as it:
@@ -150,6 +160,8 @@ NETWORK_FS = ("fuse.rclone", "rclone", "nfs", "nfs4", "cifs", "smb3", "smbfs", "
 def on_network_drive(path, mounts_file="/proc/mounts"):
     """그 파일이 rclone mount 같은 네트워크 드라이브에 있는지 (가장 길게 맞는 마운트의 종류로 본다).
     그런 파일을 그대로 인코딩하면 읽기가 느리고 끊겨서, 먼저 이 서버로 복사해 놓고 인코딩한다"""
+    if os.name == "nt":   # 윈도우: 네트워크 드라이브(Z: 등)·UNC 경로(\\\\서버\\공유)·rclone mount(WinFsp)
+        return _windows_network(path)
     path = os.path.realpath(path)
     best, kind = "", ""
     try:
@@ -165,6 +177,18 @@ def on_network_drive(path, mounts_file="/proc/mounts"):
         if (path == mnt or path.startswith(mnt.rstrip("/") + "/")) and len(mnt) >= len(best):
             best, kind = mnt, parts[2]
     return kind in NETWORK_FS or "rclone" in kind
+
+
+def _windows_network(path):
+    path = os.path.abspath(path)
+    if path.startswith("\\\\"):
+        return True
+    try:
+        import ctypes
+        root = os.path.splitdrive(path)[0] + "\\"
+        return ctypes.windll.kernel32.GetDriveTypeW(root) == 4   # DRIVE_REMOTE (rclone mount도 네트워크 드라이브로 붙는다)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def copy_file(src, dest, progress=None, chunk=4 * 1024 * 1024):
@@ -186,7 +210,7 @@ def local_path(folder, key):
     """이 컴퓨터 폴더 안의 파일 경로 (폴더 밖을 가리키면 FolderError)"""
     root = os.path.realpath(folder)
     path = os.path.realpath(os.path.join(root, key))
-    if path != root and not path.startswith(root.rstrip("/") + "/"):
+    if path != root and not path.startswith(root.rstrip("/\\") + os.sep):
         raise FolderError("폴더 밖의 파일입니다.")
     return path
 
@@ -306,7 +330,6 @@ def match_subs(video_name, names):
 async def remote_subs(folder, key):
     """rclone 원격에서 영상 옆의 자막 파일 [(상대 경로, 언어 꼬리, 확장자)]"""
     d, base = os.path.split(key)
-    stem = os.path.splitext(base)[0]
     target = _join_remote(folder, d) if d else folder
     names = [str(r.get("Name") or r.get("Path") or "") for r in await _lsjson(target, recursive=False)]
     return sorted((f"{d}/{n}" if d else n, lang, sext) for n, lang, sext in match_subs(base, names))

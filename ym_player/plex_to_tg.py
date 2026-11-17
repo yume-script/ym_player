@@ -38,9 +38,17 @@
   못 찾거나 실패하면 1시간 -> 6시간 -> 하루 -> 3일 뒤에 다시, 그래도 못 찾으면 "포스터 못 찾음" 목록에 남겨 직접 검색해 고른다.
   예전에 올린 것은 [포스터 복구]로 한꺼번에 찾는다.
 
-설정은 config.json의 "plex_to_tg": {interval, max_gb, encode_slots, rules: [{id, enabled, plex, section, section_title, tg, channel,
-channel_title, caption, wait_subs, wait_hours, burn_subs, kind, folder, height}]}
-(예전 wait_days는 읽을 때 wait_hours = wait_days x 24로 바꾼다)
+- 처리 순서 (항목마다): 1) 새 영상 발견 -> 2) 채널 중복 확인(작품 이름·파일 이름·시즌·회차 - 중복이면 "건너뜀: 중복"으로 기록)
+  -> 3) 제외 정규식 확인(설정 exclude - 맞으면 "건너뜀: 제외"로 기록) -> 4) 소프트 자막(파일 안 자막)이 있으면 바로 올림
+  -> 5) 자막 파일이 있어야 하면 정한 시간(분)만큼 기다렸다가 -> 6) 놀고 있는 텔레그램 계정이 가져가 올린다.
+- 계정 여럿 (규칙의 tg + tg_alt): 놀고 있는 계정이 진행 목록의 앞에서부터 가져간다. 한 계정에 문제가 생기면(로그아웃·세션 만료·
+  채널 권한 없음·요청 제한·연결 끊김) 그 항목을 다른 계정에 넘기고, 문제가 생긴 계정은 잠시 쉰다. 화면에서 직접 다른 계정을
+  고를 수도 있다 (pin). 진행 목록의 순서는 화면에서 바꿀 수 있다 (위로·아래로·맨 앞).
+- 기록마다 걸린 시간(elapsed)과 단계별 시간(times: 받기·인코딩·나누기·올리기·대기)을 남긴다.
+
+설정은 config.json의 "plex_to_tg": {interval, max_gb, encode_slots, exclude, rules: [{id, enabled, plex, section, section_title, tg, tg_alt,
+channel, channel_title, caption, wait_subs, wait_min, burn_subs, kind, folder, height}]}
+(예전 wait_days / wait_hours는 읽을 때 wait_min(분)으로 바꾼다)
 """
 import asyncio
 import contextvars
@@ -72,9 +80,16 @@ KEEP_DONE = 5000
 KEEP_HISTORY = 50      # 계정마다 이만큼 (기록은 계정별로 나눠 본다)
 KEEP_SKIPPED = 2000    # 규칙마다 취소·건너뛴 항목 기억 (다시 올리기용)
 POSTER_RETRY = (3600, 6 * 3600, 24 * 3600, 3 * 24 * 3600)   # TMDB 포스터를 못 찾았을 때 다시 찾기까지
+AUTO_TMDB_SEC = 20 * 60     # 텔레그램 채널의 작품 정보(TMDB)가 없는 영상을 이만큼마다 찾아 둔다 (목록 카드 포스터)
+AUTO_TMDB_MAX = 40          # 한 번에 찾는 작품 수
+AUTO_TMDB_MISS = 7 * 86400  # 못 찾은 작품은 이만큼 뒤에 다시 (화면의 작품 정보와 같게)
 SCAN_SIZE = 50
 DEFAULT_CAPTION = "{name}\n\n{summary}"
-DEFAULT_WAIT_HOURS = 12   # 새 규칙의 자막 기다리기 기본값 (자막을 영상에 입힌 하드섭은 자동으로 알 수 없어서 끝없이 기다리지 않게)
+DEFAULT_WAIT_MIN = 720   # 새 규칙의 자막 기다리기 기본값(분) (자막을 영상에 입힌 하드섭은 자동으로 알 수 없어서 끝없이 기다리지 않게)
+DEFAULT_EXCLUDE = ["S101", "S201"]   # 파일 이름·제목에 이 정규식이 맞으면 올리지 않는다 (설정에서 바꿈)
+MAX_EXCLUDE = 30
+MAX_ENCODE_SLOTS = 4
+ACCOUNT_REST = 30 * 60   # 로그인·세션 문제가 생긴 계정을 쉬게 하는 시간 (그동안 다른 계정이 올림)
 STREAMABLE = {".mp4", ".m4v", ".mov"}   # 텔레그램 앱에서 받기 전에 바로 재생되는 형식
 SUB_EXT = {"srt": "srt", "subrip": "srt", "ass": "ass", "ssa": "ass", "smi": "smi", "sami": "smi", "vtt": "vtt", "webvtt": "vtt"}
 MAX_PARTS = 10
@@ -96,11 +111,19 @@ PAUSE_CHECK_SEC = 2   # 재생 중인지 이만큼마다 보고 인코딩을 멈
 
 
 def _lowest_priority():
-    """(ffmpeg 자식 프로세스에서) CPU 우선순위를 가장 낮게"""
+    """(ffmpeg 자식 프로세스에서) CPU 우선순위를 가장 낮게 (리눅스·맥)"""
     try:
         os.nice(19)
-    except OSError:
+    except (OSError, AttributeError):
         pass
+
+
+def low_priority_kwargs():
+    """낮은 우선순위로 자식 프로세스를 띄우는 인자 - 윈도우는 preexec_fn을 못 써서 우선순위 클래스로"""
+    if os.name == "nt":
+        import subprocess
+        return {"creationflags": getattr(subprocess, "IDLE_PRIORITY_CLASS", 0x40)}
+    return {"preexec_fn": _lowest_priority}
 
 
 def _signal(proc, name):
@@ -191,9 +214,11 @@ def clean_settings(raw):
                 "channel": str(r.get("channel") or "").strip(), "channel_title": str(r.get("channel_title") or "")[:100],
                 "caption": str(r.get("caption") or DEFAULT_CAPTION)[:1000],
                 "wait_subs": bool(r.get("wait_subs", True)),
-                # 자막을 몇 시간까지 기다릴지 (0이면 계속). 예전 설정의 일 단위(wait_days)는 시간으로 바꿔 읽는다
-                "wait_hours": num(r["wait_hours"] if "wait_hours" in r else
-                                  (int(r.get("wait_days") or 0) * 24 if "wait_days" in r else DEFAULT_WAIT_HOURS), 0, 8760, DEFAULT_WAIT_HOURS),
+                # 자막을 몇 분까지 기다릴지 (0이면 계속). 예전 설정의 시간(wait_hours)·일(wait_days)은 분으로 바꿔 읽는다
+                "wait_min": num(_wait_min(r), 0, 525600, DEFAULT_WAIT_MIN),
+                # 이 규칙을 같이 올릴 수 있는 다른 텔레그램 계정 (그 채널에 글을 쓸 수 있어야 함) - 놀고 있는 계정이 가져가고,
+                # 한 계정에 문제가 생기면 다른 계정이 이어 올린다
+                "tg_alt": [],
                 "burn_subs": bool(r.get("burn_subs", True)),
                 # 폴더 규칙 (rclone 드라이브 등): kind "folder", folder = 절대 경로 또는 rclone "원격:경로"
                 "kind": "folder" if r.get("kind") == "folder" else "plex",
@@ -202,6 +227,8 @@ def clean_settings(raw):
                 "height": num(r.get("height"), 0, 2160, 720)}
         if rule["height"] not in (0, 480, 720, 1080):
             rule["height"] = 720
+        alt = r.get("tg_alt") if isinstance(r.get("tg_alt"), list) else []
+        rule["tg_alt"] = list(dict.fromkeys(str(a)[:16] for a in alt if a and str(a) != rule["tg"]))[:10]
         if rule["kind"] == "folder":
             rule["folder"] = folder_watch.clean_folder(rule["folder"])
             rule["plex"], rule["section"] = "", ""
@@ -227,9 +254,95 @@ def clean_settings(raw):
     m = re.fullmatch(r"(\d{1,2})-(\d{1,2})", hours)
     hours = f"{int(m.group(1))}-{int(m.group(2))}" if m and int(m.group(1)) < 24 and int(m.group(2)) <= 24 and m.group(1) != m.group(2) else ""
     # 인코딩을 동시에 몇 개까지 (계정이 여럿이면 올리기는 동시에 해도 인코딩은 CPU를 많이 써서 이만큼만) - 기본 1
-    slots = num(raw.get("encode_slots"), 1, 3, 1)
+    slots = num(raw.get("encode_slots"), 1, MAX_ENCODE_SLOTS, 1)
     return {"interval": num(raw.get("interval"), 2, 1440, 10), "max_gb": max_gb, "max_gb_v": 1, "encoder": encoder,
-            "cpu_preset": preset, "hours": hours, "encode_slots": slots, "rules": rules}
+            "cpu_preset": preset, "hours": hours, "encode_slots": slots, "exclude": clean_exclude(raw.get("exclude")), "rules": rules}
+
+
+def _wait_min(r):
+    """자막 기다리는 시간(분) - 새 설정 wait_min, 예전 wait_hours(시간)·wait_days(일)"""
+    try:
+        if "wait_min" in r:
+            return int(r["wait_min"])
+        if "wait_hours" in r:
+            return int(r["wait_hours"]) * 60
+        if "wait_days" in r:
+            return int(r.get("wait_days") or 0) * 1440
+    except (TypeError, ValueError):
+        pass
+    return DEFAULT_WAIT_MIN
+
+
+def clean_exclude(raw):
+    """제외 정규식 목록 (설정에 없으면 기본값 S101·S201). 줄바꿈으로 나눈 글도 받는다. 틀린 정규식이면 ValueError"""
+    if raw is None:
+        return list(DEFAULT_EXCLUDE)
+    if isinstance(raw, str):
+        raw = raw.splitlines()
+    out = []
+    for x in raw if isinstance(raw, list) else []:
+        x = str(x or "").strip()[:200]
+        if not x or x in out:
+            continue
+        try:
+            re.compile(x)
+        except re.error as e:
+            raise ValueError(f"제외 정규식이 틀렸습니다: {x} ({e})")
+        out.append(x)
+    if len(out) > MAX_EXCLUDE:
+        raise ValueError(f"제외 정규식은 {MAX_EXCLUDE}개까지 넣을 수 있습니다.")
+    return out
+
+
+def excluded_by(patterns, *texts):
+    """제외 정규식 중 파일 이름·제목에 맞는 첫 정규식 (없으면 "")"""
+    for pat in patterns or []:
+        try:
+            rx = re.compile(pat)
+        except re.error:
+            continue
+        if any(t and rx.search(str(t)) for t in texts):
+            return pat
+    return ""
+
+
+def phase_kind(phase):
+    """진행 단계 문구 -> 시간을 모을 칸 (받기·인코딩·나누기·올리기·대기·준비)"""
+    p = str(phase or "")
+    if "요청 제한" in p or "차례 기다리는" in p or "멈춤" in p:
+        return "대기"
+    if "받는" in p or "복사" in p:
+        return "받기"
+    if "인코딩" in p:
+        return "인코딩"
+    if "나누는" in p:
+        return "나누기"
+    if "올리는" in p:
+        return "올리기"
+    return "준비"
+
+
+# 계정 탓인 오류 (텔레그램 예외 이름) - 다른 계정에 넘긴다. 앞의 것은 계정 전체(잠시 쉼), 뒤의 것은 그 채널만
+_ACCOUNT_DOWN = {"AuthKeyUnregisteredError", "AuthKeyDuplicatedError", "AuthKeyInvalidError", "SessionRevokedError",
+                 "SessionExpiredError", "SessionPasswordNeededError", "UserDeactivatedError", "UserDeactivatedBanError",
+                 "PhoneNumberBannedError", "TgError", "ConnectionError", "ConnectionResetError", "ConnectionRefusedError"}
+_ACCOUNT_CHANNEL = {"ChatWriteForbiddenError", "ChannelPrivateError", "ChatAdminRequiredError", "UserBannedInChannelError",
+                    "ChannelInvalidError", "ChannelLost", "ChatForbiddenError", "PeerIdInvalidError"}
+
+
+def account_problem(e):
+    """(계정을 쉬게 할 초, 까닭) - 계정 탓이 아니면 None. 요청 제한(FloodWait)은 그 초만큼"""
+    name = type(e).__name__
+    if name in ("FloodWaitError", "FloodPremiumWaitError", "SlowModeWaitError"):
+        sec = int(getattr(e, "seconds", 60) or 60) + 1
+        return sec, f"텔레그램 요청 제한 {sec}초"
+    if name == "PeerFloodError":
+        return 3600, "텔레그램 요청 제한 (PeerFlood)"
+    if name in _ACCOUNT_DOWN:
+        return (300 if "Connection" in name else ACCOUNT_REST), f"계정 문제 ({str(e) or name})"[:200]
+    if name in _ACCOUNT_CHANNEL:
+        return 0, f"이 계정은 채널에 올릴 수 없음 ({str(e) or name})"[:200]
+    return None
 
 
 def in_hours(hours, now=None):
@@ -293,7 +406,7 @@ def _queue_path():
     return os.path.join(config_store.DATA_DIR, "plex_to_tg_queue.json")
 
 
-QUEUE_FIELDS = ("rule", "key", "title", "sig", "test", "force", "again")
+QUEUE_FIELDS = ("rule", "key", "title", "sig", "test", "force", "again", "pin", "avoid", "added")
 
 
 def load_queue():
@@ -495,6 +608,30 @@ class Lane:
         self.cancel_req = None    # 직접 취소한 (규칙, 키)
         self.subs_label = ""
         self.flood_until = 0      # 텔레그램 요청 제한으로 이때까지 쉼
+        self.started = 0          # 지금 항목을 시작한 때
+        self.times = {}           # 지금 항목의 단계별 걸린 초 {받기, 인코딩, 나누기, 올리기, 대기, 준비}
+        self.phase_kind = ""      # 지금 단계 칸과 그 시작 시각
+        self.phase_at = 0
+        self.last_done = None     # 마지막으로 끝낸 항목 {title, ok, at, elapsed}
+
+    def begin(self):
+        self.started, self.times, self.phase_kind, self.phase_at = time.time(), {}, "", 0
+
+    def mark(self, phase):
+        """단계가 바뀌면 앞 단계의 시간을 모은다 (phase None = 끝)"""
+        now = time.time()
+        kind = phase_kind(phase) if phase is not None else ""
+        if kind == self.phase_kind:
+            return
+        if self.phase_kind and self.phase_at:
+            self.times[self.phase_kind] = self.times.get(self.phase_kind, 0) + (now - self.phase_at)
+        self.phase_kind, self.phase_at = kind, now
+
+    def summary(self):
+        """(걸린 초, {단계: 초}) - 1초 밑은 뺀다"""
+        self.mark(None)
+        return (int(time.time() - self.started) if self.started else 0,
+                {k: int(v) for k, v in self.times.items() if v >= 1})
 
 
 _LANE = contextvars.ContextVar("plex_to_tg_lane", default=None)
@@ -510,8 +647,21 @@ def _lane_attr(name):
     return property(get, put)
 
 
+def _current_attr():
+    """self.current - 넣을 때 그 줄의 단계 시간도 잰다"""
+    def get(self):
+        return (_LANE.get() or self._main).current
+
+    def put(self, value):
+        lane = _LANE.get() or self._main
+        lane.current = value
+        if value:
+            lane.mark(value.get("phase"))
+    return property(get, put)
+
+
 class Mirror:
-    current = _lane_attr("current")
+    current = _current_attr()
     current_job = _lane_attr("current_job")
     subs_label = _lane_attr("subs_label")
     _job = _lane_attr("job")
@@ -544,6 +694,9 @@ class Mirror:
         self._gb_cache = {}      # 텔레그램 소스 id -> (시각, 파일 한도 GB) - 프리미엄 계정인지
         self._head_info = {}     # (rclone 원격, 파일) -> 앞부분 ffprobe 결과 (자막 트랙 확인용)
         self._shot_fail = {}     # (규칙, 항목) -> (시각, 오류) - 장면 뽑기에 실패한 것 (SHOT_RETRY_SEC 뒤에 다시)
+        self._down = {}          # 텔레그램 소스 id -> (이때까지 쉼, 까닭) - 문제가 생긴 계정 (그동안 다른 계정이 올림)
+        self._auto_tmdb_at = 0   # 마지막으로 채널들의 작품 정보를 찾아 둔 때
+        self._tmdb_done = {}     # (소스, 채널) -> 다 찾아 본 때의 채널 모양 (영상 수, 마지막 메시지) - 그대로면 다시 훑지 않음
 
     def cancelled(self):
         """[스레드에서도] 지금 작업을 취소했는지 - 서버로 복사하는 중이면 복사를 멈춘다"""
@@ -554,6 +707,9 @@ class Mirror:
         self._wake.set()
 
     def _queue_changed(self):
+        now = int(time.time())
+        for j in self.queue:   # 줄에 들어온 때 (화면에서 기다린 시간을 보여 준다)
+            j.setdefault("added", now)
         self._queue_event.set()   # run_queue가 새 계정의 줄을 바로 띄우게
         try:
             save_queue(self.queue)
@@ -564,26 +720,79 @@ class Mirror:
         """지금 올리는 중인 줄들 [(Lane)]"""
         return [ln for ln in self.lanes.values() if ln.current_job]
 
+    def _set_phase(self, text):
+        """지금 단계 문구만 바꾼다 (단계 시간도 같이)"""
+        if self.current:
+            self.current["phase"] = text
+            (_LANE.get() or self._main).mark(text)
+
+    # ----- 계정 고르기 (놀고 있는 계정 / 문제 생긴 계정 넘기기) -----
+    def _is_down(self, tg):
+        d = self._down.get(tg)
+        if d and d[0] > time.time():
+            return d[1]
+        self._down.pop(tg, None)
+        return ""
+
+    @staticmethod
+    def _accounts_for(rule, job):
+        """이 항목을 올릴 수 있는 계정들 (앞이 먼저). 직접 고른 계정(pin)이 있으면 그것만, 문제가 있었던 계정(avoid)은 빼되
+        모두 빠지면 처음 목록 그대로"""
+        if not rule:
+            return [""]
+        if job.get("pin"):
+            return [job["pin"]]
+        allx = [rule["tg"], *[a for a in rule.get("tg_alt") or [] if a != rule["tg"]]]
+        avoid = set(job.get("avoid") or [])
+        return [a for a in allx if a not in avoid] or allx
+
+    def _lane_of(self, job):
+        """지금 그 항목을 잡고 있는 계정 (안 잡혔으면 "")"""
+        return next((ln.tg for ln in self.lanes.values() if ln.job is job and ln.current_job), "")
+
     def status(self):
         st = load_state()
-        rules = {r["id"]: r for r in load_settings()["rules"]}
-        tg_of = lambda rid: (rules.get(rid) or {}).get("tg", "")   # noqa: E731
+        settings = load_settings()
+        rules = {r["id"]: r for r in settings["rules"]}
+        now = time.time()
         lanes = []
         for ln in self.lanes.values():
-            if not (ln.current or ln.flood_until > time.time()):
+            if not (ln.current or ln.flood_until > now):
                 continue
-            lanes.append({"tg": ln.tg, "current": {**(ln.current or {}), **(ln.current_job or {})} if ln.current else None,
-                          "flood_until": int(ln.flood_until) if ln.flood_until > time.time() else 0})
+            cur = None
+            if ln.current:
+                cur = {**ln.current, **(ln.current_job or {}), "started": int(ln.started), "elapsed": int(now - ln.started) if ln.started else 0,
+                       "phase_since": int(ln.phase_at), "times": {k: int(v) for k, v in ln.times.items() if v >= 1}}
+            lanes.append({"tg": ln.tg, "current": cur, "flood_until": int(ln.flood_until) if ln.flood_until > now else 0})
         first = next((x["current"] for x in lanes if x["current"]), None)
+        # 계정마다: 지금 하는 것, 기다리는 수(그 계정이 가져갈 수 있는 것), 성공·실패 수, 쉬는 중이면 까닭
         accounts = {}
-        for j in self.queue:
-            a = accounts.setdefault(tg_of(j["rule"]), {"queued": 0})
-            a["queued"] += 1
+        queue = []
+        for n, j in enumerate(self.queue):
+            rule = rules.get(j["rule"])
+            cands = self._accounts_for(rule, j)
+            running = self._lane_of(j) if id(j) in self._taken else ""
+            if not running:   # 올리는 중인 것은 계정의 current로 보인다
+                for a in cands:
+                    accounts.setdefault(a, {"queued": 0})["queued"] += 1
+            queue.append({"title": j["title"], "rule": j["rule"], "key": j["key"], "tg": running or cands[0], "tgs": cands,
+                          "pin": j.get("pin", ""), "avoid": j.get("avoid") or [], "running": bool(running), "pos": n,
+                          "added": j.get("added", 0)})
         for tg, a in (st.get("accounts") or {}).items():
             accounts.setdefault(tg, {"queued": 0}).update(ok=a.get("ok", 0), fail=a.get("fail", 0))
-        return {"queue": [{"title": j["title"], "rule": j["rule"], "key": j["key"], "tg": tg_of(j["rule"]),
-                           "running": id(j) in self._taken} for j in self.queue],
-                "current": first, "lanes": lanes, "accounts": accounts, "encode_slots": load_settings()["encode_slots"],
+        for r in settings["rules"]:
+            for tg in [r["tg"], *r.get("tg_alt", [])]:
+                accounts.setdefault(tg, {"queued": 0})
+        for tg, a in accounts.items():
+            ln = self.lanes.get(tg)
+            a["current"] = ({"title": ln.current.get("title", ""), "phase": ln.current.get("phase", ""),
+                             "elapsed": int(now - ln.started) if ln.started else 0} if ln and ln.current else None)
+            a["down"] = self._is_down(tg)
+            a["down_until"] = int(self._down[tg][0]) if a["down"] else 0
+            a["last"] = ln.last_done if ln else None
+        return {"queue": queue,
+                "current": first, "lanes": lanes, "accounts": accounts, "encode_slots": settings["encode_slots"],
+                "encoding": self._encoding,
                 "poster": self.poster_job, "poster_missing": self._poster_missing(st),
                 "skipped": sum(len(r.get("skipped") or {}) + sum(1 for k, n in (r.get("fails") or {}).items()
                                                                   if n >= GIVE_UP and k not in (r.get("skipped") or {}))
@@ -649,6 +858,7 @@ class Mirror:
                     self.prepare_shots()   # 자막 기다리는 항목의 장면을 뒤에서 미리
                 try:
                     await self._poster_retries()
+                    await self.auto_tmdb()
                 except Exception as e:  # noqa: BLE001 - 포스터는 덤
                     log.info("자동 올리기 포스터 다시 찾기 실패: %s", e)
                 self._wake.clear()
@@ -1049,6 +1259,33 @@ class Mirror:
         self.wake()
         return {"queued": added, "excluded": excluded}
 
+    def _wait_subs(self, rule, key):
+        """자막이 없을 때: 기다린 지 wait_min분이 안 됐으면 Waiting (0분이면 생길 때까지 계속)"""
+        w = (load_state()["rules"].get(rule["id"], {}).get("waiting") or {}).get(key)
+        if not rule["wait_min"] or not w or time.time() - w.get("since", time.time()) < rule["wait_min"] * 60:
+            raise Waiting()
+
+    async def _duplicate(self, rule, fields, file_name):
+        """채널 중복이면 그 까닭 (아니면 ""): 같은 파일(이름+크기) -> 채널에 같은 파일 이름 -> 같은 작품·시즌·회차"""
+        dup = self._already_sent(rule, self._cur_sig)
+        if dup:
+            return f"이 채널에 이미 올린 파일 ({dup})"
+        refresh = getattr(telegram_src, "refresh_channel", None)   # 채널 목록을 먼저 새로 읽는다 (BookOasis Assistant)
+        if refresh:
+            try:
+                await refresh(self.tg_for(rule["tg"]), int(rule["channel"]))
+            except Exception as e:  # noqa: BLE001 - 못 읽으면 지금까지 읽은 목록·자동 올리기 기록으로
+                log.info("자동 올리기: 채널 목록을 새로 읽지 못했습니다 (%s): %s", rule["channel_title"] or rule["channel"], e)
+        same = getattr(telegram_src, "channel_file", None)
+        if same and file_name:
+            try:
+                got = same(rule["tg"], int(rule["channel"]), file_name)
+            except Exception:  # noqa: BLE001
+                got = ""
+            if got:
+                return f"같은 파일 이름이 이미 채널에 있음 ({got})"
+        return self._already_ep(rule, fields)
+
     def _already_sent(self, rule, sig):
         """같은 채널에 같은 파일(이름+크기)을 이미 올렸는지 - 규칙이 둘이거나(Plex 규칙과 폴더 규칙이 같은 파일을 봄)
         같은 파일이 다른 항목으로 다시 들어온 경우. 올렸으면 그 기록 문구, 아니면 """""
@@ -1112,11 +1349,22 @@ class Mirror:
                         self._lane_tasks[tg] = asyncio.ensure_future(self._run_lane(tg, st))
                 running = [t for t in self._lane_tasks.values() if not t.done()]
                 if not running:
-                    break
+                    if any(self._is_down(tg) == "" for tg in self._waiting_accounts(rules, include_down=True)) \
+                            or not self._waiting_accounts(rules, include_down=True):
+                        break
+                    # 남은 항목의 계정이 모두 쉬는 중 - 가장 먼저 풀리는 때까지 기다렸다가 다시
+                    until = min((d[0] for d in self._down.values()), default=time.time() + 60)
+                    self._queue_event.clear()
+                    try:
+                        await asyncio.wait_for(self._queue_event.wait(), max(5, min(600, until - time.time() + 1)))
+                    except asyncio.TimeoutError:
+                        pass
+                    continue
                 self._queue_event.clear()
                 ev = asyncio.ensure_future(self._queue_event.wait())
                 try:
-                    await asyncio.wait([*running, ev], return_when=asyncio.FIRST_COMPLETED)
+                    # 쉬던 계정이 풀리면 그 줄도 띄우게 1분마다 다시 본다
+                    await asyncio.wait([*running, ev], return_when=asyncio.FIRST_COMPLETED, timeout=60)
                 finally:
                     ev.cancel()
                 for t in running:   # 줄이 예외로 끝났으면 로그만 (다른 줄은 계속)
@@ -1128,17 +1376,29 @@ class Mirror:
                     t.cancel()
             raise
 
-    def _waiting_accounts(self, rules):
-        """아직 아무 줄도 잡지 않은 항목이 있는 계정들 (규칙이 없어진 항목은 "" - 그 줄이 실패로 정리한다)"""
-        return list(dict.fromkeys((rules.get(j["rule"]) or {}).get("tg", "") for j in self.queue if id(j) not in self._taken))
+    def _waiting_accounts(self, rules, include_down=False):
+        """아직 아무 줄도 잡지 않은 항목을 가져갈 수 있는 계정들 (규칙이 없어진 항목은 "" - 그 줄이 실패로 정리한다).
+        쉬는 중인 계정은 뺀다 (include_down이면 넣음)"""
+        out = []
+        for j in self.queue:
+            if id(j) in self._taken:
+                continue
+            for a in self._accounts_for(rules.get(j["rule"]), j):
+                if a not in out and (include_down or not self._is_down(a)):
+                    out.append(a)
+        return out
+
+    def _next_job(self, tg, rules):
+        """이 계정이 가져갈 다음 항목 - 진행 목록의 앞에서부터 (그 계정이 올릴 수 있는 것 중)"""
+        return next((j for j in self.queue if id(j) not in self._taken and tg in self._accounts_for(rules.get(j["rule"]), j)), None)
 
     async def _run_lane(self, tg, st):
         lane = self.lanes.setdefault(tg, Lane(tg))
         _LANE.set(lane)   # 이 작업(과 그 안에서 만든 작업·스레드)의 self.current 등은 이 계정 줄의 것
         rules = {r["id"]: r for r in st["rules"]}
         try:
-            while in_hours(st["hours"]):
-                job = next((j for j in self.queue if id(j) not in self._taken and (rules.get(j["rule"]) or {}).get("tg", "") == tg), None)
+            while in_hours(st["hours"]) and not self._is_down(tg):
+                job = self._next_job(tg, rules)
                 if job is None:
                     break
                 self._taken.add(id(job))
@@ -1152,8 +1412,11 @@ class Mirror:
 
     async def _run_job(self, lane, job, rule, st):
         ok, note, waiting = False, "", False
+        lane.begin()
+        if rule and lane.tg and lane.tg != rule["tg"]:   # 다른 계정이 이어 올림 - 그 계정으로 (채널은 같음)
+            rule = {**rule, "tg": lane.tg}
         while True:   # 텔레그램 요청 제한이면 이 계정만 기다렸다가 같은 것을 처음부터 다시
-            lane.current_job, lane.subs_label = {"rule": job["rule"], "key": job["key"]}, ""
+            lane.current_job, lane.subs_label = {"rule": job["rule"], "key": job["key"], "tg": lane.tg}, ""
             lane.job, lane.cur_sig, lane.cur_ep = job, "", None
             cancelled = False
             lane.cancel_req = None
@@ -1174,6 +1437,13 @@ class Mirror:
             except Waiting:
                 waiting = True
             except Exception as e:
+                problem = account_problem(e)
+                if problem and self._hand_over(lane, job, rule, problem):   # 다른 계정이 이어 올린다
+                    lane.job_task = None
+                    await self._drop_partial(rule, job["key"])
+                    lane.current = lane.current_job = None
+                    lane.cur_ep = None
+                    return
                 wait = getattr(e, "seconds", None) if type(e).__name__ == "FloodWaitError" else None
                 if wait:   # 텔레그램이 이 계정에 기다리라고 함 - 이 줄만 쉰다 (다른 계정 줄은 그대로 올린다)
                     wait = min(int(wait) + 1, 3600)
@@ -1193,6 +1463,7 @@ class Mirror:
             await self._drop_partial(rule, job["key"])
         self.queue = [j for j in self.queue if j is not job]
         self._queue_changed()
+        elapsed, times = lane.summary()
         lane.current = lane.current_job = None
         state = load_state()
         tg = (rule or {}).get("tg", "")
@@ -1246,15 +1517,93 @@ class Mirror:
         acct["ok" if ok else "fail"] = acct.get("ok" if ok else "fail", 0) + 1
         state["history"] = trim_history([{"title": job["title"], "ok": ok, "note": note, "at": int(time.time()), "key": job["key"],
                                           "subs": lane.subs_label if ok else "", "channel": (rule or {}).get("channel_title", ""),
-                                          "tg": tg, **({"again": True} if job.get("again") else {})}, *state["history"]])
+                                          "tg": tg, "rule": job["rule"], "elapsed": elapsed, "times": times,
+                                          "started": int(lane.started), "queued_at": job.get("added", 0),
+                                          **({"again": True} if job.get("again") else {}),
+                                          **({"handover": job["avoid"]} if job.get("avoid") else {})}, *state["history"]])
         save_state(state)
+        lane.last_done = {"title": job["title"], "ok": ok, "at": int(time.time()), "elapsed": elapsed}
         lane.cur_ep = None
+
+    def _hand_over(self, lane, job, rule, problem):
+        """계정 탓인 오류: 이 계정을 (필요하면) 쉬게 하고 그 항목을 다른 계정에 넘긴다. 넘길 계정이 없으면 False (보통 실패로)"""
+        rest, why = problem
+        if rest:
+            self._down[lane.tg] = (time.time() + rest, why)
+        if job.get("pin") == lane.tg:
+            job.pop("pin", None)   # 직접 고른 계정이 문제면 규칙의 계정들로
+        rules = {r["id"]: r for r in load_settings()["rules"]}
+        base = rules.get(job["rule"])
+        if not base:
+            return False
+        avoid = list(dict.fromkeys([*(job.get("avoid") or []), lane.tg]))
+        left = [a for a in [base["tg"], *base.get("tg_alt", [])] if a not in avoid]
+        if not left:
+            job.pop("avoid", None)   # 다 써 봤다 - 다음에는 처음부터 다시 고른다
+            return False
+        job["avoid"] = avoid
+        self._queue_changed()   # 자리는 그대로 - 다른 계정 줄이 가져간다
+        log.info("자동 올리기: %s - 계정 %s에서 %s → 다른 계정(%s)에 넘김", job["title"], lane.tg, why, ", ".join(left))
+        state = load_state()
+        state["history"] = trim_history([{"title": job["title"], "ok": False, "note": f"다른 계정에 넘김: {why}", "at": int(time.time()),
+                                          "key": job["key"], "subs": "", "channel": (rule or {}).get("channel_title", ""),
+                                          "tg": lane.tg, "rule": job["rule"], "handed": True,
+                                          "elapsed": int(time.time() - lane.started) if lane.started else 0}, *state["history"]])
+        save_state(state)
+        lane.cancel_req = None
+        return True
+
+    # ----- 진행 목록 손보기 (순서 바꾸기 · 계정 고르기) -----
+    def move_item(self, rule_id, key, where):
+        """올릴 차례인 항목의 자리를 바꾼다: up / down / top / bottom (지금 올리는 중인 것은 그대로)"""
+        i = next((n for n, j in enumerate(self.queue) if j["rule"] == rule_id and j["key"] == key), None)
+        if i is None:
+            raise ValueError("진행 목록에 없는 항목입니다.")
+        job = self.queue[i]
+        if id(job) in self._taken:
+            raise ValueError("지금 올리는 중인 항목은 옮길 수 없습니다.")
+        free = [n for n, j in enumerate(self.queue) if id(j) not in self._taken]   # 옮길 수 있는 자리들
+        pos = free.index(i)
+        target = {"up": max(0, pos - 1), "down": min(len(free) - 1, pos + 1), "top": 0, "bottom": len(free) - 1}.get(where)
+        if target is None:
+            raise ValueError("where는 up, down, top, bottom 중 하나입니다.")
+        if target != pos:
+            rest = [j for j in self.queue if j is not job]
+            anchor = self.queue[free[target]]
+            k = rest.index(anchor) + (1 if target > pos else 0)
+            self.queue = rest[:k] + [job] + rest[k:]
+            self._queue_changed()
+        return job["title"]
+
+    def assign_item(self, rule_id, key, tg):
+        """그 항목을 올릴 계정을 직접 고른다 (tg ""이면 규칙대로 - 놀고 있는 계정). 다시 시도 대기 중인 것이면 바로 줄에"""
+        job = next((j for j in self.queue if j["rule"] == rule_id and j["key"] == key), None)
+        if job is not None and id(job) in self._taken:
+            raise ValueError("지금 올리는 중인 항목입니다 - 취소한 뒤 다시 올리거나 끝나기를 기다려 주세요.")
+        if job is None:
+            state = load_state()
+            rs = state["rules"].get(rule_id) or {}
+            r = (rs.get("retry") or {}).get(key)
+            if r is None:
+                raise ValueError("진행 목록에 없는 항목입니다.")
+            r["at"] = 0
+            save_state(state)
+            job = {"rule": rule_id, "key": key, "title": r.get("title", key)}
+            self.queue.append(job)
+        if tg:
+            job["pin"] = tg
+            job["avoid"] = [a for a in job.get("avoid") or [] if a != tg]
+            self._down.pop(tg, None)   # 직접 고른 계정은 쉬던 중이어도 바로 써 본다
+        else:
+            job.pop("pin", None)
+        self._queue_changed()
+        self.wake()
+        return job["title"]
 
     async def _encode_slot(self):
         """인코딩 차례 - 동시에 encode_slots개까지 (계정 줄이 여럿이어도 CPU를 다 쓰지 않게)"""
         while self._encoding >= load_settings()["encode_slots"]:
-            if self.current:
-                self.current["phase"] = "인코딩 차례 기다리는 중 (다른 계정의 인코딩이 끝나면)"
+            self._set_phase(f"인코딩 차례 기다리는 중 (동시에 {load_settings()['encode_slots']}개까지 - 앞 인코딩이 끝나면)")
             self._encode_free.clear()
             try:
                 await asyncio.wait_for(self._encode_free.wait(), 5)
@@ -1357,6 +1706,53 @@ class Mirror:
             else:
                 self._poster_note(p["tg"], p, p.get("title") or p["mkey"], res)
 
+    async def auto_tmdb(self, force=False):
+        """텔레그램 채널에 들어온 영상 중 작품 정보(TMDB)가 아직 없는 것을 찾아 둔다 - 예전엔 영상을 한 번 열어 보거나
+        [정보 고치기]를 해야 목록 카드에 포스터가 붙었다 (다른 프로그램·자동 올리기로 올린 mp4 등). 찾은 수"""
+        if not self._poster_on() or not hasattr(telegram_src, "tmdb_targets"):
+            return 0
+        now = time.time()
+        if not force and now - self._auto_tmdb_at < AUTO_TMDB_SEC:
+            return 0
+        self._auto_tmdb_at = now
+        found = tried = 0
+        for s in config_store.load().get("sources", []):
+            if s.get("type") != "telegram" or not self._tmdb_key(s.get("id")):
+                continue
+            try:
+                chans = [int(c) for c in getattr(self.tg_for(s["id"]), "channels", None) or []]
+            except Exception:  # noqa: BLE001 - 지운 소스 등
+                continue
+            for ch in chans:
+                sig = await asyncio.to_thread(telegram_src.channel_sig, s["id"], ch) if hasattr(telegram_src, "channel_sig") else None
+                if sig and self._tmdb_done.get((s["id"], ch)) == sig and not force:
+                    continue
+                left = False
+                for t in await asyncio.to_thread(telegram_src.tmdb_targets, s["id"], ch):
+                    if t["have"] or t["manual"] or (t["fetched"] and now - t["fetched"] < AUTO_TMDB_MISS):
+                        continue
+                    if tried >= AUTO_TMDB_MAX:
+                        left = True
+                        break
+                    tried += 1
+                    res = await self._lookup_poster(s["id"], t)
+                    if res == "ok":
+                        found += 1
+                    elif res == "TMDB에서 못 찾음":   # 못 찾은 것도 적어 두어 AUTO_TMDB_MISS 뒤에 다시
+                        telegram_src.meta_put(s["id"], t["mkey"], t["kind"], None, None)
+                    elif res.startswith("TMDB 오류"):
+                        left = True
+                        break
+                    await asyncio.sleep(0.25)   # TMDB에 너무 빨리 묻지 않게
+                if not left and sig:
+                    self._tmdb_done[(s["id"], ch)] = sig
+                if tried >= AUTO_TMDB_MAX:
+                    self._auto_tmdb_at = now - AUTO_TMDB_SEC + 120   # 남은 것은 2분 뒤에 이어서
+                    return found
+        if found:
+            log.info("텔레그램 작품 정보: %d개를 TMDB에서 찾아 두었습니다", found)
+        return found
+
     def start_poster_backfill(self, rule_id=None):
         """[포스터 복구] 폴더 규칙 채널에서 포스터(작품 정보)가 없는 영상의 작품을 한꺼번에 찾는다 (뒤에서). 진행은 status의 poster"""
         if not self._poster_on():
@@ -1454,25 +1850,26 @@ class Mirror:
         fields = item_fields(m, rule["section_title"])
         subs = [x for x in part.get("Stream") or [] if x.get("streamType") == 3]
         local_file = str(part.get("file") or "")
+        size = int(part.get("size") or 0)
+        # 1) 중복: 같은 파일(이름+크기) / 채널에 같은 파일 이름 / 같은 작품·시즌·회차 (태그·확장자·해상도 무관)
+        self._cur_sig = file_sig(part.get("file") or "", size) if part.get("file") and size else ""
+        dup = "" if test else await self._duplicate(rule, fields, os.path.basename(local_file))
+        if dup:
+            return f"건너뜀: 중복 - {dup}"
+        # 2) 제외 정규식 (파일 이름·제목)
+        pat = "" if test else excluded_by(load_settings()["exclude"], os.path.basename(local_file), fields["name"], fields["title"])
+        if pat:
+            return f"건너뜀: 제외 - 제외 정규식 '{pat}'에 맞음"
         local_ok = bool(local_file and os.path.isfile(local_file) and os.access(local_file, os.R_OK))
         side = sidecar_subs(local_file) if local_ok else []   # Plex가 아직 못 읽은 옆 자막 파일도 자막으로 친다
-        # 파일 안의 자막 트랙(소프트 자막)은 Plex 정보에 없을 수 있어 파일을 직접 열어 본다 (ffprobe, 머리만 읽음)
+        # 3) 소프트 자막: 파일 안의 자막 트랙은 Plex 정보에 없을 수 있어 파일을 직접 열어 본다 (ffprobe, 머리만 읽음) - 있으면 바로 올림
         soft = await self._probe_subs(local_file if local_ok else f"{src['url']}{part['key']}",
                                       None if local_ok else src.get("token"))
         if soft is None:   # ffprobe가 없거나 못 열었으면 Plex 정보로
             soft = [x for x in subs if not x.get("key")]
+        # 4) 자막 파일을 기다린다 (정한 분만큼 - 0이면 생길 때까지)
         if rule["wait_subs"] and not subs and not side and not soft and not test:
-            w = (load_state()["rules"].get(rule["id"], {}).get("waiting") or {}).get(key)
-            if not rule["wait_hours"] or not w or time.time() - w.get("since", time.time()) < rule["wait_hours"] * 3600:
-                raise Waiting()
-        size = int(part.get("size") or 0)
-        self._cur_sig = file_sig(part.get("file") or "", size) if part.get("file") and size else ""
-        dup = "" if test else self._already_sent(rule, self._cur_sig)
-        if dup:
-            return f"건너뜀: 이 채널에 이미 올린 파일 ({dup})"
-        dup = "" if test else self._already_ep(rule, fields)   # 드라마: 같은 작품·시즌·회차 (태그·확장자·해상도 무관)
-        if dup:
-            return f"건너뜀: {dup}"
+            self._wait_subs(rule, key)
         tg = self.tg_for(rule["tg"])
         client = await tg.authorized_client()
         max_gb = max_gb or await self._account_gb(rule["tg"], client)   # 자동: 그 계정이 프리미엄이면 4GB, 아니면 2GB
@@ -1615,19 +2012,20 @@ class Mirror:
     async def upload_file(self, rule, key, max_gb, test=False):
         """폴더 규칙(rclone 드라이브 등)의 파일 하나: 텔레그램에서 바로 재생되게 H.264/AAC mp4로 (필요할 때만 인코딩),
         크면 720p로 줄이고, 자막 파일이 있으면 화면에 입혀서 올린다"""
-        if not transcode.ffmpeg_path():
-            raise RuntimeError("서버에 ffmpeg가 없어 인코딩할 수 없습니다.")
         folder = rule["folder"]
         remote = folder_watch.is_remote(folder)
         copied = False
         self._cur_sig = (self._job or {}).get("sig") or ""
-        dup = "" if test else self._already_sent(rule, self._cur_sig)
-        if dup:
-            return f"건너뜀: 이 채널에 이미 올린 파일 ({dup})"
         fields = folder_watch.file_fields(key, rule["section_title"])
-        dup = "" if test else self._already_ep(rule, fields)   # 드라마: 같은 작품·시즌·회차 (태그·확장자·해상도 무관)
+        # 1) 중복 (같은 파일 / 채널에 같은 파일 이름 / 같은 작품·시즌·회차) -> 2) 제외 정규식
+        dup = "" if test else await self._duplicate(rule, fields, os.path.basename(key))
         if dup:
-            return f"건너뜀: {dup}"
+            return f"건너뜀: 중복 - {dup}"
+        pat = "" if test else excluded_by(load_settings()["exclude"], os.path.basename(key), fields["name"])
+        if pat:
+            return f"건너뜀: 제외 - 제외 정규식 '{pat}'에 맞음"
+        if not transcode.ffmpeg_path():   # (중복·제외 확인은 ffmpeg 없이도 - 처리 순서대로)
+            raise RuntimeError("서버에 ffmpeg가 없어 인코딩할 수 없습니다.")
         name = re.sub(r'[\\/:*?"<>|]', "_", os.path.basename(key)) or "video.mp4"
         stem, ext = os.path.splitext(name)
         self.current = {"title": fields["name"], "phase": "준비 중", "done": 0, "total": 0}
@@ -1650,10 +2048,9 @@ class Mirror:
                 side = sidecar_subs(local)
                 info = await folder_watch.probe(local)
             any_inside = bool(folder_watch.streams(info, "subtitle"))
+            # 3) 소프트 자막이 있으면 바로, 4) 없으면 자막 파일을 정한 분만큼 기다린다
             if rule["wait_subs"] and not side and not any_inside and not test:
-                w = (load_state()["rules"].get(rule["id"], {}).get("waiting") or {}).get(key)
-                if not rule["wait_hours"] or not w or time.time() - w.get("since", time.time()) < rule["wait_hours"] * 3600:
-                    raise Waiting()
+                self._wait_subs(rule, key)
             tg = self.tg_for(rule["tg"])
             client = await tg.authorized_client()
             max_gb = max_gb or await self._account_gb(rule["tg"], client)
@@ -1918,11 +2315,11 @@ class Mirror:
                *args, os.path.abspath(out)]
         self.current = {"title": title, "phase": phase, "done": 0, "total": int(duration * 1000) or 0}
         # 올리기 인코딩은 뒤 작업 - CPU·디스크를 가장 낮은 우선순위로 (재생용 서버 변환이 먼저)
-        ionice = shutil.which("ionice")
+        ionice = shutil.which("ionice") if os.name != "nt" else None
         if ionice:
             cmd = [ionice, "-c", "3", *cmd]
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=cwd,
-                                                    preexec_fn=_lowest_priority)
+                                                    **low_priority_kwargs())
         errs = []
         pause_task = asyncio.ensure_future(self._pause_while_playing(proc, phase))
 
@@ -1958,8 +2355,7 @@ class Mirror:
                 busy = bool(self.playing())
                 if busy != paused and _signal(proc, "SIGSTOP" if busy else "SIGCONT"):
                     paused = busy
-                    if self.current:
-                        self.current["phase"] = "재생 중이라 잠시 멈춤 (재생이 끝나면 이어서)" if busy else phase
+                    self._set_phase("재생 중이라 잠시 멈춤 (재생이 끝나면 이어서)" if busy else phase)
                 await asyncio.sleep(PAUSE_CHECK_SEC)
         finally:
             if paused:

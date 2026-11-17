@@ -1,6 +1,6 @@
 // 텔레그램 채널 소스. 서버(/api/tg/{id}/...)가 Telethon으로 채널 영상을 색인하고 스트림을 이어 준다.
 // 설정에서 고른 채널 하나하나가 라이브러리처럼 보인다. 항목 id는 "채널id:메시지id".
-import { api, fmtDuration, h, modal, storeGet, storeSet, IS_SAFARI, dataSaver } from '../util.js';
+import { api, fmtDuration, h, modal, storeGet, storeSet, IS_SAFARI, dataSaver, toast, prepareMp4 } from '../util.js';
 import { registry } from './index.js';
 // 웹툰·책 보기는 열 때 받는다 (처음 화면을 가볍게)
 const openReader = (...a) => import('../reader.js').then((m) => m.openReader(...a));
@@ -257,6 +257,28 @@ export class TelegramProvider {
         const c = this.channels.find((x) => x.id === String(channel));
         if (c && c.kind) return null;
         return [['', '전체'], ['video', '영상'], ['image', '사진'], ['doc', '책']];
+    }
+
+    /** 라이브러리(채널) 화면의 단추: [목록 새로 고침] - 채널의 새 영상을 지금 받아 오고(평소엔 몇 분마다) 목록을 다시 그린다.
+     *  작품 정보(포스터)가 없는 영상은 서버가 뒤에서 TMDB에서 찾는다 */
+    libraryTools(channel, reset) {
+        const btn = h('button', { class: 'btn', type: 'button', title: '채널의 새 영상을 지금 받아 오고 목록을 다시 그립니다' },
+            h('i', { class: 'fa-solid fa-rotate-right' }), ' 목록 새로 고침');
+        btn.addEventListener('click', async () => {
+            btn.disabled = true;
+            btn.firstChild.classList.add('fa-spin');
+            try {
+                await api(`${this.base}/refresh`, { method: 'POST', json: { channel } });
+                reset();
+                setTimeout(() => { if (btn.isConnected) reset(); }, 8000);   // 뒤에서 찾은 포스터까지 한 번 더
+            } catch (e) {
+                toast(e.message, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.firstChild.classList.remove('fa-spin');
+            }
+        });
+        return [btn];
     }
 
     async getLibraryItems(channel, { start = 0, size = 60, sort = 'latest', kind = '' } = {}) {
@@ -770,6 +792,18 @@ export class TelegramProvider {
             }, at);
         };
         const converted = (at, mode) => (IS_SAFARI ? viaHls(at, mode) : streamed(at, mode));
+        // Safari(HLS로 보던 것): 그릇만 바꾸면 되는 영상(MKV 안의 H.264, HEVC 등)은 서버가 MP4 파일로 바꿔 두고 원본처럼 튼다 -
+        // HLS보다 매끄럽고 탐색도 브라우저가 한다. 데이터 절약(720p로 줄이기) 중이면 예전처럼
+        if (play.mode !== 'direct' && IS_SAFARI && !dataSaver()) {
+            const mp4 = await prepareMp4(`/api/mp4/tg/${encodeURIComponent(this.id)}/${channel}/${msg}`);
+            if (mp4) {
+                return withSubs({
+                    ...common, url: mp4.url, kind: 'direct', startTime: begin,
+                    engineNote: `MP4로 바꿔 재생 (${{ remux: '포장만', audio: '음성 AAC', hevc: 'HEVC 그대로' }[mp4.mode] || '다시 압축 안 함'})`,
+                    fallback: async (at) => viaHls(at || begin, play.mode),
+                }, 0);
+            }
+        }
         if (play.mode !== 'direct') return converted(begin, play.mode);
         return withSubs({
             ...common,
