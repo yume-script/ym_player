@@ -1228,3 +1228,41 @@ def test_auto_tmdb_fills_channel_posters(data, monkeypatch):
         assert await mirror.auto_tmdb() == 0 and len(asked) == 2        # 간격 안이면 쉼
         assert await mirror.auto_tmdb(force=True) == 0 and len(asked) == 2   # 채널이 그대로면 다시 훑지 않음 (못 찾은 것도 7일 뒤)
     asyncio.run(main())
+
+
+def test_refresh_fills_tmdb_and_retries_misses(data, monkeypatch):
+    """[목록 새로 고침]: 작품 정보가 없는 영상을 기다려서 찾고(예전에 못 찾은 것도 다시), 못 찾은 제목을 알려 준다.
+    TMDB 찾기는 첫 이름에서 덜 맞는 결과가 나와도 다른 이름(파일 이름)으로 더 맞는 것을 고른다"""
+    from ym_player import tmdb
+    telegram_src._migrated.discard(str(data))
+    with telegram_src.db() as conn:
+        conn.executemany(
+            "INSERT INTO videos(source,channel,msg,title,caption,file_name,mime,duration,size,width,height,date,has_thumb,kind)"
+            " VALUES('tg',920,?,?,'',?,'video/mp4',100,1,1,1,'2026-10-01T00:00:00+00:00',1,'video')",
+            [(1, "듄 파트2 (2024)", "Dune.Part.Two.2024.2160p.WEB-DL.H.265-FLUX_0000.mp4"),
+             (2, "없는영화 (2001)", "Nothing.2001.1080p.mp4")])
+    config_store.save({"client_id": "c", "sources": [{"id": "tg", "type": "telegram", "tmdb_key": "k" * 32, "channels": [{"id": 920}]}]})
+    t = telegram_src.meta_target_for("없는영화 (2001)", "Nothing.2001.1080p.mp4")
+    telegram_src.meta_put("tg", t["mkey"], "movie", None, None)    # 예전에(상세 화면 등) 못 찾아 적어 둔 것
+    searched = []
+
+    async def fake_get(self, path, **p):
+        if path.startswith("/search/"):
+            searched.append(p["query"])
+            if p["query"] == "듄 파트2":   # 우리말 캡션: 덜 맞는 결과만
+                return {"results": [{"id": 1, "title": "듄 다큐멘터리", "release_date": "2021-01-01"}]}
+            if p["query"] == "Dune Part Two":
+                return {"results": [{"id": 693134, "title": "듄: 파트 2", "original_title": "Dune: Part Two", "release_date": "2024-02-27"}]}
+            return {"results": []}
+        return {"id": int(path.rsplit("/", 1)[1]), "title": "x", "poster_path": "/p.jpg"}
+    monkeypatch.setattr(tmdb.Tmdb, "_get", fake_get)
+    tg = type("Tg", (), {"channels": [920]})()
+    mirror = plex_to_tg.Mirror(None, None, lambda sid: tg, lambda: None)
+
+    async def main():
+        r = await mirror.fill_channel_tmdb("tg", 920)
+        assert r["found"] == 1 and r["tried"] == 2 and r["missing"] == ["없는영화 / Nothing"] and not r["error"]
+        dune = telegram_src.meta_target_for("듄 파트2 (2024)", "Dune.Part.Two.2024.2160p.WEB-DL.H.265-FLUX_0000.mp4")
+        assert telegram_src.meta_get("tg", dune["mkey"])["tmdb_id"] == 693134     # 파일 이름 쪽이 더 맞음
+        assert "없는영화" in searched                                                # 예전에 못 찾은 것도 다시 찾아 봄
+    asyncio.run(main())

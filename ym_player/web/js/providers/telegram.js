@@ -268,9 +268,15 @@ export class TelegramProvider {
             btn.disabled = true;
             btn.firstChild.classList.add('fa-spin');
             try {
-                await api(`${this.base}/refresh`, { method: 'POST', json: { channel } });
+                const r = await api(`${this.base}/refresh`, { method: 'POST', json: { channel } });
                 reset();
-                setTimeout(() => { if (btn.isConnected) reset(); }, 8000);   // 뒤에서 찾은 포스터까지 한 번 더
+                const t = r.tmdb || {};
+                if (t.error) toast(`작품 정보(TMDB): ${t.error}`, 'error', 8000);
+                else if (t.tried) {
+                    toast(`작품 정보 ${t.found}개를 찾았습니다${t.missing.length ? ` · 못 찾음 ${t.missing.length}개: ${t.missing.slice(0, 5).join(', ')}`
+                        + `${t.missing.length > 5 ? ' …' : ''} ([정보 고치기]로 직접 고를 수 있음)` : ''}${t.left ? ` · 남은 ${t.left}개는 다시 누르면 이어서` : ''}`,
+                    t.missing.length ? 'info' : 'success', 9000);
+                }
             } catch (e) {
                 toast(e.message, 'error');
             } finally {

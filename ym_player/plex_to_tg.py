@@ -82,7 +82,7 @@ KEEP_SKIPPED = 2000    # 규칙마다 취소·건너뛴 항목 기억 (다시 �
 POSTER_RETRY = (3600, 6 * 3600, 24 * 3600, 3 * 24 * 3600)   # TMDB 포스터를 못 찾았을 때 다시 찾기까지
 AUTO_TMDB_SEC = 20 * 60     # 텔레그램 채널의 작품 정보(TMDB)가 없는 영상을 이만큼마다 찾아 둔다 (목록 카드 포스터)
 AUTO_TMDB_MAX = 40          # 한 번에 찾는 작품 수
-AUTO_TMDB_MISS = 7 * 86400  # 못 찾은 작품은 이만큼 뒤에 다시 (화면의 작품 정보와 같게)
+AUTO_TMDB_MISS = 86400      # 못 찾은 작품은 하루 뒤에 다시 ([목록 새로 고침]은 바로 다시)
 SCAN_SIZE = 50
 DEFAULT_CAPTION = "{name}\n\n{summary}"
 DEFAULT_WAIT_MIN = 720   # 새 규칙의 자막 기다리기 기본값(분) (자막을 영상에 입힌 하드섭은 자동으로 알 수 없어서 끝없이 기다리지 않게)
@@ -1752,6 +1752,38 @@ class Mirror:
         if found:
             log.info("텔레그램 작품 정보: %d개를 TMDB에서 찾아 두었습니다", found)
         return found
+
+    async def fill_channel_tmdb(self, sid, channel, limit=150, budget=50.0):
+        """[목록 새로 고침]: 이 채널에서 작품 정보(TMDB)가 없는 영상을 지금 찾는다 - 예전에 못 찾은 것도 다시.
+        budget초 안에서 limit개까지. 돌려주는 값: {"found", "tried", "left", "missing": [못 찾은 제목], "error"}"""
+        out = {"found": 0, "tried": 0, "left": 0, "missing": [], "error": ""}
+        if not self._poster_on() or not hasattr(telegram_src, "tmdb_targets"):
+            return out
+        if not self._tmdb_key(sid):
+            out["error"] = "TMDB 키가 없습니다 (설정 > 소스 > 텔레그램)."
+            return out
+        todo = [t for t in await asyncio.to_thread(telegram_src.tmdb_targets, sid, int(channel)) if not t["have"] and not t["manual"]]
+        end = time.time() + budget
+        for i, t in enumerate(todo):
+            if out["tried"] >= limit or time.time() > end:
+                out["left"] = len(todo) - i
+                break
+            out["tried"] += 1
+            res = await self._lookup_poster(sid, t, force=True)
+            if res in ("ok", "cached"):
+                out["found"] += 1
+            elif res == "TMDB에서 못 찾음":
+                telegram_src.meta_put(sid, t["mkey"], t["kind"], None, None)
+                out["missing"].append(" / ".join(x for x in t.get("titles") or [] if x) or t["mkey"])
+            else:   # 키 오류·연결 실패 - 더 해도 같다
+                out["error"] = res
+                out["left"] = len(todo) - i - 1
+                break
+            await asyncio.sleep(0.2)
+        self._tmdb_done.pop((sid, int(channel)), None)
+        if out["found"]:
+            log.info("텔레그램 작품 정보 (새로 고침, 채널 %s): %d개 찾음, 못 찾음 %d", channel, out["found"], len(out["missing"]))
+        return out
 
     def start_poster_backfill(self, rule_id=None):
         """[포스터 복구] 폴더 규칙 채널에서 포스터(작품 정보)가 없는 영상의 작품을 한꺼번에 찾는다 (뒤에서). 진행은 status의 poster"""

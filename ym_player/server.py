@@ -1936,10 +1936,20 @@ async def tg_refresh(request, tg):
         return _json_error(404, "설정에서 고르지 않은 채널입니다.")
     for c in channels:
         await asyncio.wait_for(tg.sync_latest(c, force=True), 120)
+    # 작품 정보(TMDB)가 없는 영상을 지금 찾는다 (예전에 못 찾은 것도 다시) - 다 찾은 뒤 목록을 그리게 기다린다.
+    # 예전엔 뒤에서 돌려 놓고 바로 목록을 그려서 새로 고침해도 포스터가 안 붙은 것처럼 보였다
+    tmdb_res = {"found": 0, "tried": 0, "left": 0, "missing": [], "error": ""}
     mirror = request.app.get(MIRROR)
-    if mirror is not None:   # 포스터가 없는 새 영상의 작품 정보를 뒤에서 (기다리지 않음)
-        asyncio.ensure_future(mirror.auto_tmdb(force=True))
-    return web.json_response({"success": True, "channels": channels})
+    if mirror is not None:
+        budget = 50.0 / len(channels)
+        for c in channels:
+            r = await mirror.fill_channel_tmdb(tg.sid, c, budget=budget)
+            for k in ("found", "tried", "left"):
+                tmdb_res[k] += r[k]
+            tmdb_res["missing"] += r["missing"]
+            tmdb_res["error"] = tmdb_res["error"] or r["error"]
+    tmdb_res["missing"] = tmdb_res["missing"][:30]
+    return web.json_response({"success": True, "channels": channels, "tmdb": tmdb_res})
 
 
 @telegram_api
