@@ -330,7 +330,6 @@ def match_subs(video_name, names):
 async def remote_subs(folder, key):
     """rclone 원격에서 영상 옆의 자막 파일 [(상대 경로, 언어 꼬리, 확장자)]"""
     d, base = os.path.split(key)
-    stem = os.path.splitext(base)[0]
     target = _join_remote(folder, d) if d else folder
     names = [str(r.get("Name") or r.get("Path") or "") for r in await _lsjson(target, recursive=False)]
     return sorted((f"{d}/{n}" if d else n, lang, sext) for n, lang, sext in match_subs(base, names))
