@@ -106,6 +106,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 160,
+        "version": "1.3.2",
+        "date": "2026-11-17",
+        "title": "텔레그램 [목록 새로 고침]이 작품 정보(TMDB)를 다 찾은 뒤 목록을 그림 (예전에 못 찾은 것도 다시, 못 찾은 제목 알림), TMDB 찾기가 캡션·파일 이름 중 더 맞는 이름으로"
+    },
+    {
         "pr": 159,
         "version": "1.3.1",
         "date": "2026-11-17",

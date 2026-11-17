@@ -28,6 +28,14 @@ def _norm(v):
     return re.sub(r"[\W_]+", "", unicodedata.normalize("NFKC", str(v or "")).casefold())
 
 
+def match_score(r, title, year="", kind="movie", rank=0):
+    """결과 하나가 이름·연도에 얼마나 맞는지 (best_match와 같은 계산)"""
+    names = [r.get("title"), r.get("original_title")] if kind == "movie" else [r.get("name"), r.get("original_name")]
+    sim = max((SequenceMatcher(None, _norm(title), _norm(n)).ratio() for n in names if n), default=0.0)
+    date = r.get("release_date" if kind == "movie" else "first_air_date") or ""
+    return sim + (0.3 if year and date[:4] == str(year) else 0) - 0.02 * rank
+
+
 def best_match(results, title, year="", kind="movie"):
     """검색 결과 중 이름(번역·원제)이 가장 비슷하고 연도가 맞는 것. 비슷한 게 없으면 첫 결과(인기순)."""
     want = _norm(title)
@@ -82,14 +90,24 @@ class Tmdb:
         return out
 
     async def find(self, kind, titles, year=""):
-        """여러 이름(우리말 포스터 제목, 파일 이름...)으로 차례로 찾아 가장 잘 맞는 것 하나. 없으면 None"""
-        for t in [t for t in titles if t]:
+        """여러 이름(우리말 포스터 제목, 캡션 제목, 파일 이름...)으로 찾아 가장 잘 맞는 것 하나. 없으면 None.
+        이름이 거의 같은 결과가 나오면 바로 그것으로, 아니면 다른 이름으로도 찾아 본 뒤 가장 비슷한 것
+        (예전엔 첫 이름에서 결과가 하나라도 나오면 덜 맞아도 그것으로 끝냈다)"""
+        best, best_score = None, -1.0
+        for t in list(dict.fromkeys(t for t in titles if t)):
             for y in ([year, ""] if year else [""]):
                 res = await self.search(kind, t, y)
-                if res:
-                    hit = best_match([r["_raw"] for r in res], t, year, kind)
-                    return hit and hit.get("id")
-        return None
+                if not res:
+                    continue
+                raw = [r["_raw"] for r in res]
+                hit = best_match(raw, t, year, kind)
+                score = match_score(hit, t, year, kind, raw.index(hit))
+                if score > best_score:
+                    best, best_score = hit, score
+                if score >= 0.9:
+                    return hit.get("id")
+                break   # 이 이름은 연도 없이 다시 찾지 않는다 (결과가 있었음)
+        return best and best.get("id")
 
     async def details(self, kind, tmdb_id):
         """작품 정보 (화면에 쓰는 모양). 없으면 None"""
