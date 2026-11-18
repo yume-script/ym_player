@@ -106,6 +106,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 167,
+        "version": "1.3.8",
+        "date": "2026-11-18",
+        "title": "텔레그램 영상: 이름 앞의 (자막)·(더빙)·[자막] 같은 표시를 떼고 제목·회차를 읽기 ('(자막) 주홍색 가면.E06…' -> 주홍색 가면 6화)"
+    },
+    {
         "pr": 166,
         "version": "1.3.7",
         "date": "2026-11-18",
