@@ -162,7 +162,7 @@ def on_network_drive(path, mounts_file="/proc/mounts"):
     그런 파일을 그대로 인코딩하면 읽기가 느리고 끊겨서, 먼저 이 서버로 복사해 놓고 인코딩한다"""
     if os.name == "nt":   # 윈도우: 네트워크 드라이브(Z: 등)·UNC 경로(\\\\서버\\공유)·rclone mount(WinFsp)
         return _windows_network(path)
-    path = os.path.realpath(path)
+    path = _real(path)
     best, kind = "", ""
     try:
         with open(mounts_file, encoding="utf-8", errors="replace") as f:
@@ -180,15 +180,34 @@ def on_network_drive(path, mounts_file="/proc/mounts"):
 
 
 def _windows_network(path):
+    """네트워크 드라이브·UNC 경로·rclone mount(WinFsp). rclone mount는 --network-mode가 아니면 GetDriveTypeW가
+    3(DRIVE_FIXED, 로컬 디스크)을 돌려주므로 파일 시스템 이름(FUSE-rclone 등)으로도 본다"""
     path = os.path.abspath(path)
     if path.startswith("\\\\"):
         return True
     try:
         import ctypes
         root = os.path.splitdrive(path)[0] + "\\"
-        return ctypes.windll.kernel32.GetDriveTypeW(root) == 4   # DRIVE_REMOTE (rclone mount도 네트워크 드라이브로 붙는다)
+        k32 = ctypes.windll.kernel32
+        if k32.GetDriveTypeW(root) == 4:   # DRIVE_REMOTE
+            return True
+        fs = windows_fs_name(root, k32)   # rclone(WinFsp): 'FUSE-rclone' (다른 WinFsp 드라이브도 'FUSE-…')
+        return fs.startswith("fuse") or "rclone" in fs or fs == "winfsp"
     except Exception:  # noqa: BLE001
         return False
+
+
+def windows_fs_name(root, k32=None):
+    """'M:\\' -> 파일 시스템 이름 소문자 ('fuse-rclone', 'ntfs' …). 못 읽으면 ''"""
+    try:
+        import ctypes
+        k32 = k32 or ctypes.windll.kernel32
+        buf = ctypes.create_unicode_buffer(64)
+        if k32.GetVolumeInformationW(ctypes.c_wchar_p(root), None, 0, None, None, None, buf, len(buf)):
+            return buf.value.lower()
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
 
 
 def copy_file(src, dest, progress=None, chunk=4 * 1024 * 1024):
@@ -206,11 +225,24 @@ def copy_file(src, dest, progress=None, chunk=4 * 1024 * 1024):
     return done
 
 
+def _real(path):
+    """실제 경로 (심볼릭 링크 따라감). Windows rclone/WinFsp 드라이브(M: 등)에서는 os.path.realpath가 실제 경로를
+    묻는 API에서 [WinError 1005]로 실패한다 (폴더 확인·목록은 되는데) - 그럴 땐 abspath+normpath로"""
+    try:
+        return os.path.realpath(path)
+    except OSError:
+        return os.path.normpath(os.path.abspath(path))
+
+
 def local_path(folder, key):
-    """이 컴퓨터 폴더 안의 파일 경로 (폴더 밖을 가리키면 FolderError)"""
-    root = os.path.realpath(folder)
-    path = os.path.realpath(os.path.join(root, key))
-    if path != root and not path.startswith(root.rstrip("/\\") + os.sep):
+    """이 컴퓨터 폴더 안의 파일 경로 (폴더 밖을 가리키면 FolderError - '..'·다른 드라이브·절대 경로 키도)"""
+    root = _real(folder)
+    path = _real(os.path.join(root, key))
+    try:
+        inside = os.path.commonpath([os.path.normcase(root), os.path.normcase(path)]) == os.path.normcase(root)
+    except ValueError:   # 서로 다른 드라이브
+        inside = False
+    if not inside:
         raise FolderError("폴더 밖의 파일입니다.")
     return path
 
