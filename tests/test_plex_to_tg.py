@@ -1354,3 +1354,26 @@ def test_resume_split_upload_after_restart(monkeypatch, tmp_path):
         await mir._send_pieces(c2, None, pieces, "v.mp4", "제목", 1, 1, None, [(str(sub), "ko", "srt")], "t", str(tmp_path), msgs)
         assert c2.sent == ["v_1.mp4", "cut2_sub.srt", "v_2.mp4", "cut3_sub.srt"] and c2.deleted == [103] and msgs == [101, 201, 203]
     asyncio.run(run())
+
+
+def test_plex_mp4_setting_off(data, monkeypatch):
+    """설정 > 공통에서 Plex MP4 변환을 끄면 서버가 MP4를 만들지 않는다 (mode None -> 화면은 Plex 원본/HLS)"""
+    from aiohttp.test_utils import TestClient, TestServer
+    from ym_player import server, transcode
+    monkeypatch.setattr(transcode, "available", lambda: True)
+    cfg = config_store.load()
+    config_store.replace_sources(cfg, [{"id": "px", "type": "plex", "name": "Plex", "url": "http://plex", "token": "t"}])
+    config_store.save(cfg)
+    assert config_store.clean_general({})["plex_mp4"] is True   # 기본은 켬
+
+    async def main():
+        c = TestClient(TestServer(server.create_app(require_auth=False)))
+        await c.start_server()
+        try:
+            r = await (await c.put("/api/admin/general", json={"plex_mp4": False})).json()
+            assert r["settings"]["plex_mp4"] is False and r["settings"]["prefer_tg"] is True
+            r = await (await c.post("/api/mp4/plex/px", json={"id": "1"})).json()
+            assert r["mode"] is None and "껐음" in r["reason"]
+        finally:
+            await c.close()
+    asyncio.run(main())

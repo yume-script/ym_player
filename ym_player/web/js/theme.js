@@ -130,7 +130,7 @@ export function openThemeDialog() {
     const body = h('div', {}, themePicker(),
         h('label', { class: 'check ticker-pref' }, tickerChk, ' 아래쪽에 흐르는 글(디스코드 새 글) 보기 (이 브라우저)'),
         h('label', { class: 'field ticker-pref' }, h('span', { class: 'field-label', text: 'Plex 영상이 텔레그램에도 있을 때 (이 브라우저)' }), choiceSel),
-        h('label', { class: 'check ticker-pref' }, mp4Chk, ' MKV 등은 HLS 대신 MP4로 바꿔서 재생 (이 브라우저)'),
+        h('label', { class: 'check ticker-pref' }, mp4Chk, ' MKV 등은 HLS 대신 MP4로 바꿔서 재생 (이 브라우저, Plex는 관리자 설정 > 공통에서 켜 있을 때)'),
         h('span', { class: 'field-hint', text: '그릇만 다른 영상(MKV 안의 H.264, 아이폰·아이패드는 HEVC도)을 서버가 다시 압축하지 않고 MP4 파일로 바꿔 둔 뒤 원본처럼 틉니다. 처음 한 번은 바꾸는 동안 기다리지만(진행률 표시) HLS보다 끊김이 적고 탐색이 빠릅니다. Plex는 모든 브라우저, 텔레그램은 Safari에서.' }),
         h('label', { class: 'field ticker-pref' }, h('span', { class: 'field-label', text: '데이터 절약 (이 브라우저)' }), saverSel,
             h('span', { class: 'field-hint', text: '켜면 Plex는 720p 2Mbps(화질을 직접 고르지 않았을 때), 텔레그램 서버 변환은 720p, 다음 회차 미리 받기는 안 합니다. 자동은 브라우저가 휴대폰 회선이라고 알려 줄 때만(아이폰 Safari는 알려 주지 않아 직접 켜야 함).' })));

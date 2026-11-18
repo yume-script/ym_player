@@ -59,9 +59,11 @@ def save(cfg):
 
 def clean_general(raw):
     """설정 > 공통 (모든 사용자에게 적용). hide_bl_gl: 웹툰 목록에서 BL·GL 작품 숨기기,
-    prefer_tg: Plex에서 재생할 때 텔레그램에 같은 영상(자동 올리기로 올린 것)이 있으면 그것을 먼저 (기본 켬)"""
+    prefer_tg: Plex에서 재생할 때 텔레그램에 같은 영상(자동 올리기로 올린 것)이 있으면 그것을 먼저 (기본 켬),
+    plex_mp4: 브라우저가 그대로 못 여는 Plex 원본(MKV 등)을 HLS 변환 대신 서버가 MP4로 바꿔 두고 원본처럼 재생 (기본 켬)"""
     raw = raw if isinstance(raw, dict) else {}
-    return {"hide_bl_gl": bool(raw.get("hide_bl_gl")), "prefer_tg": bool(raw.get("prefer_tg", True))}
+    return {"hide_bl_gl": bool(raw.get("hide_bl_gl")), "prefer_tg": bool(raw.get("prefer_tg", True)),
+            "plex_mp4": bool(raw.get("plex_mp4", True))}
 
 
 def get_source(cfg, source_id):
