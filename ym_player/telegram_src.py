@@ -1145,10 +1145,15 @@ def tmdb_targets(sid, channel):
     if out:
         with db() as conn:
             for mk in list(out):
-                hit = conn.execute("SELECT data IS NOT NULL AS have, fetched, manual FROM meta WHERE source=? AND mkey=?", (sid, mk)).fetchone()
-                out[mk].update(have=bool(hit and hit["have"]), fetched=(hit["fetched"] if hit else 0) or 0,
+                hit = conn.execute("SELECT data, fetched, manual FROM meta WHERE source=? AND mkey=?", (sid, mk)).fetchone()
+                try:
+                    poster = bool(hit and hit["data"] and (json.loads(hit["data"]) or {}).get("poster"))
+                except ValueError:
+                    poster = False
+                out[mk].update(have=bool(hit and hit["data"]), poster=poster, fetched=(hit["fetched"] if hit else 0) or 0,
                                manual=bool(hit and hit["manual"]))
-    return [{**t, "have": t.get("have", False), "fetched": t.get("fetched", 0), "manual": t.get("manual", False)} for t in out.values()]
+    return [{**t, "have": t.get("have", False), "poster": t.get("poster", False), "fetched": t.get("fetched", 0),
+             "manual": t.get("manual", False)} for t in out.values()]
 
 
 _EP_CACHE = {}   # (소스, 채널) -> (영상 수, 마지막 메시지, {(작품 키, 시즌, 회차): 제목})

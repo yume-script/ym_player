@@ -106,6 +106,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 164,
+        "version": "1.3.6",
+        "date": "2026-11-18",
+        "title": "텔레그램 목록 포스터: 포스터 없이 찾아 둔 작품도 새로 고침 때 다시, 한국어 포스터가 없으면 다른 언어 포스터, 포스터 있는 TMDB 결과를 먼저"
+    },
+    {
         "pr": 163,
         "version": "1.3.5",
         "date": "2026-11-17",

@@ -1266,3 +1266,34 @@ def test_refresh_fills_tmdb_and_retries_misses(data, monkeypatch):
         assert telegram_src.meta_get("tg", dune["mkey"])["tmdb_id"] == 693134     # 파일 이름 쪽이 더 맞음
         assert "없는영화" in searched                                                # 예전에 못 찾은 것도 다시 찾아 봄
     asyncio.run(main())
+
+
+def test_refresh_refetches_posterless_match(data, monkeypatch):
+    """찾았지만 포스터가 없던 작품(한국어 포스터가 없어 비어 옴)도 [목록 새로 고침] 때 다시 - 다른 언어 그림에서 포스터를 고른다"""
+    from ym_player import tmdb
+    telegram_src._migrated.discard(str(data))
+    with telegram_src.db() as conn:
+        conn.execute("INSERT INTO videos(source,channel,msg,title,caption,file_name,mime,duration,size,width,height,date,has_thumb,kind)"
+                     " VALUES('tg',930,1,'Verity.2026.1080p.AMZN.WEB-DL','','Verity.2026.1080p.AMZN.WEB-DL.mp4','video/mp4',100,1,1,1,"
+                     "'2026-10-01T00:00:00+00:00',1,'video')")
+    config_store.save({"client_id": "c", "sources": [{"id": "tg", "type": "telegram", "tmdb_key": "k" * 32, "channels": [{"id": 930}]}]})
+    t = telegram_src.meta_target_for("Verity.2026.1080p.AMZN.WEB-DL", "Verity.2026.1080p.AMZN.WEB-DL.mp4")
+    telegram_src.meta_put("tg", t["mkey"], "movie", 7, {"title": "Verity", "poster": ""})   # 예전에 포스터 없이 저장됨
+    assert telegram_src.tmdb_targets("tg", 930)[0]["poster"] is False
+
+    async def fake_get(self, path, **p):
+        if path.startswith("/search/"):
+            return {"results": [{"id": 1, "title": "Verity", "release_date": "2026-02-01"},                     # 포스터 없는 다른 항목
+                                {"id": 7, "title": "Verity", "release_date": "2026-10-02", "poster_path": "/v.jpg"}]}
+        if path.endswith("/images"):
+            return {"posters": [{"file_path": "/en.jpg", "vote_average": 5}], "backdrops": []}
+        return {"id": int(path.rsplit("/", 1)[1]), "title": "Verity", "poster_path": None}   # ko-KR 포스터 없음
+    monkeypatch.setattr(tmdb.Tmdb, "_get", fake_get)
+    mirror = plex_to_tg.Mirror(None, None, lambda sid: type("Tg", (), {"channels": [930]})(), lambda: None)
+
+    async def main():
+        r = await mirror.fill_channel_tmdb("tg", 930)
+        assert r["found"] == 1 and r["missing"] == []
+        hit = telegram_src.meta_get("tg", t["mkey"])
+        assert hit["tmdb_id"] == 7 and hit["data"]["poster"].endswith("/en.jpg")    # 포스터 있는 항목 + 다른 언어 그림
+    asyncio.run(main())
