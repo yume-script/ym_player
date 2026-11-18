@@ -1297,3 +1297,16 @@ def test_refresh_refetches_posterless_match(data, monkeypatch):
         hit = telegram_src.meta_get("tg", t["mkey"])
         assert hit["tmdb_id"] == 7 and hit["data"]["poster"].endswith("/en.jpg")    # 포스터 있는 항목 + 다른 언어 그림
     asyncio.run(main())
+
+
+def test_source_offline_is_not_a_failure():
+    """원본 드라이브가 끊긴 오류(끊긴 FUSE, Windows WinError 1005 등)는 실패로 세지 않고 5분 뒤 다시"""
+    import errno
+    from ym_player import plex_to_tg as m
+    assert m.source_offline(OSError(errno.ENOTCONN, "Transport endpoint is not connected", "/mnt/gdrive/a.mkv")) == "/mnt/gdrive/a.mkv"
+    assert m.drive_of("/mnt/gdrive/VIDEO/a.mkv") == "/mnt/gdrive" and m.drive_of("M:\\GDRIVE\\a.mkv") == "M:"
+    e = OSError(None, "볼륨에 인식된 파일 시스템이 없습니다", "M:\\GDRIVE\\VIDEO")
+    e.winerror = 1005
+    assert m.drive_of(m.source_offline(e)) == "M:"
+    assert m.source_offline(RuntimeError("복사 실패: [WinError 1005] 볼륨: 'M:\\A\\b'")) == "M:\\A\\b"
+    assert m.source_offline(FileNotFoundError(errno.ENOENT, "없음", "/x/a.mkv")) is None

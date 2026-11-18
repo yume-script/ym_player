@@ -52,6 +52,7 @@ channel, channel_title, caption, wait_subs, wait_min, burn_subs, kind, folder, h
 """
 import asyncio
 import contextvars
+import errno
 import hashlib
 import json
 import math
@@ -328,6 +329,40 @@ _ACCOUNT_DOWN = {"AuthKeyUnregisteredError", "AuthKeyDuplicatedError", "AuthKeyI
                  "PhoneNumberBannedError", "TgError", "ConnectionError", "ConnectionResetError", "ConnectionRefusedError"}
 _ACCOUNT_CHANNEL = {"ChatWriteForbiddenError", "ChannelPrivateError", "ChatAdminRequiredError", "UserBannedInChannelError",
                     "ChannelInvalidError", "ChannelLost", "ChatForbiddenError", "PeerIdInvalidError"}
+
+
+# 원본이 있는 드라이브에 닿지 못함 (마운트가 끊김·아직 안 붙음·네트워크 드라이브 연결 끊김) - 파일 탓이 아니라 실패로 세지 않는다.
+# Windows: 21 장치 준비 안 됨, 53/64/67 네트워크 경로, 59 네트워크 오류, 121 세마포 시간 초과, 1005 인식된 파일 시스템 없음
+#          (rclone/WinFsp 드라이브가 끊겼거나 다른 사용자로 붙어 있음), 1006·1117 I/O 장치 오류, 1231 네트워크 연결 안 됨
+# Linux:   ENOTCONN(Transport endpoint is not connected - 끊긴 FUSE), ENODEV, ENXIO, ESTALE, EHOSTDOWN, EHOSTUNREACH
+_OFFLINE_WIN = {21, 53, 59, 64, 67, 121, 1005, 1006, 1117, 1231}
+_OFFLINE_ERRNO = {errno.ENOTCONN, errno.ENODEV, errno.ENXIO, errno.ESTALE, errno.EHOSTDOWN, errno.EHOSTUNREACH}
+_OFFLINE_TEXT = re.compile(r"WinError (?:%s)\]|Transport endpoint is not connected|Stale file handle" % "|".join(map(str, sorted(_OFFLINE_WIN))))
+SOURCE_RETRY_SEC = 5 * 60     # 드라이브가 끊겼으면 이만큼 뒤에 다시 (실패 횟수는 세지 않음)
+SOURCE_LOG_SEC = 30 * 60      # 같은 드라이브 끊김 경고는 이만큼에 한 번만
+
+
+def source_offline(e):
+    """원본 드라이브에 닿지 못한 오류인지 (감싼 오류도 따라가 본다) -> 문제의 경로(아는 만큼) 또는 None"""
+    seen = 0
+    while e is not None and seen < 5:
+        if isinstance(e, OSError) and (getattr(e, "winerror", None) in _OFFLINE_WIN or e.errno in _OFFLINE_ERRNO):
+            return str(getattr(e, "filename", "") or "") or "?"
+        if _OFFLINE_TEXT.search(str(e)):
+            m = re.search(r"'([^']+)'\s*$", str(e))
+            return m.group(1) if m else "?"
+        e, seen = e.__cause__ or e.__context__, seen + 1
+    return None
+
+
+def drive_of(path):
+    """'M:\\GDRIVE\\VIDEO\\…' -> 'M:' / '/mnt/gdrive/…' -> '/mnt/gdrive' (경고 묶음·안내용)"""
+    p = str(path or "")
+    m = re.match(r"^([A-Za-z]:)", p)
+    if m:
+        return m.group(1).upper()
+    parts = [x for x in p.split("/") if x]
+    return "/" + "/".join(parts[:2]) if parts else p
 
 
 def account_problem(e):
@@ -679,6 +714,7 @@ class Mirror:
         self.lanes = {}          # 텔레그램 소스 id -> Lane (지금 도는 줄)
         self._lane_tasks = {}    # 텔레그램 소스 id -> asyncio.Task
         self._taken = set()      # 줄이 잡은 항목 id(job) - 다른 줄이 다시 잡지 않게
+        self.offline = {}        # 닿지 못한 원본 드라이브 -> {since, path, last, count, logged} (실패로 세지 않고 다시 시도 중)
         self._queue_event = asyncio.Event()
         self._encoding = 0       # 지금 돌고 있는 인코딩 수 (encode_slots까지)
         self._encode_free = asyncio.Event()
@@ -790,6 +826,9 @@ class Mirror:
             a["down"] = self._is_down(tg)
             a["down_until"] = int(self._down[tg][0]) if a["down"] else 0
             a["last"] = ln.last_done if ln else None
+        now_t = time.time()
+        for d in [d for d, x in self.offline.items() if now_t - x.get("last", 0) > 2 * SOURCE_RETRY_SEC + 60]:
+            self.offline.pop(d, None)   # 다시 시도에서 더 끊기지 않았으면 (드라이브가 돌아옴) 표시를 지운다
         return {"queue": queue,
                 "current": first, "lanes": lanes, "accounts": accounts, "encode_slots": settings["encode_slots"],
                 "encoding": self._encoding,
@@ -797,7 +836,9 @@ class Mirror:
                 "skipped": sum(len(r.get("skipped") or {}) + sum(1 for k, n in (r.get("fails") or {}).items()
                                                                   if n >= GIVE_UP and k not in (r.get("skipped") or {}))
                                for r in st["rules"].values()),
-                "last_check": self.last_check, "error": self.error, "off_hours": self.off_hours, "history": trim_history(st["history"]),
+                "last_check": self.last_check, "error": self.error,
+                "offline": [{"drive": d, "path": x.get("path", ""), "since": int(x.get("since", 0)), "count": x.get("count", 0)}
+                            for d, x in self.offline.items()], "off_hours": self.off_hours, "history": trim_history(st["history"]),
                 "rules": {rid: {"baseline": r.get("baseline", 0), "count": len(r.get("done", []))} for rid, r in st["rules"].items()},
                 "waiting": [{"title": w.get("title", k), "since": w.get("since", 0), "rule": rid, "key": k,
                              "shot": self._shot_mtime(rid, k), "shot_error": (self._shot_fail.get((rid, k)) or (0, ""))[1]}
@@ -849,8 +890,13 @@ class Mirror:
                         await self.check_all(st)
                         self.error = ""
                     except Exception as e:
-                        log.warning("자동 올리기 확인 실패: %s", e)
-                        self.error = str(e)
+                        where = source_offline(e)
+                        if where:   # 폴더 규칙의 원본 드라이브가 끊김 - 알아보기 쉬운 말로
+                            self.error = (f"원본 드라이브 {drive_of(where)}에 닿지 못해 새 파일을 확인하지 못했습니다 ({where}) - "
+                                          "rclone 마운트·네트워크 드라이브가 연결됐는지 확인하세요. 연결되면 다음 확인 때 이어서 합니다.")
+                        else:
+                            self.error = str(e)
+                        log.warning("자동 올리기 확인 실패: %s", self.error)
                     self.off_hours = "" if in_hours(st["hours"]) else st["hours"]
                     # 올리기는 뒤에서 (계정마다 줄) - 올리는 동안에도 새 항목 확인은 정해진 간격대로 한다
                     if not self.off_hours and (self._runner is None or self._runner.done()):
@@ -1411,7 +1457,7 @@ class Mirror:
             lane.cur_ep = None
 
     async def _run_job(self, lane, job, rule, st):
-        ok, note, waiting = False, "", False
+        ok, note, waiting, offline = False, "", False, None
         lane.begin()
         if rule and lane.tg and lane.tg != rule["tg"]:   # 다른 계정이 이어 올림 - 그 계정으로 (채널은 같음)
             rule = {**rule, "tg": lane.tg}
@@ -1456,7 +1502,11 @@ class Mirror:
                     await self._drop_partial(rule, job["key"])
                     continue
                 note = str(e) or type(e).__name__
-                log.warning("자동 올리기 실패 (%s): %s", job["title"], note)
+                where = source_offline(e)
+                if where:   # 원본 드라이브가 끊김 - 실패로 세지 않고 몇 분 뒤 다시 (같은 드라이브 경고는 30분에 한 번)
+                    offline = where
+                else:
+                    log.warning("자동 올리기 실패 (%s): %s", job["title"], note)
             break
         lane.job_task = None
         if rule and not ok:   # 실패·취소·자막 기다림: 반쯤 올린 것은 지운다 (다시 올릴 때 겹치지 않게)
@@ -1474,6 +1524,22 @@ class Mirror:
             lane.cur_ep = None
             return
         rs = state["rules"].setdefault(job["rule"], {"done": [], "fails": {}})
+        if offline:   # 원본 드라이브가 끊김: 실패 횟수·기록에 남기지 않고 SOURCE_RETRY_SEC 뒤에 다시 (드라이브가 돌아오면 이어서)
+            drive = drive_of(offline)
+            now = time.time()
+            first = drive not in self.offline
+            if first or now - self.offline[drive].get("logged", 0) >= SOURCE_LOG_SEC:
+                log.warning("자동 올리기: 원본 드라이브 %s에 닿지 못합니다 (%s) - 드라이브(rclone 마운트·네트워크 드라이브)가 "
+                            "연결됐는지 확인하세요. %d분마다 다시 시도하며 실패로 세지 않습니다.", drive, offline, SOURCE_RETRY_SEC // 60)
+                logged = now
+            else:
+                logged = self.offline[drive].get("logged", 0)
+            self.offline[drive] = {"since": (self.offline.get(drive) or {}).get("since", now), "path": offline, "logged": logged,
+                                   "last": now, "count": (self.offline.get(drive) or {}).get("count", 0) + 1}
+            rs.setdefault("retry", {})[job["key"]] = {"title": job["title"], "at": int(now) + SOURCE_RETRY_SEC}
+            save_state(state)
+            lane.cur_ep = None
+            return
         if waiting:   # 자막이 생길 때까지 (기록에는 남기지 않고 상태의 "자막 기다리는 중"에)
             rs.setdefault("waiting", {}).setdefault(job["key"], {"title": job["title"], "since": int(time.time())})
             save_state(state)

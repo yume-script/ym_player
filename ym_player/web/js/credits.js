@@ -106,6 +106,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 168,
+        "version": "1.3.9",
+        "date": "2026-11-18",
+        "title": "텔레그램 자동 올리기: 원본 드라이브(rclone 마운트 등)가 끊기면 실패로 세지 않고 5분마다 다시, 현황에 '원본 드라이브에 닿지 못합니다'"
+    },
+    {
         "pr": 167,
         "version": "1.3.8",
         "date": "2026-11-18",
