@@ -1848,6 +1848,8 @@ async def mp4_plex(request):
     if not src or src.get("type") != "plex":
         return _json_error(404, "Plex 소스를 찾을 수 없습니다.")
     require_source(request, src["id"])
+    if not config_store.clean_general(cfg.get("general"))["plex_mp4"]:   # 설정 > 공통에서 끔 -> 예전처럼 Plex 원본/HLS
+        return web.json_response({"success": True, "mode": None, "reason": "설정에서 Plex MP4 변환을 껐음"})
     rid = str(body.get("id") or "")
     if not rid.isdigit():
         return _json_error(400, "Plex 항목 번호가 필요합니다.")

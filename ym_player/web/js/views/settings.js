@@ -1088,6 +1088,7 @@ async function renderGeneral(pane) {
     };
     const blChk = h('input', { type: 'checkbox', checked: st.hide_bl_gl, on: { change: () => set({ hide_bl_gl: blChk.checked }, blChk) } });
     const tgChk = h('input', { type: 'checkbox', checked: st.prefer_tg !== false, on: { change: () => set({ prefer_tg: tgChk.checked }, tgChk) } });
+    const mp4Chk = h('input', { type: 'checkbox', checked: st.plex_mp4 !== false, on: { change: () => set({ plex_mp4: mp4Chk.checked }, mp4Chk) } });
     clear(pane).append(h('div', { class: 'src-card' },
         h('h3', { class: 'pane-title' }, icon('sliders'), ' 공통'),
         h('label', { class: 'check' }, blChk, ' 웹툰 목록에서 BL·GL 작품 숨기기'),
@@ -1098,7 +1099,12 @@ async function renderGeneral(pane) {
         h('p', { class: 'field-hint', text: '볼 수 있는 텔레그램 채널 어디에 있든 찾습니다: 자동 올리기 사본은 올릴 때 남긴 Plex 항목 번호로, '
             + '다른 채널의 영상은 작품 정보(TMDB) 번호가 같거나, 파일 이름·캡션의 작품 이름·연도(영화) / 작품 이름·시즌·회차(TV)가 같고 재생 길이가 비슷한 것. Plex 서버의 변환·업로드 부담을 덜고, 본 위치와 다 봄은 Plex에도 같이 남깁니다. '
             + '사본이 있으면 재생 전에 텔레그램 / Plex를 고르는 창이 뜹니다 (사람마다 사이드바 [테마] 창에서 "매번 묻기 / 텔레그램 / Plex"로 정할 수 있음). '
-            + '재생 화면 아래 표시가 "텔레그램 · …"이면 텔레그램 사본으로 재생 중입니다. 텔레그램 쪽 재생 준비가 안 되면 Plex로 재생합니다.' })));
+            + '재생 화면 아래 표시가 "텔레그램 · …"이면 텔레그램 사본으로 재생 중입니다. 텔레그램 쪽 재생 준비가 안 되면 Plex로 재생합니다.' }),
+        h('label', { class: 'check' }, mp4Chk, ' Plex 영상을 MP4로 바꿔서 재생 (MKV 등)'),
+        h('p', { class: 'field-hint', text: '브라우저가 그대로 못 여는 Plex 원본(MKV 안의 H.264, 아이폰·아이패드는 HEVC도)을 이 서버가 다시 압축하지 않고 MP4 파일로 바꿔 둔 뒤 원본처럼 틉니다. '
+            + '처음 한 번은 바꾸는 동안 기다리지만(진행률 표시) Plex HLS 변환보다 끊김이 적고 탐색이 빠릅니다. 바꾼 파일은 MP4 보관함(기본 20GB)에 두고 다시 쓰고, 12GB보다 큰 원본은 바꾸지 않습니다. '
+            + '끄면 모든 사용자가 예전처럼 Plex 원본 그대로 또는 Plex 서버 변환(HLS)으로 봅니다 (서버 디스크·CPU를 쓰지 않음). '
+            + '켜 있어도 사람마다 사이드바 [테마] 창의 "MKV 등은 HLS 대신 MP4로 바꿔서 재생"을 끄면 그 브라우저에서는 쓰지 않습니다. 텔레그램 영상의 MP4 변환은 이 설정과 상관없습니다.' })));
 }
 
 async function renderCache(pane) {
