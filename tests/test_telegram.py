@@ -1928,3 +1928,14 @@ def test_tmdb_targets_put_picture_less_first(monkeypatch, tmp_path):
     telegram_src.link_posters("tg", 1)
     order = [(t["titles"][0], t["pic"]) for t in telegram_src.tmdb_targets("tg", 1)]
     assert order == [("Other Film", False), ("호프", True)]
+
+
+def test_leading_tags_are_not_part_of_the_title():
+    for f, name, key, ep in (("(자막) 주홍색 가면.E06.261114.1080p-KL.mp4", "주홍색 가면", "주홍색가면", 6),
+                             ("(더빙) 템빨 ~아이템의 힘~.E08.261116.1080p-KL.mp4", "템빨 ~아이템의 힘~", "템빨아이템의힘", 8),
+                             ("(자막) 블랙 클로버 New Chapter.E07.261115.1080p-KL.mp4", "블랙 클로버 New Chapter", "블랙클로버newchapter", 7),
+                             ("[자막][1080p] 원피스 1120화.mp4", "원피스", "원피스", 1120)):
+        assert telegram_src._display_title(f) == name
+        assert telegram_src._episode_info(f, f) == (key, 1, ep)
+    assert telegram_src._strip_lead_tags("(500) Days of Summer") == "(500) Days of Summer"   # 숫자뿐인 괄호는 이름
+    assert telegram_src._strip_lead_tags("(자막)") == "(자막)"                                  # 다 떼면 빈 이름 - 그대로

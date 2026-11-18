@@ -481,10 +481,23 @@ _CUT_RE = re.compile(_B + r"S\d{1,3}[\s._-]*E\d|" + _B + r"EP?\d{1,4}" + _E + r"
                      r"|(?<!\d)(?:19|20)\d{2}(?!\d)|" + _B + r"\d{3,4}p" + _E + r"|[\[(]", re.I)
 
 
+# 이름 앞에 붙은 표시 "(자막) 주홍색 가면.E06…", "[더빙] …", "<한국어> …", "【자막】…" - 떼고 읽는다.
+# 숫자뿐인 괄호("(500) Days of Summer")는 이름의 일부라 그대로
+_LEAD_TAG_RE = re.compile(r"^\s*(?:[(\[【<〈](?!\s*\d+\s*[)\]】>〉])[^()\[\]【】<>〈〉]{1,20}[)\]】>〉][\s._-]*)+")
+
+
+def _strip_lead_tags(text):
+    """'(자막) 주홍색 가면.E06' -> '주홍색 가면.E06' (다 떼면 아무것도 안 남으면 그대로)"""
+    rest = _LEAD_TAG_RE.sub("", text or "")
+    return rest if rest.strip() else (text or "")
+
+
 def _media_key(title, file_name=""):
-    """제목/파일명 -> (작품 이름, 회차, 연도). "로또 1등도 출근합니다.E09.261008.1080p" -> ("로또1등도출근합니다", 9, "")"""
+    """제목/파일명 -> (작품 이름, 회차, 연도). "로또 1등도 출근합니다.E09.261008.1080p" -> ("로또1등도출근합니다", 9, "")
+    앞에 붙은 (자막)·(더빙) 같은 표시는 떼고 읽는다"""
     best = ("", None, "")
     for text in (title or "", os.path.splitext(file_name or "")[0]):
+        text = _strip_lead_tags(text)
         if not text:
             continue
         m = _EP_RE.search(text)
@@ -665,6 +678,7 @@ _SPECIAL_RE = re.compile(r"특별\s*(?:편|회|화|판|호)?|외전|번외|후�
 def _special_info(title, file_name):
     """특별회차면 (작품 이름 키, 시즌, 번호 또는 0), 아니면 None"""
     for text in (title or "", os.path.splitext(file_name or "")[0]):
+        text = _strip_lead_tags(text)
         m = _SPECIAL_RE.search(text)
         if not m or m.start() == 0:
             continue
@@ -683,7 +697,7 @@ def _special_info(title, file_name):
 def _display_title(text):
     """'로또_1등도_출근합니다_S01E04_1080p' / '로또 1등도 출근합니다 S01E09 [2026]' -> '로또 1등도 출근합니다'"""
     text = os.path.splitext(text or "")[0] if re.search(r"\.(mkv|mp4|avi|ts|mov|webm|m4v|zip|cbz)$", text or "", re.I) else (text or "")
-    text = text.lstrip("#").strip()   # 해시태그로 붙인 이름 ("#천하제일_곤륜객잔_63646168 12화")
+    text = _strip_lead_tags(text.lstrip("#").strip())   # 해시태그로 붙인 이름 ("#천하제일_곤륜객잔_63646168 12화"), 앞의 (자막) 등
     cut = _CUT_RE.search(text)
     head = text[:cut.start()] if cut and cut.start() > 0 else text
     head = re.sub(r"[._]+", " ", head)
