@@ -1,4 +1,5 @@
 """MKV 등을 MP4 파일로 바꿔 두고 원본처럼 틀기 (mp4cache) - HLS 대신"""
+import os
 import asyncio
 import shutil
 import subprocess
@@ -52,3 +53,17 @@ def test_mkv_to_mp4_file(data, tmp_path):
         assert mp4cache.evict(limit_gb=0) == 1                   # 한도를 넘으면 오래 안 쓴 것부터 지움
         assert mp4cache.job(key) is None
     asyncio.run(main())
+
+
+def test_sweep_partial(tmp_path, monkeypatch):
+    """서버를 켤 때 만들다 만 .part는 지우고, 다 만든 MP4와 만드는 중인 것은 그대로"""
+    from ym_player import config_store, mp4cache
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    os.makedirs(mp4cache.root())
+    for n in ("a" * 24 + ".mp4", "b" * 24 + ".mp4.part", "c" * 24 + ".mp4.part"):
+        open(os.path.join(mp4cache.root(), n), "wb").close()
+    j = mp4cache.Job("c" * 24, "remux", 10)
+    j.state = "running"
+    monkeypatch.setitem(mp4cache._JOBS, "c" * 24, j)
+    assert mp4cache.sweep_partial() == 1
+    assert sorted(os.listdir(mp4cache.root())) == ["a" * 24 + ".mp4", "c" * 24 + ".mp4.part"]

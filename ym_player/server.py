@@ -4130,6 +4130,14 @@ async def _on_startup(app):
     media_cache.STORE.configure(config_store.load().get("cache"))
     _apply_general(app, config_store.load().get("general"))
     shutil.rmtree(_hls_root(), ignore_errors=True)  # 지난번에 남은 HLS 변환 파일
+    # 서버를 끄거나 죽어서 남은 작업 파일: 만들다 만 MP4(.part), 자동 올리기의 받다 만 원본·나눈 조각·인코딩 결과
+    # (나눠 올리기를 이어 할 때도 원본에서 다시 나누므로 지워도 된다)
+    n_part = mp4cache.sweep_partial()
+    tg_tmp = os.path.join(config_store.DATA_DIR, "plex_to_tg_tmp")
+    n_tg = len(os.listdir(tg_tmp)) if os.path.isdir(tg_tmp) else 0
+    shutil.rmtree(tg_tmp, ignore_errors=True)
+    if n_part or n_tg:
+        log.info("지난번에 남은 작업 파일 정리: 만들다 만 MP4 %d개, 자동 올리기 임시 폴더 %d개", n_part, n_tg)
     app[HLS_SWEEPER] = asyncio.ensure_future(_hls_sweeper(app))
     app[UPDATE_TASK] = asyncio.ensure_future(app[UPDATES].loop(app[HTTP]))
     app[DISCORD_TASK] = asyncio.ensure_future(app[DISCORD].loop(app[HTTP]))

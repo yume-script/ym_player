@@ -192,6 +192,11 @@ async def _watch(j, tmp, final):
     except asyncio.CancelledError:
         if j.proc.returncode is None:
             j.proc.kill()
+        j.state, j.error = "error", "그만둠"
+        try:
+            os.remove(tmp)   # 만들다 만 파일은 남기지 않는다
+        except OSError:
+            pass
         raise
     if j.proc.returncode == 0 and os.path.isfile(tmp) and os.path.getsize(tmp) > 0:
         os.replace(tmp, final)
@@ -206,6 +211,25 @@ async def _watch(j, tmp, final):
             os.remove(tmp)
         except OSError:
             pass
+
+
+def sweep_partial():
+    """만들다 만 MP4(.part) 지우기 - 서버를 끄거나 죽어서 남은 것 (서버를 켤 때, 만드는 중인 것은 그대로). 지운 수"""
+    try:
+        names = [n for n in os.listdir(root()) if n.endswith(".part")]
+    except OSError:
+        return 0
+    n = 0
+    for name in names:
+        key = name.split(".", 1)[0]
+        if _JOBS.get(key) and _JOBS[key].state == "running":
+            continue
+        try:
+            os.remove(os.path.join(root(), name))
+            n += 1
+        except OSError:
+            pass
+    return n
 
 
 def cancel(key):
