@@ -1661,6 +1661,8 @@ async function renderMirror(pane) {
                 .filter(Boolean).join(' · ')));
         statusBox.replaceChildren(...[
             s.error ? h('p', { class: 'muted error', text: s.error }) : null,
+            ...(s.offline || []).map((o) => h('p', { class: 'muted error', text: `원본 드라이브 ${o.drive}에 닿지 못합니다 (${new Date(o.since * 1000).toLocaleTimeString()}부터, ${o.count}번) - `
+                + 'rclone 마운트·네트워크 드라이브가 연결됐는지 확인하세요. 5분마다 다시 시도하며 실패로 세지 않습니다.' })),
             s.off_hours ? h('p', { class: 'muted', text: `지금은 올리기 시간대(${s.off_hours.replace('-', '시~')}시)가 아니라 쉬는 중 - 줄에 쌓아 두었다가 그 시간에 올립니다.` }) : null,
             h('p', { class: 'muted', text: s.last_check ? `마지막 확인 ${new Date(s.last_check * 1000).toLocaleString()}` : '아직 확인 전' }),
             h('div', { class: 'mirror-live-head' }, h('h4', { text: `진행 (${live.length})` }),
