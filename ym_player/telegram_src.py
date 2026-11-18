@@ -809,6 +809,8 @@ def series_episodes(sid, channel, key, user=""):
         prog, posters = _progress_map(conn, sid, vids, user), _poster_map(conn, sid, vids)
     eps = [{**_row(rows[s["video"]], prog, posters), "season": s["season"], "ep": s["ep"], "special": bool(s["special"])}
            for s in srows if s["video"] in rows]
+    with db() as conn:   # 한 회차를 나눠 올린 것("… E24 (1/2)", "… (2/2)")은 회차 하나로 (첫 조각, 길이·크기는 합쳐서)
+        _merge_parts(conn, sid, eps)
     return {"key": key, "title": srows[0]["title"], "channel": channel, "episodes": eps}
 
 
@@ -1644,8 +1646,10 @@ def query_videos(sid, channels, offset=0, limit=40, q="", sort="latest", user=""
 
 
 # 큰 영상을 여러 파일로 나눠 올린 경우: "이름_0000", "이름_0001" / "이름.001" / "이름 part2" / "이름 CD2"
+# / "태군노래자랑 시즌4 E24 (1/2)" "… [2／2]" "… (1 of 3)" (예능에서 흔한 모양 - 한 회차를 둘로)
 # (연도 "Movie.2026"과 헷갈리지 않게 숫자만 있는 꼬리는 0으로 시작하는 3~4자리만 본다)
-_PART_RE = re.compile(r"^(.*?)[\s._-]*(?:(?:part|pt|cd|disc|disk)[\s._-]*0*(\d{1,3})|[._-](0\d{2,3}))$", re.I)
+_PART_RE = re.compile(r"^(.*?)[\s._-]*(?:(?:part|pt|cd|disc|disk)[\s._-]*0*(\d{1,3})|[._-](0\d{2,3})"
+                      r"|[(\[]\s*(\d{1,2})\s*(?:/|／|of)\s*\d{1,2}\s*[)\]])$", re.I)
 _VIDEO_EXT = {".mp4", ".mkv", ".avi", ".ts", ".m2ts", ".mov", ".wmv", ".webm", ".m4v", ".flv", ".mpg", ".mpeg"}
 
 
@@ -1658,7 +1662,7 @@ def split_part(name):
     m = _PART_RE.match(stem)
     if not m or len(m.group(1)) < 3:
         return None
-    return m.group(1).casefold(), int(m.group(2) or m.group(3))
+    return m.group(1).casefold(), int(m.group(2) or m.group(3) or m.group(4))
 
 
 # 캡션의 조각 표시: 첫 줄(제목) 바로 다음 줄이 "(2/3)" - 자동 올리기(BookOasis Assistant·YMPlayer)가 나눠 올릴 때 쓰는 모양

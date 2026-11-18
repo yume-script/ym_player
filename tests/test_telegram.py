@@ -1939,3 +1939,30 @@ def test_leading_tags_are_not_part_of_the_title():
         assert telegram_src._episode_info(f, f) == (key, 1, ep)
     assert telegram_src._strip_lead_tags("(500) Days of Summer") == "(500) Days of Summer"   # 숫자뿐인 괄호는 이름
     assert telegram_src._strip_lead_tags("(자막)") == "(자막)"                                  # 다 떼면 빈 이름 - 그대로
+
+
+def test_variety_episode_split_in_two(monkeypatch, tmp_path):
+    """예능: 한 회차를 "… E24 (1/2)", "… E24 (2/2)"로 나눠 올린 것은 회차 하나로 (목록·시리즈 회차·이어 재생)"""
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    telegram_src._migrated.discard(str(tmp_path))
+    telegram_src._GROUPS.clear()   # (앞 테스트의 같은 채널·같은 모양 묶음 기억을 쓰지 않게)
+    rows = [(1, "태군노래자랑 시즌4 E24 (1/2)", "태군노래자랑 시즌4 E24 (1/2).MP4"),
+            (2, "태군노래자랑 시즌4 E24 (2/2)", "태군노래자랑 시즌4 E24 (2/2).MP4"),
+            (3, "태군노래자랑 시즌4 E25 (1/2)", "태군노래자랑 시즌4 E25 (1/2).MP4"),
+            (4, "태군노래자랑 시즌4 E25 (2/2)", "태군노래자랑 시즌4 E25 (2/2).MP4")]
+    with telegram_src.db() as conn:
+        conn.executemany(
+            "INSERT INTO videos(source,channel,msg,title,caption,file_name,mime,duration,size,width,height,date,has_thumb,kind)"
+            " VALUES('tg',1,?,?,'',?,'video/mp4',60,1,1,1,'2026-10-14T10:00:00+00:00',0,'video')", rows)
+    assert telegram_src.split_part("태군노래자랑 시즌4 E24 (2/2).MP4") == ("태군노래자랑 시즌4 e24", 2)
+    assert telegram_src.split_part("태군노래자랑 시즌4 E25 (1／2).mp4") == ("태군노래자랑 시즌4 e25", 1)   # 전각 /
+    assert telegram_src.split_part("Show [2 of 3].mkv") == ("show", 2)
+    assert [(p["msg"], p["part"]) for p in telegram_src.video_parts("tg", 1, 2)] == [(1, 1), (2, 2)]
+    items, total = telegram_src.query_videos("tg", [1], kind="video")
+    assert sorted((x["msg"], x["title"], x["duration"]) for x in items) == [
+        (1, "태군노래자랑 시즌4 E24", 120), (3, "태군노래자랑 시즌4 E25", 120)] and total == 2
+    telegram_src.link_series("tg", 1)
+    key = telegram_src.series_of("tg", 1, 1)["key"]
+    eps = telegram_src.series_episodes("tg", 1, key)["episodes"]
+    assert [(e["msg"], e["ep"], e["duration"], e.get("parts_count")) for e in eps] == [(1, 24, 120, 2), (3, 25, 120, 2)]
+    assert telegram_src.series_of("tg", 1, 2)["next"]["msg"] == 3     # 둘째 조각 다음은 다음 회차
