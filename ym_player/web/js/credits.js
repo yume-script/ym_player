@@ -106,6 +106,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 174,
+        "version": "1.3.15",
+        "date": "2026-11-19",
+        "title": "텔레그램: 한 회차를 둘로 나눠 올린 예능(\"… E24 (1/2)\", \"… E24 (2/2)\")을 목록·시리즈 회차에서 하나로 합쳐 보이고 이어서 재생"
+    },
+    {
         "pr": 173,
         "version": "1.3.14",
         "date": "2026-11-19",
