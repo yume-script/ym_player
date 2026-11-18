@@ -1882,3 +1882,49 @@ def test_split_parts_grouped_by_caption(monkeypatch, tmp_path):
     assert total == 2 and [(d["msg"], d.get("parts_count")) for d in rows] == [(10, 3), (20, None)]
     assert rows[0]["duration"] == 8100
     assert [p["msg"] for p in telegram_src.video_parts("tg", 5, 12)] == [10, 11, 12]
+
+
+def test_tmdb_search_titles_are_cleaned_but_keys_stay():
+    st = telegram_src.search_title
+    assert st("THE NONSENSE FHD 0000") == "THE NONSENSE"
+    assert st("신병 시즌 3") == "신병"
+    assert st("킨시쵸 파라다이스 ~시부야 ↔️ 킨시쵸~") == "킨시쵸 파라다이스"
+    assert st("<한국어/더빙> 보스 베이비 2") == "보스 베이비 2"           # 속편 번호는 그대로
+    assert st("2035: 더 그린라이트 [2023]") == "2035: 더 그린라이트"
+    assert st("고독한미식가-더무비_등급고지") == "고독한미식가 더무비"
+    assert st("Demon Slayer Kimetsu no Yaiba SPE03") == "Demon Slayer Kimetsu no Yaiba"
+    assert st("Finding Angel (2018)") == "Finding Angel" and st("짱구 8m") == "짱구" and st("M3GAN 2.0") == "M3GAN 2.0"
+    t = telegram_src.meta_target_for("신병 시즌 3 1화", "신병.S03E01.1080p.mp4")
+    assert t["titles"][0] == "신병"
+    m = telegram_src.meta_target_for("THE NONSENSE FHD_0000", "THE_NONSENSE_FHD_0000.mp4")
+    assert m["titles"][0] == "THE NONSENSE" and "THE NONSENSE FHD 0000" in m["titles"]
+
+
+def test_tmdb_find_rejects_far_names(monkeypatch):
+    from ym_player import tmdb
+
+    async def fake_get(self, path, **params):
+        if params.get("query") == "Finding Angel":
+            return {"results": [{"id": 1, "title": "Finding God in the Darkness", "release_date": "2018-01-01", "poster_path": "/x.jpg"}]}
+        return {"results": [{"id": 2, "name": "Demon Slayer: Kimetsu no Yaiba - Hashira Training", "poster_path": "/y.jpg"}]}
+    monkeypatch.setattr(tmdb.Tmdb, "_get", fake_get)
+
+    async def run():
+        api = tmdb.Tmdb(None, "k" * 32)
+        assert await api.find("movie", ["Finding Angel"], "2018") is None   # 엉뚱한 작품보다 없는 게 낫다
+        assert await api.find("tv", ["Demon Slayer Kimetsu no Yaiba"]) == 2  # 부제가 붙은 이름은 받아들인다
+    asyncio.run(run())
+
+
+def test_tmdb_targets_put_picture_less_first(monkeypatch, tmp_path):
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    telegram_src._migrated.discard(str(tmp_path))
+    rows = [(1, "image", "호프 [2026]", ""), (2, "video", "Hope.2026.1080p", "Hope.2026.1080p.mkv"),
+            (3, "video", "Other.Film.2024.1080p", "Other.Film.2024.1080p.mkv")]
+    with telegram_src.db() as conn:
+        conn.executemany(
+            "INSERT INTO videos(source,channel,msg,title,caption,file_name,mime,duration,size,width,height,date,has_thumb,kind)"
+            " VALUES('tg',1,?,?,'',?,'video/mp4',60,1,1,1,'2026-08-14T10:00:00+00:00',0,?)", [(m, t, f, k) for m, k, t, f in rows])
+    telegram_src.link_posters("tg", 1)
+    order = [(t["titles"][0], t["pic"]) for t in telegram_src.tmdb_targets("tg", 1)]
+    assert order == [("Other Film", False), ("호프", True)]

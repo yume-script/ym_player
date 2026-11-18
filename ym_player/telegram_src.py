@@ -1094,7 +1094,7 @@ def meta_target(sid, channel, msg=None, series_key=None):
                              (sid, channel, series_key)).fetchone()
             if not s:
                 return None
-            return {"mkey": f"tv:{series_key}", "kind": "tv", "titles": [s["title"]], "year": "", "season": None, "ep": None}
+            return {"mkey": f"tv:{series_key}", "kind": "tv", "titles": search_titles([s["title"]]), "year": "", "season": None, "ep": None}
         r = conn.execute("SELECT * FROM videos WHERE source=? AND channel=? AND msg=?", (sid, channel, msg)).fetchone()
         if not r or r["kind"] != "video":
             return None
@@ -1104,16 +1104,49 @@ def meta_target(sid, channel, msg=None, series_key=None):
                             "AND v.msg=p.image WHERE p.source=? AND p.channel=? AND p.video=?", (sid, channel, msg)).fetchone()
     poster_title = _display_title(prow["title"]) if prow else ""
     if srow:
-        return {"mkey": f"tv:{srow['skey']}", "kind": "tv", "titles": [srow["title"], poster_title],
-                "year": "", "season": srow["season"], "ep": srow["ep"]}
-    return meta_target_for(r["title"], r["file_name"], poster_title)
+        return {"mkey": f"tv:{srow['skey']}", "kind": "tv", "titles": search_titles([srow["title"], poster_title]),
+                "year": "", "season": srow["season"], "ep": srow["ep"], "pic": bool(prow)}
+    t = meta_target_for(r["title"], r["file_name"], poster_title)
+    return t and {**t, "pic": bool(prow)}
+
+
+_SEARCH_JUNK = [
+    re.compile(r"<[^<>]*>|【[^【】]*】|\[[^\[\]]*\]|\((?:19|20)\d{2}\)"),              # <한국어/더빙>, [2023], (2018)
+    re.compile(r"(?<![A-Za-z0-9])(?:[FU]?HD|SD|[48]K|\d{3,4}p|x26[45]|HEVC|WEB-?DL|WEB-?Rip|BluRay|HDR|"
+               r"SPE?\d*|\d{1,3}m)(?![A-Za-z0-9])", re.I),                                   # 화질·특별편·분 (FHD, SPE03, 8m)
+    re.compile(r"(?:시즌|Season)\s*\d+|(?<![A-Za-z0-9])S\d{1,2}(?![A-Za-z0-9])", re.I),          # 신병 시즌 3
+    re.compile(r"_?등급\s*고지|(?<![가-힣])(?:우리말|한국어|한글)?\s*(?:더빙|자막)(?:판)?(?![가-힣])"),  # 등급고지, 더빙
+]
+
+
+def search_title(text):
+    """TMDB에 물어볼 검색어 - 화질·조각 번호·시즌·부제·기호 등을 뺀 이름 ('THE NONSENSE FHD 0000' -> 'THE NONSENSE').
+    작품 키(mkey)는 그대로 두고 검색어만 다듬는다 (이미 찾아 둔 정보를 다시 찾지 않게)"""
+    t = str(text or "")
+    if "~" in t and t.split("~", 1)[0].strip():
+        t = t.split("~", 1)[0]                                          # 킨시쵸 파라다이스 ~시부야 ↔ 킨시쵸~
+    for rx in _SEARCH_JUNK:
+        t = rx.sub(" ", t)
+    t = "".join(c if unicodedata.category(c)[0] not in "SC" or c in "&+'" else " " for c in t)   # 이모지·화살표
+    t = re.sub(r"(?<=[가-힣])-(?=[가-힣])", " ", t)                       # 고독한미식가-더무비
+    t = re.sub(r"\s+0\d{0,3}$", "", re.sub(r"[_\s]+", " ", t).strip())   # 끝의 조각 번호 0000·0 ('보스 베이비 2'의 2는 그대로)
+    return re.sub(r"^[\s\-:·,.]+|[\s\-:·,.]+$", "", t)
+
+
+def search_titles(titles):
+    """찾을 이름들 -> 다듬은 검색어 먼저, 그다음 원래 이름 (겹치는 것 빼고)"""
+    out = []
+    for t in titles:
+        for v in (search_title(t), t):
+            if v and len(v) > 1 and v not in out:
+                out.append(v)
+    return out
 
 
 def meta_target_for(title, file_name, poster_title=""):
     """제목·파일 이름만으로 찾을 것 (색인에 아직 없는 방금 올린 영상 - 자동 올리기가 TMDB 정보를 미리 찾을 때)"""
     name, ep, year = _media_key(title, file_name)
-    titles = [poster_title, _display_title(title), _display_title(file_name)]
-    titles = [t for i, t in enumerate(titles) if t and t not in titles[:i]]
+    titles = search_titles([poster_title, _display_title(title), _display_title(file_name)])
     if not name:
         return None
     info = _episode_info(title, file_name)
@@ -1132,7 +1165,7 @@ def channel_sig(sid, channel):
 
 def tmdb_targets(sid, channel):
     """이 채널 영상들의 찾을 작품 (TMDB) - 같은 작품(드라마 회차들)은 하나로. Plex 정보가 붙은 영상은 뺀다.
-    [{mkey, kind, titles, year, have(찾아 둔 정보가 있나), fetched, manual}]"""
+    [{mkey, kind, titles, year, have(찾아 둔 정보가 있나), fetched, manual, pic(채널에 올린 그림이 있나)}] - 그림 없는 것 먼저"""
     with db() as conn:
         msgs = [r["msg"] for r in conn.execute(
             "SELECT v.msg FROM videos v LEFT JOIN plex_meta p ON p.source=v.source AND p.channel=v.channel AND p.msg=v.msg "
@@ -1142,6 +1175,8 @@ def tmdb_targets(sid, channel):
         t = meta_target(sid, channel, msg=msg)
         if t and t["mkey"] not in out:
             out[t["mkey"]] = t
+        elif t and t.get("pic"):
+            out[t["mkey"]]["pic"] = True
     if out:
         with db() as conn:
             for mk in list(out):
@@ -1152,8 +1187,9 @@ def tmdb_targets(sid, channel):
                     poster = False
                 out[mk].update(have=bool(hit and hit["data"]), poster=poster, fetched=(hit["fetched"] if hit else 0) or 0,
                                manual=bool(hit and hit["manual"]))
-    return [{**t, "have": t.get("have", False), "poster": t.get("poster", False), "fetched": t.get("fetched", 0),
-             "manual": t.get("manual", False)} for t in out.values()]
+    # 채널에 올린 그림도 없는(썸네일뿐인) 작품을 먼저 - 그다음은 최근 영상 순서 그대로
+    return sorted(({**t, "have": t.get("have", False), "poster": t.get("poster", False), "fetched": t.get("fetched", 0),
+                    "manual": t.get("manual", False), "pic": t.get("pic", False)} for t in out.values()), key=lambda t: t["pic"])
 
 
 _EP_CACHE = {}   # (소스, 채널) -> (영상 수, 마지막 메시지, {(작품 키, 시즌, 회차): 제목})

@@ -28,6 +28,31 @@ def _norm(v):
     return re.sub(r"[\W_]+", "", unicodedata.normalize("NFKC", str(v or "")).casefold())
 
 
+MIN_SIM = 0.67         # 이름이 이만큼은 비슷해야 받아들인다 (Finding Angel -> Finding God in the Darkness 같은 엉뚱한 작품 막기)
+MIN_SIM_YEAR = 0.6     # 연도가 맞으면 이만큼
+
+
+def title_sim(r, title, kind="movie"):
+    """결과 이름(번역·원제)과 찾는 이름이 얼마나 비슷한지 0~1. 한쪽이 다른 쪽을 품으면(부제 붙은 이름) 0.75 이상"""
+    names = [r.get("title"), r.get("original_title")] if kind == "movie" else [r.get("name"), r.get("original_name")]
+    want, best = _norm(title), 0.0
+    for n in names:
+        n = _norm(n)
+        if not n or not want:
+            continue
+        sim = SequenceMatcher(None, want, n).ratio()
+        if min(len(want), len(n)) >= 2 and (want in n or n in want):
+            sim = max(sim, 0.75)
+        best = max(best, sim)
+    return best
+
+
+def acceptable(r, title, year="", kind="movie"):
+    date = r.get("release_date" if kind == "movie" else "first_air_date") or ""
+    sim = title_sim(r, title, kind)
+    return sim >= MIN_SIM or (bool(year) and date[:4] == str(year) and sim >= MIN_SIM_YEAR)
+
+
 def match_score(r, title, year="", kind="movie", rank=0):
     """결과 하나가 이름·연도에 얼마나 맞는지 (best_match와 같은 계산)"""
     names = [r.get("title"), r.get("original_title")] if kind == "movie" else [r.get("name"), r.get("original_name")]
@@ -92,6 +117,7 @@ class Tmdb:
 
     async def find(self, kind, titles, year=""):
         """여러 이름(우리말 포스터 제목, 캡션 제목, 파일 이름...)으로 찾아 가장 잘 맞는 것 하나. 없으면 None.
+        이름이 너무 다른 결과(acceptable이 아닌 것)는 받아들이지 않는다 - 엉뚱한 포스터보다 없는 게 낫다.
         이름이 거의 같은 결과가 나오면 바로 그것으로, 아니면 다른 이름으로도 찾아 본 뒤 가장 비슷한 것
         (예전엔 첫 이름에서 결과가 하나라도 나오면 덜 맞아도 그것으로 끝냈다)"""
         best, best_score = None, -1.0
@@ -101,7 +127,9 @@ class Tmdb:
                 if not res:
                     continue
                 raw = [r["_raw"] for r in res]
-                hit = best_match(raw, t, year, kind)
+                hit = best_match([r for r in raw if acceptable(r, t, year, kind)], t, year, kind)
+                if not hit:   # 이름이 비슷한 결과가 없음 - 연도 없이, 그다음 이름으로
+                    continue
                 score = match_score(hit, t, year, kind, raw.index(hit))
                 if score > best_score:
                     best, best_score = hit, score
