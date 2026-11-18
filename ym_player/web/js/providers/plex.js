@@ -6,7 +6,7 @@
 //              playable, viewOffset, duration, children[], childrenTitle, childrenStyle, parent }
 //   playback = { url, kind, live, startTime, title, subtitle, poster, audioOnly,
 //                onProgress(state, sec), onStop(sec), getNext() }
-import { api, h, icon, modal, fmtDuration, uuid, storeGet, storeSet, IS_SAFARI, dataSaver, prepareMp4 } from '../util.js';
+import { api, h, icon, modal, fmtDuration, uuid, storeGet, storeSet, IS_SAFARI, dataSaver, startMp4, waitMp4 } from '../util.js';
 import { registry } from './index.js';
 
 const PRODUCT = 'YMPlayer';
@@ -397,12 +397,16 @@ export class PlexProvider {
         const vo = m.viewOffset || 0;
         const resumable = vo > 30000 && (!m.duration || vo < m.duration * 0.95);
         const startTime = startAt != null ? startAt : (!fromStart && resumable ? vo / 1000 : 0);
-        let url, kind, mp4 = null;
+        let url, kind, mp4 = null, mp4Job = null;
         const original = !burn && !otherAudio && q.id === 'original';
-        // 브라우저가 그대로 못 여는 원본(MKV 안의 H.264 등)은 HLS 변환보다 먼저 서버가 MP4로 바꿔 둔 파일로
-        // (다시 압축하지 않아 빠르고, 원본처럼 탐색돼 아이패드 Safari에서도 끊기지 않는다). 못 바꾸는 형식이면 예전처럼 HLS
+        // 브라우저가 그대로 못 여는 원본(MKV 안의 H.264 등)은 HLS 변환보다 서버가 MP4로 바꿔 둔 파일로
+        // (다시 압축하지 않아 빠르고, 원본처럼 탐색돼 아이패드 Safari에서도 끊기지 않는다). 못 바꾸는 형식이면 예전처럼 HLS.
+        // 이미 바꿔 둔 파일이 있으면 바로 그것으로, 아직이면 기다리지 않고 지금은 Plex(HLS)로 틀고 뒤에서 바꾸다가
+        // 다 되면 보던 자리에서 MP4로 갈아탄다 (재생기 upgrade)
         if (!(canDirectPlay(media, audioOnly) && original) && original && !audioOnly) {
-            mp4 = await prepareMp4(`/api/mp4/plex/${encodeURIComponent(this.id)}`, { id });
+            const j = await startMp4(`/api/mp4/plex/${encodeURIComponent(this.id)}`, { id });
+            if (j && j.state === 'done') mp4 = j;
+            else if (j) mp4Job = j;
         }
         if (mp4) {
             url = mp4.url;
@@ -473,6 +477,15 @@ export class PlexProvider {
             activeQuality: q.id,
             transcoding: kind === 'hls',
             ...(mp4 ? { engineNote: `MP4로 바꿔 재생 (${{ remux: '포장만', audio: '음성 AAC', hevc: 'HEVC 그대로' }[mp4.mode] || '다시 압축 안 함'})` } : {}),
+            ...(mp4Job ? {
+                altNote: 'MP4 준비 중 - 다 되면 바꿔 재생',
+                // 재생기가 부른다: 뒤에서 만드는 MP4가 다 되면 그 자리부터 MP4로 다시 불러올 재생 정보 (그만두거나 실패하면 null)
+                upgrade: async (isCurrent, atSec) => {
+                    const done = await waitMp4(mp4Job, isCurrent, null, 3000);
+                    if (!done || !isCurrent()) return null;
+                    return this.getPlayback(id, { startAt: atSec(), plexOnly: true });
+                },
+            } : {}),
             // 음성/화질을 바꾸면 그 위치부터 다시 불러온다 (자막 선택은 Plex에 저장돼 있어 그대로)
             selectAudio: async (aid, atSec) => ({ reload: await this.getPlayback(id, { startAt: atSec, audioId: aid }) }),
             selectQuality: async (qid, atSec) => ({ reload: await this.getPlayback(id, { startAt: atSec, quality: qid }) }),

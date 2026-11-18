@@ -460,6 +460,7 @@ class Player {
         if (token !== this.token) return;
         pb.startRetried = false;
         this.engineEl.textContent = pb.engineNote || (pb.altNote ? `${label} · ${pb.altNote}` : label);
+        if (pb.upgrade && !pb._upgrading) this._watchUpgrade(pb);   // 뒤에서 MP4를 만드는 중이면 다 됐을 때 갈아타기
         this.playingSince = this.video.currentTime || 0;
         this._hideMsg();
         if (pb.channel) channelHealth.set(pb.channel.id, 'online');
@@ -1623,6 +1624,19 @@ class Player {
         }
         const size = storeGet('yp_cue_size', 'm');
         this.subSizes.querySelectorAll('.chip').forEach((c) => c.classList.toggle('active', c.dataset.size === size));
+    }
+
+    /** 지금은 Plex(HLS 등)로 틀고 뒤에서 MP4를 만드는 중: 다 되면 보던 자리에서 MP4로 다시 불러온다 (멈춰 있었으면 멈춘 채로) */
+    _watchUpgrade(pb) {
+        pb._upgrading = true;
+        pb.upgrade(() => this.pb === pb, () => this._pos()).then(async (next) => {
+            if (!next || this.pb !== pb) return;
+            const paused = this.video.paused;
+            next.startTime = this._pos();
+            toast('MP4 준비가 끝나 원본처럼 이어서 재생합니다.');
+            await this.start(next);
+            if (paused) { try { this.video.pause(); } catch (e) { /* 무시 */ } }
+        }).catch(() => {});
     }
 
     async chooseSubtitle(id) {
