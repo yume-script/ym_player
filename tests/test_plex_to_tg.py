@@ -1310,3 +1310,47 @@ def test_source_offline_is_not_a_failure():
     assert m.drive_of(m.source_offline(e)) == "M:"
     assert m.source_offline(RuntimeError("복사 실패: [WinError 1005] 볼륨: 'M:\\A\\b'")) == "M:\\A\\b"
     assert m.source_offline(FileNotFoundError(errno.ENOENT, "없음", "/x/a.mkv")) is None
+
+
+def test_resume_split_upload_after_restart(monkeypatch, tmp_path):
+    """나눠 올리다 서버를 다시 켜면 다 올린 조각 다음부터 (영상만 올라가고 자막 전에 멈춘 조각은 지우고 그 조각부터)"""
+    import os
+    import types
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    m = plex_to_tg
+
+    class Client:
+        def __init__(self, base, fail_at=None):
+            self.n, self.sent, self.deleted, self.fail_at = base, [], [], fail_at
+
+        async def send_file(self, peer, path, **kw):
+            if os.path.basename(path) == self.fail_at:
+                raise asyncio.CancelledError()
+            self.n += 1
+            self.sent.append(os.path.basename(path))
+            return types.SimpleNamespace(id=self.n)
+
+        async def delete_messages(self, peer, ids):
+            self.deleted += list(ids)
+
+    async def run():
+        mir = m.Mirror(None, None, lambda *a: None, None)
+        lane = m.Lane("tg")
+        m._LANE.set(lane)
+        pieces = []
+        for i in range(3):
+            p = tmp_path / f"v_{i}.mp4"
+            p.write_bytes(b"x")
+            pieces.append((str(p), i * 10, 10))
+        sub = tmp_path / "sub.srt"
+        sub.write_text("1\n00:00:01,000 --> 00:00:29,000\nhi\n", encoding="utf-8")
+        lane.current_job = {"rule": "r1", "key": "K", "tg": "tg"}
+        c1 = Client(100, fail_at="cut2_sub.srt")
+        with pytest.raises(asyncio.CancelledError):
+            await mir._send_pieces(c1, None, pieces, "v.mp4", "제목", 1, 1, None, [(str(sub), "ko", "srt")], "t", str(tmp_path), [])
+        lane.resume = mir._resumable({"id": "r1"}, "K")
+        assert (lane.resume["n"], lane.resume["done"], lane.resume["cur"]) == (3, 1, [103])
+        c2, msgs = Client(200), []
+        await mir._send_pieces(c2, None, pieces, "v.mp4", "제목", 1, 1, None, [(str(sub), "ko", "srt")], "t", str(tmp_path), msgs)
+        assert c2.sent == ["v_1.mp4", "cut2_sub.srt", "v_2.mp4", "cut3_sub.srt"] and c2.deleted == [103] and msgs == [101, 201, 203]
+    asyncio.run(run())
