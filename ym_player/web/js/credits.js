@@ -107,9 +107,15 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 export const CHANGELOG = [
     {
         "pr": 171,
-        "version": "1.3.12",
+        "version": "1.3.13",
         "date": "2026-11-18",
         "title": "설정 > 공통: Plex 영상을 MP4로 바꿔서 재생(MKV 등)을 켜고 끄기 - 끄면 모든 사용자가 예전처럼 Plex 원본/HLS 변환으로"
+    },
+    {
+        "pr": 172,
+        "version": "1.3.12",
+        "date": "2026-11-18",
+        "title": "Plex MP4 변환: 처음 틀 때 기다리지 않고 Plex로 바로 재생, 뒤에서 MP4를 다 만들면 보던 자리에서 MP4로 갈아타기"
     },
     {
         "pr": 170,
