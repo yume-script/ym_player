@@ -1651,7 +1651,7 @@ class Mirror:
         if not data:
             return "TMDB에서 못 찾음"
         telegram_src.meta_put(tg_id, tgt["mkey"], tgt["kind"], tid, data)
-        return "ok"
+        return "ok" if data.get("poster") else "TMDB에 포스터 없음"
 
     def _poster_note(self, tg_id, tgt, title, err):
         """못 찾은 포스터를 기억해 POSTER_RETRY 간격으로 다시 찾는다 (다 해도 못 찾으면 '포스터 못 찾음'에 남겨 직접 고르게)"""
@@ -1729,13 +1729,14 @@ class Mirror:
                     continue
                 left = False
                 for t in await asyncio.to_thread(telegram_src.tmdb_targets, s["id"], ch):
-                    if t["have"] or t["manual"] or (t["fetched"] and now - t["fetched"] < AUTO_TMDB_MISS):
+                    # 찾았어도 포스터가 없으면(포스터 없는 항목으로 맞춰졌거나 그때 그림이 없었음) 하루에 한 번 다시
+                    if t["manual"] or (t["have"] and t.get("poster", True)) or (t["fetched"] and now - t["fetched"] < AUTO_TMDB_MISS):
                         continue
                     if tried >= AUTO_TMDB_MAX:
                         left = True
                         break
                     tried += 1
-                    res = await self._lookup_poster(s["id"], t)
+                    res = await self._lookup_poster(s["id"], t, force=t["have"])
                     if res == "ok":
                         found += 1
                     elif res == "TMDB에서 못 찾음":   # 못 찾은 것도 적어 두어 AUTO_TMDB_MISS 뒤에 다시
@@ -1762,7 +1763,9 @@ class Mirror:
         if not self._tmdb_key(sid):
             out["error"] = "TMDB 키가 없습니다 (설정 > 소스 > 텔레그램)."
             return out
-        todo = [t for t in await asyncio.to_thread(telegram_src.tmdb_targets, sid, int(channel)) if not t["have"] and not t["manual"]]
+        # 아직 못 찾은 것 + 찾았지만 포스터가 없는 것 (직접 고른 것은 그대로)
+        todo = [t for t in await asyncio.to_thread(telegram_src.tmdb_targets, sid, int(channel))
+                if not t["manual"] and not (t["have"] and t.get("poster", True))]
         end = time.time() + budget
         for i, t in enumerate(todo):
             if out["tried"] >= limit or time.time() > end:
@@ -1775,6 +1778,8 @@ class Mirror:
             elif res == "TMDB에서 못 찾음":
                 telegram_src.meta_put(sid, t["mkey"], t["kind"], None, None)
                 out["missing"].append(" / ".join(x for x in t.get("titles") or [] if x) or t["mkey"])
+            elif res == "TMDB에 포스터 없음":
+                out["missing"].append((" / ".join(x for x in t.get("titles") or [] if x) or t["mkey"]) + " (포스터 없음)")
             else:   # 키 오류·연결 실패 - 더 해도 같다
                 out["error"] = res
                 out["left"] = len(todo) - i - 1

@@ -33,7 +33,8 @@ def match_score(r, title, year="", kind="movie", rank=0):
     names = [r.get("title"), r.get("original_title")] if kind == "movie" else [r.get("name"), r.get("original_name")]
     sim = max((SequenceMatcher(None, _norm(title), _norm(n)).ratio() for n in names if n), default=0.0)
     date = r.get("release_date" if kind == "movie" else "first_air_date") or ""
-    return sim + (0.3 if year and date[:4] == str(year) else 0) - 0.02 * rank
+    # 포스터가 있는 결과를 조금 더 (같은 이름의 포스터 없는 작은 항목을 고르면 목록 카드에 그림이 안 붙는다)
+    return sim + (0.3 if year and date[:4] == str(year) else 0) + (0.1 if r.get("poster_path") else 0) - 0.02 * rank
 
 
 def best_match(results, title, year="", kind="movie"):
@@ -44,7 +45,7 @@ def best_match(results, title, year="", kind="movie"):
         names = [r.get("title"), r.get("original_title")] if kind == "movie" else [r.get("name"), r.get("original_name")]
         sim = max((SequenceMatcher(None, want, _norm(n)).ratio() for n in names if n), default=0.0)
         date = r.get("release_date" if kind == "movie" else "first_air_date") or ""
-        score = sim + (0.3 if year and date[:4] == str(year) else 0) - 0.02 * i
+        score = sim + (0.3 if year and date[:4] == str(year) else 0) + (0.1 if r.get("poster_path") else 0) - 0.02 * i
         if score > best_score:
             best, best_score = r, score
     return best
@@ -114,6 +115,17 @@ class Tmdb:
         d = await self._get(f"/{kind}/{int(tmdb_id)}", append_to_response="credits")
         if not d:
             return None
+        if not d.get("poster_path") or not d.get("backdrop_path"):
+            # 한국어(ko-KR) 포스터가 없으면 비어 온다 - 다른 언어·언어 없는 그림에서 고른다
+            try:
+                pics = await self._get(f"/{kind}/{int(tmdb_id)}/images", include_image_language="ko,en,null", language="") or {}
+            except Exception:  # noqa: BLE001 - 그림은 덤 (못 받으면 그대로)
+                pics = {}
+            pics = pics if isinstance(pics, dict) else {}
+            for key, field in (("posters", "poster_path"), ("backdrops", "backdrop_path")):
+                if not d.get(field):
+                    got = sorted(pics.get(key) or [], key=lambda x: -(x.get("vote_average") or 0))
+                    d[field] = (got[0].get("file_path") if got else "") or ""
         credits = d.get("credits") or {}
         directors = [c.get("name") for c in credits.get("crew") or [] if c.get("job") == "Director"][:3]
         if kind == "tv":
