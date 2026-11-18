@@ -106,6 +106,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 166,
+        "version": "1.3.7",
+        "date": "2026-11-18",
+        "title": "텔레그램 목록 포스터: TMDB 검색어에서 화질·조각 번호·시즌·부제·이모지·[연도]·더빙 표시를 빼고 찾기, 이름이 너무 다른 작품은 받아들이지 않기, 그림 없는 카드부터 더 빨리 찾기"
+    },
+    {
         "pr": 164,
         "version": "1.3.6",
         "date": "2026-11-18",
