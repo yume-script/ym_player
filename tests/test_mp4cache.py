@@ -67,3 +67,10 @@ def test_sweep_partial(tmp_path, monkeypatch):
     monkeypatch.setitem(mp4cache._JOBS, "c" * 24, j)
     assert mp4cache.sweep_partial() == 1
     assert sorted(os.listdir(mp4cache.root())) == ["a" * 24 + ".mp4", "c" * 24 + ".mp4.part"]
+
+
+def test_memtrim_release():
+    """쓰고 난 메모리 돌려주기: 리눅스면 malloc_trim, 아니어도 오류 없이"""
+    from ym_player import memtrim
+    assert memtrim.release() in (True, False)
+    asyncio.run(memtrim.release_async())

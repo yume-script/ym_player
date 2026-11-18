@@ -18,7 +18,7 @@ import os
 import re
 import time
 
-from . import config_store, transcode
+from . import config_store, memtrim, transcode
 
 log = logging.getLogger("ym_player.mp4cache")
 MODES = ("remux", "audio", "hevc")
@@ -203,6 +203,7 @@ async def _watch(j, tmp, final):
         j.state, j.finished = "done", time.time()
         log.info("MP4로 바꿈 (%s, %.0f초 걸림, %.1fMB)", j.key, j.finished - j.started, os.path.getsize(final) / 1048576)
         await asyncio.to_thread(evict)
+        await memtrim.release_async()   # 큰 작업 뒤 쓰고 난 메모리를 OS에
     else:
         j.state = "error"
         j.error = (errs[-1] if errs else f"ffmpeg 종료 코드 {j.proc.returncode}")[:300]
