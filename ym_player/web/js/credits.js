@@ -106,6 +106,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 170,
+        "version": "1.3.11",
+        "date": "2026-11-18",
+        "title": "텔레그램 자동 올리기: 나눠 올리다 서버를 다시 켜면 1번 조각부터가 아니라 다 올린 조각 다음부터 이어 올리기"
+    },
+    {
         "pr": 169,
         "version": "1.3.10",
         "date": "2026-11-18",

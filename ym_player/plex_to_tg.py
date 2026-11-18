@@ -642,6 +642,7 @@ class Lane:
         self.cur_ep = None        # 지금 올리는 회차 (작품 키, 시즌, 회차)
         self.cancel_req = None    # 직접 취소한 (규칙, 키)
         self.subs_label = ""
+        self.resume = None        # 나눠 올리다 멈춘 항목을 이어 올릴 때 {n, done, vids} (서버를 다시 켠 뒤 등)
         self.flood_until = 0      # 텔레그램 요청 제한으로 이때까지 쉼
         self.started = 0          # 지금 항목을 시작한 때
         self.times = {}           # 지금 항목의 단계별 걸린 초 {받기, 인코딩, 나누기, 올리기, 대기, 준비}
@@ -704,6 +705,7 @@ class Mirror:
     _cur_sig = _lane_attr("cur_sig")
     _cur_ep = _lane_attr("cur_ep")
     _cancel_req = _lane_attr("cancel_req")
+    _resume = _lane_attr("resume")
 
     def __init__(self, plex_json, plex_src, tg_for, http, playing=None):
         """plex_json(src, path, params) -> dict, plex_src(id) -> (cfg, src), tg_for(id) -> TelegramSource, http() -> ClientSession,
@@ -1359,7 +1361,30 @@ class Mirror:
         state = load_state()
         rs = state["rules"].setdefault(job["rule"], {"done": [], "fails": {}})
         rs.setdefault("sending", {}).setdefault(job["key"], []).append(int(msg_id))
+        part = (rs.get("sending_parts") or {}).get(job["key"])
+        if part is not None:   # 아직 다 올리지 못한 조각의 메시지 (이어 올릴 때 이것만 지우고 그 조각부터 다시)
+            part.setdefault("cur", []).append(int(msg_id))
         save_state(state)
+
+    def _note_part(self, i, n, vid):
+        """나눈 조각 i/n(과 그 자막)을 다 올렸다 - 서버가 다시 켜지면 i+1번째부터 이어 올린다 (sending_parts)"""
+        job = self.current_job or {}
+        if not job or n < 2:
+            return
+        state = load_state()
+        rs = state["rules"].setdefault(job["rule"], {"done": [], "fails": {}})
+        cur = rs.setdefault("sending_parts", {}).get(job["key"]) or {}
+        vids = (cur.get("vids") or [])[:i - 1] + [vid]
+        rs["sending_parts"][job["key"]] = {"n": n, "done": i, "vids": vids, "cur": []}
+        save_state(state)
+
+    def _resumable(self, rule, key):
+        """지난번에 나눠 올리다 멈춘 것을 이어 올릴 수 있으면 {n, done, vids} (조각을 하나라도 다 올렸을 때만)"""
+        rs = load_state()["rules"].get(rule["id"]) or {}
+        p = (rs.get("sending_parts") or {}).get(key) or {}
+        if int(p.get("n") or 0) >= 2 and 0 < int(p.get("done") or 0) < int(p["n"]) and (rs.get("sending") or {}).get(key):
+            return {"n": int(p["n"]), "done": int(p["done"]), "vids": list(p.get("vids") or []), "cur": list(p.get("cur") or [])}
+        return None
 
     async def _drop_partial(self, rule, key):
         """그 항목이 지난번에 반쯤 올리다 만 메시지들을 채널에서 지운다 (없으면 아무것도 안 함). 지운 수"""
@@ -1377,6 +1402,7 @@ class Mirror:
             return 0
         state = load_state()
         ((state["rules"].get(rule["id"]) or {}).get("sending") or {}).pop(key, None)
+        ((state["rules"].get(rule["id"]) or {}).get("sending_parts") or {}).pop(key, None)
         save_state(state)
         log.info("자동 올리기: 반쯤 올린 메시지 %s개를 지웠습니다 (%s)", len(ids), key)
         return len(ids)
@@ -1466,8 +1492,16 @@ class Mirror:
             lane.job, lane.cur_sig, lane.cur_ep = job, "", None
             cancelled = False
             lane.cancel_req = None
+            lane.resume = None
             if rule:
-                await self._drop_partial(rule, job["key"])   # 지난번(서버가 다시 켜지기 전 등)에 반쯤 올린 것
+                # 지난번(서버가 다시 켜지기 전 등)에 반쯤 올린 것: 나눈 조각을 하나라도 다 올렸으면 그 다음 조각부터 이어서,
+                # 아니면 지우고 처음부터
+                lane.resume = self._resumable(rule, job["key"])
+                if lane.resume:
+                    log.info("자동 올리기: %s - 나눈 %d조각 중 %d조각을 이미 올림, %d번째부터 이어 올립니다",
+                             job["title"], lane.resume["n"], lane.resume["done"], lane.resume["done"] + 1)
+                else:
+                    await self._drop_partial(rule, job["key"])
             if not rule:
                 break
             try:
@@ -1556,6 +1590,7 @@ class Mirror:
             self._remember_skip(rs, job["key"], job["title"], note, job.get("sig", ""))
         elif ok:
             (rs.get("sending") or {}).pop(job["key"], None)   # 다 올렸다 - 지울 것 없음
+            (rs.get("sending_parts") or {}).pop(job["key"], None)
             if lane.cur_sig and rule and not job.get("test"):
                 ch = state.setdefault("sent_sigs", {}).setdefault(str(rule["channel"]), {})
                 ch[lane.cur_sig] = job["title"]
@@ -2252,7 +2287,23 @@ class Mirror:
         stem, ext = os.path.splitext(name)
         stream = ext.lower() in STREAMABLE
         sent_subs = 0
+        skip, r = 0, self._resume
+        if r:
+            if r.get("drop") or r["n"] != len(pieces):   # 지난번과 다르게 나뉨 - 올려 둔 조각을 지우고 처음부터
+                await self._drop_sent(client, peer)
+            else:
+                skip = r["done"]
+                msgs.extend(r.get("vids") or [])
+                if r.get("cur"):   # 다 못 올린 조각(영상만 올라가고 자막 전에 멈춤 등) - 그 메시지는 지우고 그 조각부터 다시
+                    try:
+                        await client.delete_messages(peer, r["cur"])
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("자동 올리기: 다 못 올린 조각의 메시지를 지우지 못했습니다: %s", e)
+                    self._forget_sent(r["cur"])
+            self._resume = None
         for i, (path, start, dur) in enumerate(pieces, 1):
+            if i <= skip:   # 지난번에 이미 올린 조각 (자막까지)
+                continue
             many = len(pieces) > 1
             vname = part_name(stem, i - 1, ext) if many else name
             cap = caption
@@ -2282,7 +2333,34 @@ class Mirror:
                 sub_msg = await client.send_file(peer, out, force_document=True, attributes=[DocumentAttributeFilename(sname)])
                 self._note_sent(getattr(sub_msg, "id", None))
                 sent_subs += 1
+            self._note_part(i, len(pieces), getattr(sent, "id", None))
         return sent_subs
+
+    def _forget_sent(self, ids):
+        job = self.current_job or {}
+        state = load_state()
+        rs = state["rules"].get(job.get("rule")) or {}
+        lst = (rs.get("sending") or {}).get(job.get("key"))
+        if lst is not None:
+            rs["sending"][job["key"]] = [x for x in lst if x not in set(ids)]
+        part = (rs.get("sending_parts") or {}).get(job.get("key"))
+        if part is not None:
+            part["cur"] = []
+        save_state(state)
+
+    async def _drop_sent(self, client, peer):
+        """지금 항목이 지난번에 올려 둔 메시지를 지운다 (이어 올리지 못할 때)"""
+        job = self.current_job or {}
+        state = load_state()
+        rs = state["rules"].get(job.get("rule")) or {}
+        ids = (rs.get("sending") or {}).pop(job.get("key"), None) or []
+        (rs.get("sending_parts") or {}).pop(job.get("key"), None)
+        if ids:
+            try:
+                await client.delete_messages(peer, ids)
+            except Exception as e:  # noqa: BLE001
+                log.warning("자동 올리기: 지난번에 올린 조각 %s개를 지우지 못했습니다: %s", len(ids), e)
+        save_state(state)
 
     async def _probe_subs(self, target, token=None):
         """파일 안의 자막 트랙 [{codec, lang}] (없으면 []). ffprobe가 없거나 못 열면 None"""
@@ -2473,6 +2551,9 @@ class Mirror:
         """시간으로 n조각 [(경로, 시작초, 길이초)]. 한도의 몇 배인지만큼 같은 길이로 나눈다 - 한도의 2배까지는 반씩(50%),
         3배까지는 3분의 1씩. 장면마다 용량이 달라 한 조각이라도 한도를 넘으면 하나 더 잘게 다시"""
         n = max(2, math.ceil(os.path.getsize(src_path) / limit))
+        r = self._resume
+        if r and not r.get("drop"):   # 이어 올리기: 지난번과 같은 수로 나눠야 같은 시간 구간이 된다 (이미 올린 조각과 겹치지 않게)
+            n = r["n"]
         while n <= MAX_PARTS:
             seg = duration / n
             out = []
@@ -2490,6 +2571,8 @@ class Mirror:
                 return out
             for p, _s, _d in out:
                 os.remove(p)
+            if r and not r.get("drop"):   # 같은 수로는 한도를 넘음 - 이어 올리지 못하고 처음부터 (올린 조각은 지운다)
+                r["drop"] = True
             n += 1
         raise RuntimeError(f"{MAX_PARTS}개로 나눠도 한도를 넘습니다.")
 
