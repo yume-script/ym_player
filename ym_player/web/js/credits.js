@@ -106,6 +106,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 169,
+        "version": "1.3.10",
+        "date": "2026-11-18",
+        "title": "폴더 감시·자동 올리기: Windows rclone/WinFsp 드라이브에서 realpath가 WinError 1005를 내도 경로를 만들기, FUSE-rclone 드라이브는 네트워크 드라이브로 (먼저 복사)"
+    },
+    {
         "pr": 168,
         "version": "1.3.9",
         "date": "2026-11-18",

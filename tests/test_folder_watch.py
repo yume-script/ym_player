@@ -461,3 +461,22 @@ def test_match_subtitle_files_loosely():
     names = [ep, "Show.S01E01.1080p.WEB-DL-GRP.mkv", "Show.S01E02.WEB.ko.srt", "Show.S01E01.WEB.ko.srt"]
     assert m(ep, names) == [("Show.S01E02.WEB.ko.srt", "ko", "srt")]
     assert m("Show.S01E03.mkv", ["Show.S01E03.mkv", "Show.S01E02.ko.srt"]) == []   # 다른 회차 자막은 안 붙인다
+
+
+def test_local_path_survives_winfsp_realpath_error(monkeypatch, tmp_path):
+    """Windows rclone/WinFsp 드라이브에서 realpath가 WinError 1005를 내도 경로를 만들고, 폴더 밖은 막는다"""
+    import os
+    from ym_player import folder_watch as fw
+
+    def broken(p, *a, **k):
+        e = OSError(None, "볼륨에 인식된 파일 시스템이 없습니다", p)
+        e.winerror = 1005
+        raise e
+    monkeypatch.setattr(os.path, "realpath", broken)
+    assert fw.local_path(str(tmp_path), "방송중/a.mp4") == os.path.join(str(tmp_path), "방송중", "a.mp4")
+    for bad in ("../x.mp4", "a/../../x.mp4", "/etc/passwd", "../" + tmp_path.name + "x/a.mp4"):
+        try:
+            fw.local_path(str(tmp_path), bad)
+        except fw.FolderError:
+            continue
+        raise AssertionError(bad)
