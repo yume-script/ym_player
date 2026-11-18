@@ -203,20 +203,29 @@ export function prepStatus(text) {
  * isCurrent(): 그사이 다른 영상을 고르면 false -> 기다리기를 그만두고 null
  */
 export async function prepareMp4(path, body = {}, isCurrent = () => true) {
+    const j = await startMp4(path, body);
+    return j ? waitMp4(j, isCurrent, (pct, left) => prepStatus(`MP4로 바꾸는 중... ${pct}%${left ? ` (남은 약 ${left >= 60 ? `${Math.ceil(left / 60)}분` : `${left}초`})` : ''}`
+        + ' - 한 번 바꾸면 다음부터는 바로 틉니다')) : null;
+}
+
+/** MP4 만들기를 시작만 하고 바로 돌아온다: {state: 'done'|'running', key, url, mode} 또는 null (만들 수 없는 형식·꺼 둠) */
+export async function startMp4(path, body = {}) {
     if (!preferMp4()) return null;
-    let j;
     try {
-        j = await api(path, { method: 'POST', json: { ...body, safari: IS_SAFARI } });
+        const j = await api(path, { method: 'POST', json: { ...body, safari: IS_SAFARI } });
+        return j && (j.state === 'running' || (j.state === 'done' && j.url)) ? j : null;
     } catch (e) {
         return null;
     }
+}
+
+/** startMp4로 시작한 작업이 끝날 때까지 기다린다 (onProgress(퍼센트, 남은 초)). 다 되면 작업, 실패·그만두면 null */
+export async function waitMp4(j, isCurrent = () => true, onProgress = null, every = 1000) {
     const deadline = Date.now() + 30 * 60 * 1000;
     while (j && j.state === 'running') {
         if (!isCurrent() || Date.now() > deadline) return null;
-        const pct = Math.round((j.progress || 0) * 100);
-        prepStatus(`MP4로 바꾸는 중... ${pct}%${j.left ? ` (남은 약 ${j.left >= 60 ? `${Math.ceil(j.left / 60)}분` : `${j.left}초`})` : ''}`
-            + ' - 한 번 바꾸면 다음부터는 바로 틉니다');
-        await new Promise((r) => setTimeout(r, 1000));
+        if (onProgress) onProgress(Math.round((j.progress || 0) * 100), j.left);
+        await new Promise((r) => setTimeout(r, every));
         try { j = await api(`/api/mp4/job/${j.key}`); } catch (e) { return null; }
     }
     return j && j.state === 'done' && j.url ? j : null;
