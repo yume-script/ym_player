@@ -106,6 +106,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 173,
+        "version": "1.3.14",
+        "date": "2026-11-19",
+        "title": "작업 파일 정리: 서버를 켤 때 지난번에 만들다 만 MP4(.part)와 자동 올리기 임시 폴더(받다 만 원본·나눈 조각)를 지우고, MP4 만들기를 그만두면 그 파일도 지우기 + 큰 작업 뒤와 10분마다 쓰고 난 메모리를 OS에 돌려주기(스왑 줄이기)"
+    },
+    {
         "pr": 171,
         "version": "1.3.13",
         "date": "2026-11-18",

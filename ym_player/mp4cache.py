@@ -18,7 +18,7 @@ import os
 import re
 import time
 
-from . import config_store, transcode
+from . import config_store, memtrim, transcode
 
 log = logging.getLogger("ym_player.mp4cache")
 MODES = ("remux", "audio", "hevc")
@@ -192,12 +192,18 @@ async def _watch(j, tmp, final):
     except asyncio.CancelledError:
         if j.proc.returncode is None:
             j.proc.kill()
+        j.state, j.error = "error", "그만둠"
+        try:
+            os.remove(tmp)   # 만들다 만 파일은 남기지 않는다
+        except OSError:
+            pass
         raise
     if j.proc.returncode == 0 and os.path.isfile(tmp) and os.path.getsize(tmp) > 0:
         os.replace(tmp, final)
         j.state, j.finished = "done", time.time()
         log.info("MP4로 바꿈 (%s, %.0f초 걸림, %.1fMB)", j.key, j.finished - j.started, os.path.getsize(final) / 1048576)
         await asyncio.to_thread(evict)
+        await memtrim.release_async()   # 큰 작업 뒤 쓰고 난 메모리를 OS에
     else:
         j.state = "error"
         j.error = (errs[-1] if errs else f"ffmpeg 종료 코드 {j.proc.returncode}")[:300]
@@ -206,6 +212,25 @@ async def _watch(j, tmp, final):
             os.remove(tmp)
         except OSError:
             pass
+
+
+def sweep_partial():
+    """만들다 만 MP4(.part) 지우기 - 서버를 끄거나 죽어서 남은 것 (서버를 켤 때, 만드는 중인 것은 그대로). 지운 수"""
+    try:
+        names = [n for n in os.listdir(root()) if n.endswith(".part")]
+    except OSError:
+        return 0
+    n = 0
+    for name in names:
+        key = name.split(".", 1)[0]
+        if _JOBS.get(key) and _JOBS[key].state == "running":
+            continue
+        try:
+            os.remove(os.path.join(root(), name))
+            n += 1
+        except OSError:
+            pass
+    return n
 
 
 def cancel(key):

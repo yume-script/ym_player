@@ -44,7 +44,7 @@ from urllib.parse import quote, urlencode
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
 from yarl import URL
 
-from . import __version__, activity, auth, bookoasis, brunch, perf, cctv, chatfind, config_store, discord_feed, folder_watch, iptv, kradio, mcp, media_cache, mp4cache, plex_to_tg, podcast, prefs, radio, recipe, subtitles, telegram_src, tmdb, transcode, updates
+from . import __version__, activity, auth, bookoasis, brunch, perf, cctv, chatfind, config_store, discord_feed, folder_watch, iptv, kradio, mcp, media_cache, memtrim, mp4cache, plex_to_tg, podcast, prefs, radio, recipe, subtitles, telegram_src, tmdb, transcode, updates
 
 log = logging.getLogger("ym_player")
 
@@ -191,6 +191,7 @@ UPDATE_TASK = web.AppKey("update_task", asyncio.Task)
 DISCORD = web.AppKey("discord", discord_feed.Feed)   # 디스코드 채널 새 글 -> 아래쪽 흐르는 글
 DISCORD_TASK = web.AppKey("discord_task", asyncio.Task)
 ACTIVITY = web.AppKey("activity", activity.Activity)   # 지금 재생 중인 스트림 수 (/api/activity)
+MEMTRIM_TASK = web.AppKey("memtrim_task", asyncio.Task)
 MIRROR = web.AppKey("mirror", plex_to_tg.Mirror)   # Plex 새 동영상 -> 텔레그램 채널 자동 올리기
 MIRROR_TASK = web.AppKey("mirror_task", asyncio.Task)
 PROBES = web.AppKey("probes", dict)  # (소스id, 채널, 메시지) -> 돌고 있는 ffprobe (같은 영상을 겹쳐 보지 않게)  # 소스 id -> telegram_src.TelegramSource (연결을 계속 유지)
@@ -4130,7 +4131,16 @@ async def _on_startup(app):
     media_cache.STORE.configure(config_store.load().get("cache"))
     _apply_general(app, config_store.load().get("general"))
     shutil.rmtree(_hls_root(), ignore_errors=True)  # 지난번에 남은 HLS 변환 파일
+    # 서버를 끄거나 죽어서 남은 작업 파일: 만들다 만 MP4(.part), 자동 올리기의 받다 만 원본·나눈 조각·인코딩 결과
+    # (나눠 올리기를 이어 할 때도 원본에서 다시 나누므로 지워도 된다)
+    n_part = mp4cache.sweep_partial()
+    tg_tmp = os.path.join(config_store.DATA_DIR, "plex_to_tg_tmp")
+    n_tg = len(os.listdir(tg_tmp)) if os.path.isdir(tg_tmp) else 0
+    shutil.rmtree(tg_tmp, ignore_errors=True)
+    if n_part or n_tg:
+        log.info("지난번에 남은 작업 파일 정리: 만들다 만 MP4 %d개, 자동 올리기 임시 폴더 %d개", n_part, n_tg)
     app[HLS_SWEEPER] = asyncio.ensure_future(_hls_sweeper(app))
+    app[MEMTRIM_TASK] = asyncio.ensure_future(memtrim.loop())   # 10분마다 쓰고 난 메모리를 OS에 (스왑 줄이기)
     app[UPDATE_TASK] = asyncio.ensure_future(app[UPDATES].loop(app[HTTP]))
     app[DISCORD_TASK] = asyncio.ensure_future(app[DISCORD].loop(app[HTTP]))
     app[MIRROR_TASK] = asyncio.ensure_future(app[MIRROR].loop())
@@ -4170,7 +4180,7 @@ async def iptv_chat_url_send(request):
 
 async def _on_cleanup(app):
     await app[CHAT_FINDER].close()
-    for task in (app.get(HLS_SWEEPER), app.get(UPDATE_TASK), app.get(DISCORD_TASK), app.get(MIRROR_TASK), app.get(WARM_TASK)):
+    for task in (app.get(HLS_SWEEPER), app.get(UPDATE_TASK), app.get(DISCORD_TASK), app.get(MIRROR_TASK), app.get(WARM_TASK), app.get(MEMTRIM_TASK)):
         if task:
             task.cancel()
     for job in list(app[HLS_JOBS].values()):
