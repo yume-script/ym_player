@@ -1966,3 +1966,25 @@ def test_variety_episode_split_in_two(monkeypatch, tmp_path):
     eps = telegram_src.series_episodes("tg", 1, key)["episodes"]
     assert [(e["msg"], e["ep"], e["duration"], e.get("parts_count")) for e in eps] == [(1, 24, 120, 2), (3, 25, 120, 2)]
     assert telegram_src.series_of("tg", 1, 2)["next"]["msg"] == 3     # 둘째 조각 다음은 다음 회차
+
+
+def test_list_uses_found_movie_title(monkeypatch, tmp_path):
+    """목록 제목: 영화는 찾아 둔 작품 제목(Plex 자동 올리기 정보 / TMDB) - 상세 화면과 같게, 회차는 그대로"""
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    telegram_src._migrated.discard(str(tmp_path))
+    telegram_src._GROUPS.clear()
+    rows = [(1, "The Naked Gun (2025)", "The Naked Gun (2025).mp4"),
+            (2, "Weapons (2025)", "Weapons.2025.1080p.mkv"),
+            (3, "Eden (2024)", "Eden.2024.mkv"),
+            (4, "무빙 S01E02", "무빙.S01E02.mp4")]
+    with telegram_src.db() as conn:
+        conn.executemany(
+            "INSERT INTO videos(source,channel,msg,title,caption,file_name,mime,duration,size,width,height,date,has_thumb,kind)"
+            " VALUES('tg',1,?,?,'',?,'video/mp4',60,1,1,1,'2026-11-19T01:00:00+00:00',0,'video')", rows)
+    telegram_src.plex_meta_put("tg", 1, [1], {"kind": "movie", "title": "총알 탄 사나이", "poster": "/p.jpg"})
+    mk = telegram_src.meta_target_for("Weapons (2025)", "Weapons.2025.1080p.mkv")["mkey"]
+    telegram_src.meta_put("tg", mk, "movie", 1078605, {"title": "웨폰", "poster": "https://image.tmdb.org/t/p/w500/a.jpg"})
+    items, _ = telegram_src.query_videos("tg", [1], kind="video")
+    by = {x["msg"]: x for x in items}
+    assert by[1]["meta_title"] == "총알 탄 사나이" and by[2]["meta_title"] == "웨폰"
+    assert "meta_title" not in by[3] and "meta_title" not in by[4]

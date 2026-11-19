@@ -106,6 +106,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 175,
+        "version": "1.3.16",
+        "date": "2026-11-19",
+        "title": "텔레그램 목록: 영화 제목을 상세 화면과 같은 작품 제목(\"총알 탄 사나이\")으로, 둘째 줄의 채널 위치는 빼고, 셋째 줄은 파일 이름 대신 등록일"
+    },
+    {
         "pr": 174,
         "version": "1.3.15",
         "date": "2026-11-19",

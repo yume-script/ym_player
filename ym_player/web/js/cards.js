@@ -94,8 +94,8 @@ export function posterCard(item, { wide = false } = {}) {
         art,
         h('div', { class: 'card-title', text: item.title, title: item.title }),
         item.subtitle ? h('div', { class: 'card-sub', text: item.subtitle }) : null,
-        // 텔레그램 파일 이름(확장자까지) - 격자 보기에서만 보인다 (app.css .grid .card-file)
-        item.fileName ? h('div', { class: 'card-file', text: item.fileName, title: item.fileName }) : null);
+        // 셋째 줄 - 격자 보기에서만 보인다 (app.css .grid .card-file): 소스가 준 extraLine(텔레그램 영상: 등록일), 없으면 파일 이름
+        item.extraLine || item.fileName ? h('div', { class: 'card-file', text: item.extraLine || item.fileName, title: item.fileName || item.extraLine }) : null);
 }
 
 /** 세부/테이블 보기에 쓸 정보 (Plex 메타데이터 / 텔레그램 색인) */
@@ -145,7 +145,9 @@ export function listItem(item, mode, playlist = null) {
     if (mode === 'table') {
         return h('div', { class: 'table-row', role: 'row', on: { click: open } },
             card,
-            h('div', { class: 'table-title' }, h('b', { text: item.title }), item.subtitle ? h('small', { text: item.subtitle }) : null),
+            // (좁은 화면은 날짜 칸이 없어 extraLine(등록일)을 부제 뒤에 붙인다)
+            h('div', { class: 'table-title' }, h('b', { text: item.title }),
+                item.subtitle || item.extraLine ? h('small', { text: [item.subtitle, item.extraLine].filter(Boolean).join(' · ') }) : null),
             h('span', { class: 'table-cell', text: f.year || f.date }),
             h('span', { class: 'table-cell', text: f.length }),
             status);

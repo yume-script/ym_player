@@ -207,14 +207,14 @@ export class TelegramProvider {
                 raw: v,
             };
         }
-        // 나눠 올린 조각 묶음은 서버가 목록에서 하나로 합쳐 준다 (parts_count개 파일)
-        const sub = [this.channelTitle(v.channel), (v.date || '').slice(0, 10), v.duration ? fmtDuration(v.duration * 1000) : '',
-            v.parts_count > 1 ? `${v.parts_count}개 파일` : ''].filter(Boolean).join(' · ');
+        // 나눠 올린 조각 묶음은 서버가 목록에서 하나로 합쳐 준다 (parts_count개 파일).
+        // 둘째 줄은 길이·파일 수 (채널 위치는 이미 보고 있는 곳이라 뺌), 셋째 줄은 파일 이름 대신 등록일
+        const sub = [v.duration ? fmtDuration(v.duration * 1000) : '', v.parts_count > 1 ? `${v.parts_count}개 파일` : ''].filter(Boolean).join(' · ');
         return {
             pid: this.id,
             id,
             type: 'movie',            // 카드/상세에서 "재생 가능한 단일 영상"으로 다루게
-            title: v.title,
+            title: v.meta_title || v.title,   // 영화는 찾아 둔 작품 제목(상세 화면과 같게 - "총알 탄 사나이"), 없으면 캡션·파일 이름
             subtitle: sub,
             thumb: v.plex_poster || thumb,
             wideThumb: thumb,
@@ -226,6 +226,7 @@ export class TelegramProvider {
             isNew: !!(seenBefore() && v.date && v.date > seenBefore() && !v.watched && !(v.position > 0)),
             posterImg,
             fileName: (v.file_name || '') + (v.parts_count > 1 ? ` 외 ${v.parts_count - 1}개` : ''),
+            extraLine: v.date ? `${v.date.slice(0, 10)} 등록` : '',
             raw: v,
         };
     }
