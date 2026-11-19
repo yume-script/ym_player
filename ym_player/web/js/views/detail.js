@@ -117,6 +117,7 @@ export async function renderDetail(main, [pid, id], _query, ctx) {
     if (d.genres.length) facts.push(['장르', d.genres.join(', ')]);
     if (d.subtitles && d.subtitles.length) facts.push(['자막', d.subtitles.join(', ')]);
     for (const f of d.extraFacts || []) facts.push(f);
+    if (d.metaSource) facts.push(['정보 출처', d.metaSource.label, d.metaSource.url]);
 
     const hero = h('div', { class: 'detail-hero' },
         poster,
@@ -130,7 +131,8 @@ export async function renderDetail(main, [pid, id], _query, ctx) {
             actions,
             d.tagline ? h('p', { class: 'detail-tagline', text: d.tagline }) : null,
             d.summary ? summaryBlock(d.summary) : null,
-            facts.length ? h('dl', { class: 'detail-facts' }, facts.map(([k, v]) => [h('dt', { text: k }), h('dd', { text: v })])) : null));
+            facts.length ? h('dl', { class: 'detail-facts' }, facts.map(([k, v, href]) => [h('dt', { text: k }),
+                href ? h('dd', {}, h('a', { href, target: '_blank', rel: 'noopener', text: v })) : h('dd', { text: v })])) : null));
 
     const page = h('div', { class: 'page detail' },
         h('div', { class: 'detail-bg', style: d.art ? { backgroundImage: `url("${d.art}")` } : {} }),

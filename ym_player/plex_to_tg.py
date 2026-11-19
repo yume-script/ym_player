@@ -1740,7 +1740,7 @@ class Mirror:
         if hit and (hit["manual"] or (hit["data"] and not force)):
             return "cached"
         key = self._tmdb_key(tg_id)
-        from . import anilist, tmdb
+        from . import metasource, tmdb
         tid, data = None, None
         if key:
             api = tmdb.Tmdb(self.http(), key)
@@ -1749,18 +1749,17 @@ class Mirror:
                 data = await api.details(tgt["kind"], tid) if tid else None
             except Exception as e:  # noqa: BLE001 - 연결 실패·키 오류 등은 나중에 다시
                 return f"TMDB 오류: {e}"[:200]
-        if not data:   # TMDB에서 못 찾았거나 키가 없으면 애니는 AniList에서
-            try:
-                data = await anilist.find(self.http(), tgt["titles"], tgt.get("year") or "", tgt["kind"])
-            except Exception as e:  # noqa: BLE001 - 요청 제한·연결 실패: 못 찾은 것으로 적지 않고 나중에 다시
-                return f"TMDB 오류: AniList {e}"[:200] if key else f"AniList 오류: {e}"[:200]
+        if not data:   # TMDB에서 못 찾았거나 키가 없으면 애니는 AniList, 드라마·예능은 위키백과에서
+            data, failed = await metasource.fallback(self.http(), tgt)
+            if failed and not data:   # 요청 제한·연결 실패: 못 찾은 것으로 적지 않고 나중에 다시
+                return "TMDB 오류: AniList·위키백과에 묻지 못함" if key else "AniList·위키백과 오류"
             tid = None
         if not data:
-            return "TMDB에서 못 찾음" if key else "TMDB 키 없음 (설정 > 소스 > 텔레그램) · AniList에서도 못 찾음"
+            return "TMDB에서 못 찾음" if key else "TMDB 키 없음 (설정 > 소스 > 텔레그램) · AniList·위키백과에서도 못 찾음"
         telegram_src.meta_put(tg_id, tgt["mkey"], tgt["kind"], tid, data)
         if not data.get("poster"):
             return "TMDB에 포스터 없음"
-        return "ok-anilist" if data.get("source") == "anilist" else "ok"
+        return {"anilist": "ok-anilist", "wikipedia": "ok-wiki"}.get(data.get("source"), "ok")
 
     def _poster_note(self, tg_id, tgt, title, err):
         """못 찾은 포스터를 기억해 POSTER_RETRY 간격으로 다시 찾는다 (다 해도 못 찾으면 '포스터 못 찾음'에 남겨 직접 고르게)"""
@@ -1796,9 +1795,9 @@ class Mirror:
         if not tgt:
             return ""
         res = await self._lookup_poster(rule["tg"], tgt)
-        if res in ("ok", "ok-anilist", "cached"):
+        if res in ("ok", "ok-anilist", "ok-wiki", "cached"):
             self._poster_found(rule["tg"], tgt["mkey"])
-            return {"ok": "포스터 찾음 (TMDB)", "ok-anilist": "포스터 찾음 (AniList)"}.get(res, "")
+            return {"ok": "포스터 찾음 (TMDB)", "ok-anilist": "포스터 찾음 (AniList)", "ok-wiki": "포스터 찾음 (위키백과)"}.get(res, "")
         self._poster_note(rule["tg"], tgt, title, res)
         return f"포스터 못 찾음 ({res}) - 나중에 다시 찾음"
 
@@ -1810,7 +1809,7 @@ class Mirror:
         due = [p for p in (load_state().get("posters") or {}).values() if not p.get("gave_up") and (p.get("at") or 0) <= now][:20]
         for p in due:
             res = await self._lookup_poster(p["tg"], p)
-            if res in ("ok", "ok-anilist", "cached"):
+            if res in ("ok", "ok-anilist", "ok-wiki", "cached"):
                 self._poster_found(p["tg"], p["mkey"])
             else:
                 self._poster_note(p["tg"], p, p.get("title") or p["mkey"], res)
@@ -1846,7 +1845,7 @@ class Mirror:
                         break
                     tried += 1
                     res = await self._lookup_poster(s["id"], t, force=t["have"])
-                    if res in ("ok", "ok-anilist"):
+                    if res in ("ok", "ok-anilist", "ok-wiki"):
                         found += 1
                     elif res == "TMDB에서 못 찾음":   # 못 찾은 것도 적어 두어 AUTO_TMDB_MISS 뒤에 다시
                         telegram_src.meta_put(s["id"], t["mkey"], t["kind"], None, None)
@@ -1882,7 +1881,7 @@ class Mirror:
                 break
             out["tried"] += 1
             res = await self._lookup_poster(sid, t, force=True)
-            if res in ("ok", "ok-anilist", "cached"):
+            if res in ("ok", "ok-anilist", "ok-wiki", "cached"):
                 out["found"] += 1
             elif res == "TMDB에서 못 찾음":
                 telegram_src.meta_put(sid, t["mkey"], t["kind"], None, None)
@@ -1924,7 +1923,7 @@ class Mirror:
             job["total"] = len(todo)
             for tg_id, t in todo:
                 res = await self._lookup_poster(tg_id, t, force=True)
-                if res in ("ok", "ok-anilist", "cached"):
+                if res in ("ok", "ok-anilist", "ok-wiki", "cached"):
                     job["found"] += 1
                     self._poster_found(tg_id, t["mkey"])
                 else:
