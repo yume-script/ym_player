@@ -1437,7 +1437,7 @@ def _first_part(found, how):
     return {**out[0], "all": out}
 
 
-def _plex_posters(conn, sid, keys):
+def _plex_posters(conn, sid, keys, titles=None):
     """{(채널, 메시지): 포스터 주소} - 목록 카드용. Plex 자동 올리기가 붙인 Plex 포스터, 없으면 찾아 둔 TMDB 포스터
     (rclone 자동 올리기는 올릴 때 TMDB에서 찾아 둔다 - 정보 고치기로 직접 고른 것도 여기로)"""
     keys = list(keys)
@@ -1448,17 +1448,22 @@ def _plex_posters(conn, sid, keys):
         msgs = [m for cc, m in keys if cc == c]
         for r in conn.execute(f"SELECT msg, meta FROM plex_meta WHERE source=? AND channel=? AND msg IN ({','.join('?' * len(msgs))})",
                               [sid, c, *msgs]):
-            poster = (json.loads(r["meta"]) or {}).get("poster")
+            meta = json.loads(r["meta"]) or {}
+            poster = meta.get("poster")
             if poster:
                 out[(c, r["msg"])] = poster
-    missing = [k for k in keys if k not in out]
+            if titles is not None and meta.get("kind") == "movie" and meta.get("title"):   # Plex의 (우리말) 영화 제목
+                titles[(c, r["msg"])] = str(meta["title"])
+    missing = [k for k in keys if k not in out or (titles is not None and k not in titles)]
     if missing:
-        out.update(_tmdb_posters(conn, sid, missing))
+        got = _tmdb_posters(conn, sid, missing, titles)
+        out.update({k: v for k, v in got.items() if k not in out})
     return out
 
 
-def _tmdb_posters(conn, sid, keys):
-    """{(채널, 메시지): TMDB 포스터} - 찾아 둔 작품 정보(meta 표)에서. 회차는 작품(tv:키), 그 밖은 이름·연도(movie:…)"""
+def _tmdb_posters(conn, sid, keys, titles=None):
+    """{(채널, 메시지): TMDB 포스터} - 찾아 둔 작품 정보(meta 표)에서. 회차는 작품(tv:키), 그 밖은 이름·연도(movie:…).
+    titles(dict)를 주면 영화는 찾아 둔 우리말 제목도 {(채널, 메시지): 제목}으로 채운다 (목록 제목)"""
     want = {}
     for c in {c for c, _m in keys}:
         msgs = [m for cc, m in keys if cc == c]
@@ -1478,14 +1483,19 @@ def _tmdb_posters(conn, sid, keys):
     if not want:
         return {}
     mks = sorted(set(want.values()))
-    posters = {}
+    posters, names = {}, {}
     for i in range(0, len(mks), 400):
         part = mks[i:i + 400]
         for r in conn.execute(f"SELECT mkey, data FROM meta WHERE source=? AND data IS NOT NULL AND mkey IN ({','.join('?' * len(part))})",
                               [sid, *part]):
-            poster = (json.loads(r["data"]) or {}).get("poster") or ""
+            data = json.loads(r["data"]) or {}
+            poster = data.get("poster") or ""
             if poster:
                 posters[r["mkey"]] = poster.replace("/w500/", "/w342/")
+            if r["mkey"].startswith("movie:") and data.get("title"):
+                names[r["mkey"]] = str(data["title"])
+    if titles is not None:
+        titles.update({k: names[mk] for k, mk in want.items() if mk in names and k not in titles})
     return {k: posters[mk] for k, mk in want.items() if mk in posters}
 
 
@@ -1632,7 +1642,8 @@ def query_videos(sid, channels, offset=0, limit=40, q="", sort="latest", user=""
         prog = _progress_map(conn, sid, rows, user)
         posters = _poster_map(conn, sid, rows)
         series = _series_map(conn, sid, rows, user) if group else {}
-        plex = _plex_posters(conn, sid, [(r["channel"], r["msg"]) for r in rows])
+        names = {}
+        plex = _plex_posters(conn, sid, [(r["channel"], r["msg"]) for r in rows], names)
         out = [_row(r, prog, posters) for r in rows]
         if kind != "image":   # 나눠 올린 조각들은 목록에서 하나로
             total -= _merge_parts(conn, sid, out)
@@ -1642,6 +1653,8 @@ def query_videos(sid, channels, offset=0, limit=40, q="", sort="latest", user=""
             d["series"] = s
         if (d["channel"], d["msg"]) in plex:
             d["plex_poster"] = plex[(d["channel"], d["msg"])]
+        if (d["channel"], d["msg"]) in names:   # 영화: 찾아 둔 작품 제목 (상세 화면과 같게 - 파일 이름·캡션 대신)
+            d["meta_title"] = names[(d["channel"], d["msg"])]
     return out, total
 
 
@@ -1859,7 +1872,8 @@ def continue_watching(sid, channels, limit=20, user=""):
                   AND (p.position > 30 OR (v.kind IN ('book','doc') AND p.position > 0))
                 ORDER BY p.updated DESC LIMIT ?""", [sid, user, *channels, limit]).fetchall()
         posters = _poster_map(conn, sid, rows)
-        plex = _plex_posters(conn, sid, [(r["channel"], r["msg"]) for r in rows])
+        names = {}
+        plex = _plex_posters(conn, sid, [(r["channel"], r["msg"]) for r in rows], names)
     if HIDE_BL:
         with db() as conn:
             hidden = _bl_checker(conn, sid, channels)
@@ -1870,6 +1884,8 @@ def continue_watching(sid, channels, limit=20, user=""):
         pages = d.pop("pages", 0)
         if (r["channel"], r["msg"]) in plex:
             d["plex_poster"] = plex[(r["channel"], r["msg"])]
+        if (r["channel"], r["msg"]) in names:
+            d["meta_title"] = names[(r["channel"], r["msg"])]
         if d["kind"] in ("book", "doc"):
             d["duration"] = pages
         out.append(d)

@@ -428,3 +428,28 @@ def test_split_movie_resume_and_part_list(page, server):
     page.goto(server + "/#/item/tg/777%3A10")
     page.wait_for_selector(".track-row")
     assert page.locator(".track-row").count() == 3 and "(2/3)" in page.inner_text(".track-list")
+
+
+def test_telegram_list_title_and_lines(page, server):
+    """텔레그램 목록: 영화 제목은 찾아 둔 작품 제목, 둘째 줄에 채널 위치 없음, 셋째 줄(격자)은 파일 이름 대신 등록일"""
+    set_sources(page, server, [{"id": "tg", "type": "telegram", "name": "텔레", "api_id": "1", "api_hash": "h", "enabled": True,
+                                "channels": [{"id": 777, "title": "영화 > 최신"}]}])
+    items = [{"channel": 777, "msg": 10, "kind": "video", "title": "The Naked Gun (2025)", "meta_title": "총알 탄 사나이",
+              "file_name": "(1/2) The Naked Gun (2025).mp4", "date": "2026-11-19T01:00:00+00:00", "duration": 5160, "size": 1,
+              "parts_count": 2, "position": 0, "watched": False, "caption": "", "poster": 0},
+             {"channel": 777, "msg": 9, "kind": "video", "title": "얼굴 FHD", "file_name": "face.mp4",
+              "date": "2026-11-18T01:00:00+00:00", "duration": 6180, "size": 1, "position": 0, "watched": False, "caption": "", "poster": 0}]
+
+    def route(r):
+        u = r.request.url
+        if "/api/tg/tg/videos" in u:
+            return r.fulfill(json={"success": True, "items": items, "total": len(items)})
+        return r.continue_()
+    page.route("**/api/tg/**", route)
+    page.goto(server + "/#/library/tg/777")
+    page.wait_for_selector(".card-title")
+    titles = page.locator(".card-title").all_inner_texts()
+    assert titles[:2] == ["총알 탄 사나이", "얼굴 FHD"]
+    subs = page.locator(".card-sub").all_inner_texts()
+    assert subs[0] == "1시간 26분 · 2개 파일" and "영화 > 최신" not in " ".join(subs)
+    assert page.locator(".card-file").first.inner_text() == "2026-11-19 등록"
