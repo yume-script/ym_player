@@ -59,7 +59,8 @@ def available():
 
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".mpeg", ".mpg", ".ts"}
 # 브라우저 <video>에 넘길 Content-Type. mkv는 Chrome의 webm(Matroska) 파서가 대개 읽어서 webm으로 알린다
-MIME_FOR_BROWSER = {"video/x-matroska": "video/webm", "video/quicktime": "video/mp4", "video/x-m4v": "video/mp4"}
+MIME_FOR_BROWSER = {"video/x-matroska": "video/webm", "video/quicktime": "video/mp4", "video/x-m4v": "video/mp4",
+                    "audio/x-flac": "audio/flac", "audio/x-m4a": "audio/mp4", "audio/mp3": "audio/mpeg", "audio/x-wav": "audio/wav"}
 
 
 class TgError(Exception):
@@ -201,6 +202,8 @@ DOC_EXTS = {".pdf": "application/pdf", ".epub": "application/epub+zip"}
 DOC_MAX_BYTES = 2 * 1024 * 1024 * 1024
 # 작품 정보 파일: 채널에 "웹툰명.yaml"(.yml)로 올린 것 -> 같은 이름의 작품(시리즈) 상세 화면에 보여 준다 (목록에는 안 나옴)
 META_EXTS = {".yaml", ".yml"}
+# 음악 (채널 종류 "음악"에서 보임) - 텔레그램 오디오 속성(제목·아티스트) + BookOasis Assistant가 붙이는 캡션("이름: 값" 줄)
+AUDIO_EXTS = {".mp3", ".flac", ".m4a", ".aac", ".ogg", ".oga", ".opus", ".wav", ".wma", ".ape", ".aiff", ".aif", ".alac"}
 META_MAX_BYTES = 8 * 1024 * 1024   # 첫 회차 표지(base64)가 들어 있어 클 수 있다
 
 
@@ -236,10 +239,16 @@ def message_to_media(msg):
         return None
     mime = str(getattr(doc, "mime_type", "") or "").lower()
     file_name, duration, width, height, is_video = "", 0, 0, 0, False
+    audio = None
     for attr in getattr(doc, "attributes", None) or []:
         name = _attr_name(attr)
         if name in ("DocumentAttributeAnimated", "DocumentAttributeSticker"):
             return None
+        if name == "DocumentAttributeAudio":
+            if getattr(attr, "voice", False):   # 음성 메시지는 음악이 아님
+                return None
+            audio = {"title": fix_text(getattr(attr, "title", "") or ""), "performer": fix_text(getattr(attr, "performer", "") or ""),
+                     "duration": int(getattr(attr, "duration", 0) or 0)}
         if name == "DocumentAttributeVideo":
             if getattr(attr, "round_message", False):
                 return None
@@ -287,6 +296,9 @@ def message_to_media(msg):
                 "mime": doc_mime, "duration": 0, "size": int(getattr(doc, "size", 0) or 0),
                 "width": 0, "height": 0, "date": date.isoformat() if date else "",
                 "has_thumb": 1 if (getattr(doc, "thumbs", None) or []) else 0}
+    if not is_video and (audio is not None or ext in AUDIO_EXTS or (not ext and mime.startswith("audio/"))) \
+            and ext not in VIDEO_EXTS:
+        return _audio_item(msg, doc, file_name, mime, audio or {})
     if not (is_video or mime.startswith("video/") or ext in VIDEO_EXTS):
         return None
     caption, title = _caption_title(msg, file_name, "제목 없음")
@@ -305,6 +317,67 @@ def message_to_media(msg):
         "date": date.isoformat() if date else "",
         "has_thumb": 1 if (getattr(doc, "thumbs", None) or []) else 0,
     }
+
+
+def _audio_item(msg, doc, file_name, mime, audio):
+    """음악 파일 -> 색인용 dict (kind audio). 제목은 캡션의 '🎵 곡' > 오디오 속성 제목 > 파일 이름.
+    아티스트(오디오 속성)는 캡션에 '아티스트:' 줄이 없으면 그 줄을 덧붙여 둔다 (music_info가 캡션만 읽게)"""
+    caption = fix_text(getattr(msg, "message", "") or "")
+    info = music_info(caption)
+    title = info.get("title") or audio.get("title") or os.path.splitext(file_name)[0] or "제목 없음"
+    if audio.get("performer") and not info.get("artist"):
+        caption = (caption + "\n" if caption else "") + f"아티스트: {audio['performer']}"
+    date = getattr(msg, "date", None)
+    return {"msg": int(msg.id), "kind": "audio", "title": title[:300], "caption": caption[:4000], "file_name": file_name,
+            "mime": mime or "audio/mpeg", "duration": int(audio.get("duration") or 0), "size": int(getattr(doc, "size", 0) or 0),
+            "width": 0, "height": 0, "date": date.isoformat() if date else "",
+            "has_thumb": 1 if (getattr(doc, "thumbs", None) or []) else 0}
+
+
+# 캡션의 "이름: 값" 줄 (BookOasis Assistant 음악 규칙 - tgup/music.py의 LABELS와 같게)
+MUSIC_LABELS = {"아티스트": "artist", "앨범": "album", "앨범 아티스트": "album_artist", "트랙": "track", "디스크": "disc",
+                "장르": "genre", "작곡": "composer", "작사": "lyricist", "편곡": "arranger", "앨범ID": "album_id", "연도": "year"}
+
+
+def music_info(caption, title=""):
+    """음악 캡션 -> {title, artist, album, album_artist, track, track_total, disc, disc_total, year, genre, composer, lyricist,
+    arranger, album_id}. '앨범: 이름 (2017)'의 연도는 떼어 year로. 없는 칸은 넣지 않는다"""
+    out = {}
+    rows = str(caption or "").splitlines()
+    if rows and rows[0].startswith("🎵"):
+        out["title"] = rows[0][1:].strip()
+    for row in rows:
+        k, sep, v = row.partition(":")
+        field = MUSIC_LABELS.get(k.strip()) if sep else None
+        if field and v.strip():
+            out[field] = v.strip()
+    if out.get("album"):
+        m = re.match(r"^(.*?)\s*\((1[89]\d{2}|20\d{2})\)\s*$", out["album"])
+        if m:
+            out["album"] = m.group(1)
+            out.setdefault("year", m.group(2))
+    for f in ("track", "disc"):
+        m = re.match(r"^\s*(\d{1,3})(?:\s*/\s*(\d{1,3}))?", out.get(f, ""))
+        if m:
+            out[f] = int(m.group(1))
+            if m.group(2):
+                out[f + "_total"] = int(m.group(2))
+        else:
+            out.pop(f, None)
+    if title and not out.get("title"):
+        out["title"] = title
+    return out
+
+
+def album_key(info):
+    """같은 앨범을 묶는 키 ("m:" + 앨범ID, 없으면 앨범 아티스트|아티스트 + 앨범 + 연도). 앨범 이름이 없으면 None (낱곡)"""
+    if info.get("album_id"):
+        return "m:" + re.sub(r"[^0-9A-Za-z_-]", "", info["album_id"])[:64]
+    if not info.get("album"):
+        return None
+    who = (info.get("album_artist") or info.get("artist") or "").casefold()
+    base = "|".join([re.sub(r"\s+", " ", who).strip(), re.sub(r"\s+", " ", info["album"].casefold()).strip(), str(info.get("year") or "")])
+    return "m:" + hashlib.sha1(base.encode("utf-8")).hexdigest()[:12]
 
 
 def message_to_video(msg):
@@ -428,6 +501,11 @@ def db():
             with conn:
                 conn.execute("DELETE FROM sync_state")
             conn.execute("PRAGMA user_version = 14")
+        if conn.execute("PRAGMA user_version").fetchone()[0] < 15:
+            # 음악 파일(mp3·flac…)도 색인한다 -> 예전에 훑은 채널은 그 파일을 건너뛰었으니 처음부터 다시 훑게
+            with conn:
+                conn.execute("DELETE FROM sync_state")
+            conn.execute("PRAGMA user_version = 15")
     return conn
 
 
@@ -720,12 +798,18 @@ def _display_title(text):
 
 
 def _link_series(conn, sid, channel):
-    rows = conn.execute("SELECT msg, kind, title, file_name FROM videos WHERE source=? AND channel=? AND kind IN ('video','book') "
-                        "ORDER BY msg", (sid, channel)).fetchall()
+    rows = conn.execute("SELECT msg, kind, title, file_name, caption FROM videos WHERE source=? AND channel=? "
+                        "AND kind IN ('video','book','audio') ORDER BY msg", (sid, channel)).fetchall()
     posters = {p["video"]: p["image"] for p in conn.execute(
         "SELECT video, image FROM posters WHERE source=? AND channel=?", (sid, channel)).fetchall()}
-    groups, specials = {}, []
+    groups, specials, albums = {}, [], {}
     for r in rows:
+        if r["kind"] == "audio":   # 음악: 같은 앨범의 곡을 묶는다 (시즌=디스크, 회차=트랙) - 곡 하나뿐인 앨범도
+            info = music_info(r["caption"], r["title"])
+            key = album_key(info)
+            if key:
+                albums.setdefault(key, []).append((r, info))
+            continue
         prefix = "b:" if r["kind"] == "book" else ""   # 웹툰(압축 파일)은 같은 이름의 영상과 섞이지 않게 키 앞에 "b:"
         sp = _special_info(r["title"], r["file_name"])
         if sp:
@@ -758,6 +842,17 @@ def _link_series(conn, sid, channel):
         for skey, r, season, ep in specials:
             if skey == key:
                 links.append((sid, channel, r["msg"], key, title, season, ep, 0, 1))
+    for key, tracks in albums.items():
+        rep = max(r["msg"] for r, _ in tracks)
+        title = next((i["album"] for _, i in sorted(tracks, key=lambda x: -x[0]["msg"]) if i.get("album")), "앨범")
+        # 트랙 번호가 없거나 겹치면 올라온 순서 뒤로 (다음 곡 찾기가 (디스크, 트랙)으로 하나씩 나아가게)
+        seen = set()
+        for n, (r, i) in enumerate(sorted(tracks, key=lambda x: (x[1].get("disc") or 1, x[1].get("track") or 999, x[0]["msg"]))):
+            disc, trk = i.get("disc") or 1, i.get("track") or 0
+            if not trk or (disc, trk) in seen:
+                trk = 1000 + n
+            seen.add((disc, trk))
+            links.append((sid, channel, r["msg"], key, title, disc, trk, int(r["msg"] == rep), 0))
     with conn:
         conn.execute("DELETE FROM series WHERE source=? AND channel=?", (sid, channel))
         conn.executemany("INSERT INTO series(source,channel,video,skey,title,season,ep,rep,special) VALUES(?,?,?,?,?,?,?,?,?)", links)
@@ -771,7 +866,7 @@ def link_series(sid, channel):
 
 def _series_map(conn, sid, rows, user=""):
     """목록의 대표 회차 -> 시리즈 정보 {key, title, count, unwatched}"""
-    reps = {(r["channel"], r["msg"]) for r in rows if r["kind"] in ("video", "book")}
+    reps = {(r["channel"], r["msg"]) for r in rows if r["kind"] in ("video", "book", "audio")}
     if not reps:
         return {}
     chans = {c for c, _ in reps}
@@ -801,9 +896,15 @@ def _series_map(conn, sid, rows, user=""):
         k = (s["channel"], s["skey"])
         if k in info and (s["channel"], s["video"]) in plex and s["video"] >= info[k].get("_pv", 0):
             info[k]["plex_poster"], info[k]["_pv"] = plex[(s["channel"], s["video"])], s["video"]
-    metas = {c: _meta_names(conn, sid, c) for c in {c for c, _k in info}}
+    for (c, k), d in info.items():   # 앨범: 아티스트·연도 (대표 곡의 캡션)
+        if k.startswith("m:") and d.get("rep"):
+            r = conn.execute("SELECT caption, title FROM videos WHERE source=? AND channel=? AND msg=?", (sid, c, d["rep"])).fetchone()
+            mi = music_info(r["caption"], r["title"]) if r else {}
+            d["album"] = {"artist": mi.get("album_artist") or mi.get("artist") or "", "year": mi.get("year") or "",
+                          "genre": mi.get("genre") or ""}
+    metas = {c: _meta_names(conn, sid, c) for c in {c for c, _k in info if not _k.startswith("m:")}}
     for (c, k), d in info.items():
-        m = _match_meta(metas[c], k) if metas[c] else None
+        m = _match_meta(metas[c], k) if metas.get(c) else None
         if m:
             d["meta"] = m   # 작품 정보 파일(웹툰명.yaml)이 있음 -> 카드 그림은 그 표지로 (/series-cover)
     return {(c, d["rep"]): {k: v for k, v in d.items() if k not in ("rep", "_pv")} for (c, _), d in info.items()}
@@ -1608,8 +1709,8 @@ def _progress_map(conn, sid, rows, user=""):
     return {(p["channel"], p["msg"]): dict(p) for p in got if (p["channel"], p["msg"]) in keys}
 
 
-CHANNEL_KINDS = ("video", "image", "webtoon", "doc")
-LIST_KINDS = ("video", "image", "book", "doc")
+CHANNEL_KINDS = ("video", "image", "webtoon", "doc", "music")
+LIST_KINDS = ("video", "image", "book", "doc", "audio")
 
 
 def _channel_clause(channels, kinds, col=""):
@@ -1624,11 +1725,13 @@ def _channel_clause(channels, kinds, col=""):
         marks = ",".join("?" * len(chans))
         if k == "webtoon":
             parts.append(f"({col}channel IN ({marks}) AND {col}kind IN ('book','doc'))")
+        elif k == "music":
+            parts.append(f"({col}channel IN ({marks}) AND {col}kind='audio')")
         elif k:
             parts.append(f"({col}channel IN ({marks}) AND {col}kind=?)")
         else:
-            parts.append(f"({col}channel IN ({marks}) AND {col}kind!='book')")
-        args += [*chans, *([k] if k and k != "webtoon" else [])]
+            parts.append(f"({col}channel IN ({marks}) AND {col}kind NOT IN ('book','audio'))")   # (음악은 음악 채널에서만)
+        args += [*chans, *([k] if k and k not in ("webtoon", "music") else [])]
     return "(" + " OR ".join(parts) + ")", args
 
 
@@ -1647,7 +1750,7 @@ def query_videos(sid, channels, offset=0, limit=40, q="", sort="latest", user=""
         where += f" AND kind IN ({','.join('?' * len(want))})"
         args += want
     else:
-        where += " AND kind IN ('video','image','book','doc')"   # 자막 파일은 목록에 안 보임 (영상에 붙음)
+        where += " AND kind IN ('video','image','book','doc','audio')"   # 자막 파일은 목록에 안 보임 (영상에 붙음). 음악은 음악 채널만(_channel_clause)
         where += (" AND NOT (kind='image' AND EXISTS (SELECT 1 FROM posters p WHERE p.source=videos.source"
                   " AND p.channel=videos.channel AND p.image=videos.msg))")
     if group and kind != "image":
@@ -1902,7 +2005,7 @@ def continue_watching(sid, channels, limit=20, user=""):
             f"""SELECT v.*, p.position, p.watched, p.updated, p.duration AS pages FROM user_progress p JOIN videos v
                 ON v.source=p.source AND v.channel=p.channel AND v.msg=p.msg
                 WHERE p.source=? AND p.user=? AND p.channel IN ({marks}) AND p.watched=0
-                  AND (p.position > 30 OR (v.kind IN ('book','doc') AND p.position > 0))
+                  AND v.kind!='audio' AND (p.position > 30 OR (v.kind IN ('book','doc') AND p.position > 0))
                 ORDER BY p.updated DESC LIMIT ?""", [sid, user, *channels, limit]).fetchall()
         posters = _poster_map(conn, sid, rows)
         names = {}

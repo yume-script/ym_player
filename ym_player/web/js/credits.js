@@ -116,6 +116,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 179,
+        "version": "1.3.20",
+        "date": "2026-11-19",
+        "title": "텔레그램 음악 채널: 채널 종류 '음악'에서 mp3·flac 등을 앨범으로 묶어 보기(앨범 아트·아티스트·트랙 순), 앨범 화면의 트랙 목록과 작곡·작사, 오디오 화면으로 재생하고 다음 곡 이어서 (BookOasis Assistant 음악 규칙 캡션을 읽음)"
+    },
+    {
         "pr": 178,
         "version": "1.3.19",
         "date": "2026-11-19",
