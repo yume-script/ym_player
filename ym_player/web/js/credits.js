@@ -116,6 +116,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 180,
+        "version": "1.3.21",
+        "date": "2026-11-19",
+        "title": "텔레그램 음악: 섞어 듣기·반복(전체/한 곡)·이전/다음 곡 단추(잠금 화면도), 음악 채널 보기를 앨범/아티스트/곡으로, 아티스트 화면(앨범·곡, 전체 재생·섞어 듣기)"
+    },
+    {
         "pr": 179,
         "version": "1.3.20",
         "date": "2026-11-19",

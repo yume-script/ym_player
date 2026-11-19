@@ -2080,3 +2080,28 @@ def test_music_channel_albums(monkeypatch, tmp_path):
     assert [r["msg"] for r in plain] == [10]
     telegram_src.save_progress("tg", 1, 2, 100, 200, user="u")
     assert telegram_src.continue_watching("tg", [1], user="u") == []    # 음악은 이어보기에 안 나옴
+
+
+def test_music_artists(monkeypatch, tmp_path):
+    """아티스트별 보기: 앨범 아티스트(없으면 곡 아티스트)로 모으고, 한 아티스트의 앨범 카드·곡(앨범·트랙 순)"""
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    telegram_src._migrated.discard(str(tmp_path))
+    telegram_src._GROUPS.clear()
+
+    def song(msg, title, artist, album="", n=0, year="", aid=""):
+        cap = "\n".join(x for x in [f"🎵 {title}", f"아티스트: {artist}", f"앨범: {album} ({year})" if album else "",
+                                     f"트랙: {n}" if n else "", f"앨범ID: {aid}" if aid else ""] if x)
+        return {"msg": msg, "kind": "audio", "title": title, "caption": cap, "file_name": f"{msg}.flac", "mime": "audio/flac",
+                "duration": 100, "size": 1, "width": 0, "height": 0, "date": f"2026-11-{10 + msg:02d}T00:00:00+00:00", "has_thumb": 1}
+    telegram_src.upsert_videos("tg", 1, [
+        song(1, "B곡", "아이유", "Palette", 2, "2017", "pal"), song(2, "A곡", "아이유", "Palette", 1, "2017", "pal"),
+        song(3, "새 곡", "아이유", "Love poem", 1, "2019", "lp"), song(4, "싱글", "아이유"),
+        song(5, "다른 가수", "BTS", "Map", 1, "2020", "map")])
+    telegram_src.link_series("tg", 1)
+    arts = telegram_src.music_artists("tg", 1)
+    assert [(a["name"], a["albums"], a["tracks"]) for a in arts] == [("BTS", 1, 1), ("아이유", 2, 4)]
+    assert [a["name"] for a in telegram_src.music_artists("tg", 1, q="아이")] == ["아이유"]
+    one = telegram_src.music_artist("tg", 1, "아이유")
+    assert [a["series"]["title"] for a in one["albums"]] == ["Love poem", "Palette"]    # 최근 앨범부터
+    assert [t["title"] for t in one["tracks"]] == ["새 곡", "A곡", "B곡", "싱글"]       # 앨범 이름·트랙 순, 낱곡은 뒤
+    assert telegram_src.music_artist("tg", 1, "없는 가수") is None

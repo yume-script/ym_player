@@ -29,6 +29,8 @@ const AUTO_RECOVER_RESET_SEC = 30;
 const PROXY_FIRST_KEY = 'yp_proxy_first';
 // 화면 속 화면으로 보다가 새로고침하면 같은 것을 같은 자리부터 이어서 (이 탭의 sessionStorage, 10분 안)
 const RESUME_KEY = 'yp_resume_after_reload';
+const MUSIC_SHUFFLE_KEY = 'yp_music_shuffle';   // 음악 섞어 듣기 (이 브라우저에 기억)
+const MUSIC_REPEAT_KEY = 'yp_music_repeat';     // 음악 반복: off / all / one
 const RESUME_MAX_MS = 10 * 60 * 1000;
 // 화면 속 화면 창 오른쪽 위에 보일 소스 이름 (Document PiP 창에서만 - 기본 PiP 창에는 영상 말고는 못 넣는다)
 const SOURCE_LABEL = { plex: 'PLEX', telegram: 'TELEGRAM', iptv: 'IPTV', radio: 'RADIO', podcast: 'PODCAST', cctv: 'CCTV' };
@@ -75,6 +77,8 @@ class Player {
         this.attemptSeq = 0;
         this.prepSeq = 0;   // [재생]을 누른 뒤 준비(getPlayback)하는 동안 다른 걸 누르거나 닫으면 버리기 위함
         this.shuffle = null; // 랜덤 재생 중이면 {pick, label, played}
+        // 음악(곡 목록이 있는 재생 - pb.queue): 섞어 듣기·반복 (이 브라우저에 기억). played: 이번 목록에서 섞어 듣기로 들은 곡
+        this.music = { shuffle: !!storeGet(MUSIC_SHUFFLE_KEY, false), repeat: storeGet(MUSIC_REPEAT_KEY, 'off') || 'off', played: [], sig: '' };
         this.recoverCount = 0;
         this.viaProxy = false;
         this.playingSince = 0;
@@ -167,6 +171,11 @@ class Player {
                     btn('rotate-right', '30초 앞으로 (→)', () => this.seekBy(30), 'vod-only'),
                     btn('forward-step', '다음 채널 (↓)', () => this.switchChannel(1), 'live-only'),
                     btn('shuffle', '다른 랜덤 영상 (N)', () => this.shuffleNext(), 'shuffle-only on'),
+                    // 음악(곡 목록): 이전 곡 / 다음 곡 / 섞어 듣기 / 반복(안 함 -> 전체 -> 한 곡)
+                    btn('backward-step', '이전 곡', () => this.musicStep(-1), 'music-only'),
+                    btn('forward-step', '다음 곡', () => this.musicStep(1), 'music-only'),
+                    this.mShuffleBtn = btn('shuffle', '섞어 듣기', () => this.toggleMusicShuffle(), 'music-only'),
+                    this.mRepeatBtn = btn('repeat', '반복', () => this.cycleMusicRepeat(), 'music-only'),
                     h('div', { class: 'vol' }, this.muteBtn, this.volRange)),
                 h('div', { class: 'ctrl-group' }, this.engineEl),
                 h('div', { class: 'ctrl-group' },
@@ -363,6 +372,8 @@ class Player {
         else if (!this.inPip) this.expand(); // 화면 속 화면에서 채널을 바꾸면 그 창에서 그대로
         this.root.classList.toggle('is-live', !!pb.live);
         this.root.classList.toggle('is-audio', !!pb.audioOnly);
+        this.root.classList.toggle('is-music', !!(pb.queue && pb.queue.length));
+        this._syncMusicBtns();
         this.liveBadge.classList.toggle('hidden', !pb.live);
         this.titleEl.textContent = pb.title || '';
         this.subEl.textContent = pb.subtitle || '';
@@ -995,9 +1006,14 @@ class Player {
         on('pause', () => { if (this.pb) this.video.pause(); });
         on('stop', () => this.stop());
         // 라이브(라디오·IPTV)는 이전/다음 방송, VOD는 10초 뒤로 / 30초 앞으로
-        on('previoustrack', () => { if (this.pb && this.pb.live) this.switchChannel(-1); else this.seekBy(-10); });
+        on('previoustrack', () => {
+            if (this.pb && this.pb.live) this.switchChannel(-1);
+            else if (this.pb && this.pb.queue) this.musicStep(-1);
+            else this.seekBy(-10);
+        });
         on('nexttrack', () => {
             if (this.pb && this.pb.live) this.switchChannel(1);
+            else if (this.pb && this.pb.queue) this.musicStep(1);
             else if (this.shuffle) this.shuffleNext();
             else this.seekBy(30);
         });
@@ -1289,6 +1305,78 @@ class Player {
         return this._playShuffle(sh);
     }
 
+    // ------------------------------------------------------------------
+    // 음악: 곡 목록(pb.queue = [{pid, id, title}], pb.queueIndex)을 섞어 듣기·반복
+    // ------------------------------------------------------------------
+    toggleMusicShuffle() {
+        this.music.shuffle = !this.music.shuffle;
+        this.music.played = this.pb && this.pb.queue ? [this.pb.queue[this.pb.queueIndex || 0].id] : [];
+        storeSet(MUSIC_SHUFFLE_KEY, this.music.shuffle);
+        this._syncMusicBtns();
+        toast(this.music.shuffle ? '섞어 듣기 켬' : '섞어 듣기 끔');
+    }
+
+    cycleMusicRepeat() {
+        const order = ['off', 'all', 'one'];
+        this.music.repeat = order[(order.indexOf(this.music.repeat) + 1) % order.length];
+        storeSet(MUSIC_REPEAT_KEY, this.music.repeat);
+        this._syncMusicBtns();
+        toast({ off: '반복 안 함', all: '전체 반복', one: '한 곡 반복' }[this.music.repeat]);
+    }
+
+    _syncMusicBtns() {
+        if (!this.mShuffleBtn) return;
+        this.mShuffleBtn.classList.toggle('on', this.music.shuffle);
+        this.mRepeatBtn.classList.toggle('on', this.music.repeat !== 'off');
+        this.mRepeatBtn.classList.toggle('repeat-one', this.music.repeat === 'one');
+        this.mRepeatBtn.title = { off: '반복: 안 함', all: '반복: 전체', one: '반복: 한 곡' }[this.music.repeat];
+    }
+
+    /** 이전/다음 곡 단추·잠금 화면 (한 곡 반복이어도 단추로는 다른 곡으로). 이전은 3초 넘게 들었으면 그 곡 처음으로 */
+    musicStep(dir) {
+        const pb = this.pb;
+        if (!pb || !pb.queue) return;
+        if (dir < 0 && (this.video.currentTime || 0) > 3) { this.seekTo(0); return; }
+        this._musicNext(pb, dir, false);
+    }
+
+    /** 다음에 틀 곡의 번호 (없으면 -1). 섞어 듣기는 이번 목록에서 아직 안 들은 곡 중 아무거나 */
+    musicPick(pb, dir, auto) {
+        const q = pb.queue, n = q.length, cur = Math.max(0, pb.queueIndex || 0);
+        const sig = q.map((x) => x.id).join('|');
+        if (this.music.sig !== sig) this.music = { ...this.music, sig, played: [] };
+        if (!this.music.played.includes(q[cur].id)) this.music.played.push(q[cur].id);
+        if (auto && this.music.repeat === 'one') return cur;
+        if (this.music.shuffle && n > 1) {
+            let left = q.map((x, i) => i).filter((i) => !this.music.played.includes(q[i].id));
+            if (!left.length) {
+                if (this.music.repeat !== 'all' && auto) return -1;
+                this.music.played = [q[cur].id];
+                left = q.map((x, i) => i).filter((i) => i !== cur);
+            }
+            return left[Math.floor(Math.random() * left.length)];
+        }
+        const next = cur + dir;
+        if (next >= 0 && next < n) return next;
+        if (this.music.repeat === 'all' || !auto) return (next + n) % n;
+        return -1;
+    }
+
+    async _musicNext(pb, dir, auto) {
+        const i = this.musicPick(pb, dir, auto);
+        if (i < 0 || this.pb !== pb) return;
+        if (i === (pb.queueIndex || 0) && auto) {   // 한 곡 반복
+            this.seekTo(0);
+            this.video.play().catch(() => {});
+            return;
+        }
+        const next = pb.queue[i];
+        const provider = registry.byId(next.pid);
+        if (!provider) return;
+        if (auto) toast(`다음: ${next.title}`);
+        this.playItem(provider, next.id, { fromStart: true, auto: true, queue: pb.queue });
+    }
+
     shuffleNext() {
         if (this.shuffle) this._playShuffle(this.shuffle);
     }
@@ -1396,7 +1484,7 @@ class Player {
         this.rateMenu.classList.add('hidden');
         this.posterEl.classList.add('hidden');
         this.liveBadge.classList.add('hidden');
-        this.root.classList.remove('is-live', 'is-audio', 'is-radio');
+        this.root.classList.remove('is-live', 'is-audio', 'is-radio', 'is-music');
         this.viz.show(false);
         this.curEl.textContent = fmtClock(0);
         this.durEl.textContent = fmtClock(0);
@@ -1474,6 +1562,8 @@ class Player {
         const pb = this.pb;
         if (!pb || pb.live) return;
         if (pb.onProgress) pb.onProgress('stopped', this._duration());
+        // 음악(곡 목록): 한 곡 반복 / 섞어 듣기 / 다음 곡 (전체 반복이면 처음으로)
+        if (pb.queue && pb.queue.length) return this._musicNext(pb, 1, true);
         // 랜덤 재생 중이면 다음 화 대신 또 랜덤으로 (나눠 올린 파일의 다음 조각은 이어서)
         if (this.shuffle && !pb.nextIsPart) return this._playShuffle(this.shuffle);
         if (!pb.getNext) return;
