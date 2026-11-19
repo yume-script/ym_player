@@ -715,7 +715,7 @@ def test_existing_index_titles_are_repaired_once(monkeypatch, tmp_path):
     row = telegram_src.get_video("tg", 1, 2)
     assert row["title"] == "영화" and row["file_name"] == "영화.mkv"
     with telegram_src.db() as c:
-        assert c.execute("PRAGMA user_version").fetchone()[0] == 14
+        assert c.execute("PRAGMA user_version").fetchone()[0] == 15
 
 
 def test_split_parts_are_grouped(monkeypatch, tmp_path):
@@ -2022,3 +2022,61 @@ def test_split_movies_paging_no_repeat(monkeypatch, tmp_path):
     assert len(seen) == len(set(seen)), seen                     # 다시 나온 영화 없음
     assert sorted(t for t in seen if t.startswith("Movie")) == [f"Movie{i}.2025.1080p" for i in range(10)]
     assert sum(t.startswith("Single") for t in seen) == 3
+
+
+class DocumentAttributeAudio:
+    def __init__(self, duration, title="", performer="", voice=False):
+        self.duration, self.title, self.performer, self.voice = duration, title, performer, voice
+
+
+MUSIC_CAP = "🎵 {t}\n아티스트: 아이유\n앨범: Palette (2017)\n트랙: {n}/10\n장르: 발라드\n작곡: 김제휘\n작사: 아이유\n앨범ID: abc123def456"
+
+
+def test_audio_messages_indexed_as_music():
+    """음악 파일은 kind audio - 캡션(BookOasis Assistant 음악 규칙) 제목, 없으면 오디오 속성, 음성 메시지는 빼고"""
+    a = telegram_src.message_to_media(video_msg(1, mime="audio/flac", caption=MUSIC_CAP.format(t="밤편지", n=3),
+                                                attrs=[DocumentAttributeAudio(215, "밤편지", "아이유"), DocumentAttributeFilename("03 밤편지.flac")]))
+    assert (a["kind"], a["title"], a["duration"]) == ("audio", "밤편지", 215)
+    b = telegram_src.message_to_media(video_msg(2, mime="audio/mpeg", caption="",
+                                                attrs=[DocumentAttributeAudio(100, "Song", "Singer"), DocumentAttributeFilename("x.mp3")]))
+    assert b["title"] == "Song" and "아티스트: Singer" in b["caption"]   # 오디오 속성의 아티스트를 캡션 줄로
+    c = telegram_src.message_to_media(video_msg(3, mime="application/octet-stream", attrs=[DocumentAttributeFilename("곡.ogg")]))
+    assert c["kind"] == "audio" and c["title"] == "곡"
+    assert telegram_src.message_to_media(video_msg(4, mime="audio/ogg", attrs=[DocumentAttributeAudio(5, voice=True)])) is None
+    assert telegram_src.message_to_media(video_msg(5))["kind"] == "video"   # 영상은 그대로
+    info = telegram_src.music_info(MUSIC_CAP.format(t="밤편지", n=3))
+    assert (info["title"], info["artist"], info["album"], info["year"], info["track"], info["track_total"], info["composer"]) == \
+        ("밤편지", "아이유", "Palette", "2017", 3, 10, "김제휘")
+    assert telegram_src.album_key(info) == "m:abc123def456"
+    assert telegram_src.album_key({"album": "X", "artist": "A"}) == telegram_src.album_key({"album": "x", "artist": "a"})
+    assert telegram_src.album_key({"title": "낱곡"}) is None
+    assert telegram_src.browser_mime("audio/x-flac") == "audio/flac"
+
+
+def test_music_channel_albums(monkeypatch, tmp_path):
+    """음악 채널: 같은 앨범의 곡을 앨범 하나로 (트랙 순, 다음 곡), 다른 채널 종류에는 음악이 안 보임, 이어보기에서 빠짐"""
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    telegram_src._migrated.discard(str(tmp_path))
+    telegram_src._GROUPS.clear()
+    items = []
+    for msg, (t, n) in enumerate([("셋째", 3), ("첫째", 1), ("둘째", 2)], 1):   # 트랙 순서와 다르게 올라옴
+        items.append({"msg": msg, "kind": "audio", "title": t, "caption": MUSIC_CAP.format(t=t, n=n), "file_name": f"{n:02d} {t}.flac",
+                      "mime": "audio/flac", "duration": 200, "size": 1, "width": 0, "height": 0,
+                      "date": f"2026-11-19T0{msg}:00:00+00:00", "has_thumb": 1})
+    items.append({"msg": 9, "kind": "audio", "title": "낱곡", "caption": "🎵 낱곡\n아티스트: 누구", "file_name": "a.mp3", "mime": "audio/mpeg",
+                  "duration": 100, "size": 1, "width": 0, "height": 0, "date": "2026-11-19T09:00:00+00:00", "has_thumb": 0})
+    items.append({"msg": 10, "kind": "video", "title": "영상", "caption": "", "file_name": "v.mp4", "mime": "video/mp4",
+                  "duration": 100, "size": 1, "width": 1, "height": 1, "date": "2026-11-19T10:00:00+00:00", "has_thumb": 0})
+    telegram_src.upsert_videos("tg", 1, items)
+    telegram_src.link_series("tg", 1)
+    rows, total = telegram_src.query_videos("tg", [1], kinds={1: "music"}, group=True)
+    assert total == 2 and [r["msg"] for r in rows] == [9, 3]    # 낱곡 + 앨범(대표는 마지막에 올라온 곡), 영상은 안 보임
+    album = rows[1]["series"]
+    assert (album["title"], album["count"], album["album"]["artist"], album["album"]["year"]) == ("Palette", 3, "아이유", "2017")
+    eps = telegram_src.series_episodes("tg", 1, album["key"])["episodes"]
+    assert [e["title"] for e in eps] == ["첫째", "둘째", "셋째"]
+    assert telegram_src.series_of("tg", 1, 2)["next"]["msg"] == 3 and telegram_src.series_of("tg", 1, 1)["next"] is None
+    plain, _ = telegram_src.query_videos("tg", [1], kinds={1: ""})     # 영상+사진 채널에는 음악이 안 보임
+    assert [r["msg"] for r in plain] == [10]
+    telegram_src.save_progress("tg", 1, 2, 100, 200, user="u")
+    assert telegram_src.continue_watching("tg", [1], user="u") == []    # 음악은 이어보기에 안 나옴

@@ -110,6 +110,29 @@ function epIndex(v, multiSeason) {
 }
 
 /** "최신 회차부터" 순서: 본편만 거꾸로, 특별회차는 그대로 맨 밑에 */
+// 음악 캡션 ("🎵 곡" + "이름: 값" 줄 - BookOasis Assistant 음악 규칙, 서버 telegram_src.music_info와 같게)
+const MUSIC_LABELS = { 아티스트: 'artist', 앨범: 'album', '앨범 아티스트': 'album_artist', 트랙: 'track', 디스크: 'disc', 장르: 'genre',
+    작곡: 'composer', 작사: 'lyricist', 편곡: 'arranger', 앨범ID: 'album_id', 연도: 'year' };
+function musicInfo(v) {
+    const out = {};
+    const rows = String((v && v.caption) || '').split('\n');
+    if (rows[0] && rows[0].startsWith('🎵')) out.title = rows[0].slice(2).trim();
+    for (const row of rows) {
+        const i = row.indexOf(':');
+        const f = i > 0 ? MUSIC_LABELS[row.slice(0, i).trim()] : null;
+        if (f && row.slice(i + 1).trim()) out[f] = row.slice(i + 1).trim();
+    }
+    const m = /^(.*?)\s*\((1[89]\d{2}|20\d{2})\)\s*$/.exec(out.album || '');
+    if (m) { out.album = m[1]; out.year = out.year || m[2]; }
+    for (const f of ['track', 'disc']) {
+        const t = /^\s*(\d{1,3})(?:\s*\/\s*(\d{1,3}))?/.exec(out[f] || '');
+        if (t) { out[f] = Number(t[1]); if (t[2]) out[`${f}_total`] = Number(t[2]); } else delete out[f];
+    }
+    out.title = out.title || (v && v.title) || '';
+    return out;
+}
+const fmtClockSec = (sec) => { sec = Math.round(sec || 0); return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`; };
+
 function reverseRegular(children) {
     const regular = children.filter((c) => !c.raw.special).reverse();
     const special = children.filter((c) => c.raw.special);
@@ -158,6 +181,22 @@ export class TelegramProvider {
             };
         }
         const book = v.kind === 'book';
+        if (v.series && v.kind === 'audio') {
+            // 앨범 카드 (같은 앨범의 곡 묶음 - 시리즈와 같은 구조). 그림은 곡의 앨범 아트(썸네일). 누르면 트랙 목록
+            const sid = `series:${v.channel}:${v.series.key}`;
+            this._seen.set(sid, v);
+            const al = v.series.album || {};
+            const cover = thumb || (v.series.cover ? `${this.base}/thumb/${v.channel}/${v.series.cover}` : '');
+            return {
+                pid: this.id, id: sid, type: 'show', playable: true, title: v.series.title,
+                subtitle: [al.artist, `${v.series.count}곡`, al.year].filter(Boolean).join(' · '),
+                thumb: cover, wideThumb: cover, shape: 'square',
+                route: `#/item/${this.id}/${encodeURIComponent(sid)}`,
+                ts: v.updated || 0,
+                isNew: !!(seenBefore() && v.date && v.date > seenBefore()),
+                raw: v,
+            };
+        }
         if (v.series) {
             // 시리즈(회차 묶음) 카드: 가장 최근 회차가 대표. 누르면 회차 목록
             const sid = `series:${v.channel}:${v.series.key}`;
@@ -189,6 +228,19 @@ export class TelegramProvider {
                 fileName: v.file_name || '',
                 ts: v.updated || 0,
                 isNew: !!(seenBefore() && v.date && v.date > seenBefore() && !v.watched && !(v.position > 0)),
+                raw: v,
+            };
+        }
+        if (v.kind === 'audio') {
+            // 곡 하나 (앨범이 없는 낱곡, 또는 앨범 화면의 트랙): 누르면 상세(재생)
+            const mi = musicInfo(v);
+            return {
+                pid: this.id, id, type: 'movie', title: mi.title,
+                subtitle: [mi.artist, v.duration ? fmtClockSec(v.duration) : ''].filter(Boolean).join(' · '),
+                thumb, wideThumb: thumb, shape: 'square',
+                route: `#/item/${this.id}/${id}`,
+                ts: v.updated || 0,
+                fileName: v.file_name || '',
                 raw: v,
             };
         }
@@ -251,7 +303,7 @@ export class TelegramProvider {
             if (!row.items.length) continue;
             const ck = (this.channels.find((c) => c.id === String(row.channel)) || {}).kind;
             hubs.push({
-                title: `${this.channelTitle(row.channel) || '채널'} ${{ webtoon: '최신 웹툰', doc: '최신 책' }[ck] || '최신 영상'}`, source: this.name,
+                title: `${this.channelTitle(row.channel) || '채널'} ${{ webtoon: '최신 웹툰', doc: '최신 책', music: '최신 음악' }[ck] || '최신 영상'}`, source: this.name,
                 items: row.items.map((v) => this.toItem(v)), more: `#/library/${this.id}/${row.channel}`,
             });
         }
@@ -316,7 +368,7 @@ export class TelegramProvider {
     /** 사진/웹툰 채널에는 랜덤 재생할 영상이 없다 */
     canRandom(channel) {
         const c = this.channels.find((x) => x.id === String(channel));
-        return !(c && (c.kind === 'image' || c.kind === 'webtoon' || c.kind === 'doc'));
+        return !(c && (c.kind === 'image' || c.kind === 'webtoon' || c.kind === 'doc' || c.kind === 'music'));
     }
 
     /**
@@ -336,10 +388,12 @@ export class TelegramProvider {
         const data = await api(`${this.base}/videos?${new URLSearchParams({ q: query, limit: 40 })}`);
         const items = data.items.map((v) => this.toItem(v));
         const kindOf = (it) => (it.raw && it.raw.kind) || '';
-        const videos = items.filter((it) => it.type !== 'photo' && !['book', 'doc'].includes(kindOf(it))), photos = items.filter((it) => it.type === 'photo');
+        const videos = items.filter((it) => it.type !== 'photo' && !['book', 'doc', 'audio'].includes(kindOf(it))), photos = items.filter((it) => it.type === 'photo');
         const books = items.filter((it) => kindOf(it) === 'book'), docs = items.filter((it) => kindOf(it) === 'doc');
+        const songs = items.filter((it) => kindOf(it) === 'audio');
         return [
             videos.length ? { title: `영상 · ${this.name}`, items: videos } : null,
+            songs.length ? { title: `음악 · ${this.name}`, items: songs } : null,
             books.length ? { title: `웹툰 · ${this.name}`, items: books } : null,
             docs.length ? { title: `책 · ${this.name}`, items: docs } : null,
             photos.length ? { title: `사진 · ${this.name}`, items: photos } : null,
@@ -450,6 +504,7 @@ export class TelegramProvider {
         const data = await api(`${this.base}/series/${channel}?${new URLSearchParams({ key })}`);
         const eps = data.episodes || [];
         if (eps.length && eps[0].kind === 'book') return this._bookSeriesDetail(id, channel, data);
+        if (eps.length && eps[0].kind === 'audio') return this._albumDetail(id, channel, data);
         const multiSeason = new Set(eps.filter((x) => !x.special).map((x) => x.season)).size > 1;
         const children = eps.map((v) => {
             const it = this.toItem({ ...v, series: undefined });
@@ -539,6 +594,37 @@ export class TelegramProvider {
         };
     }
 
+    /** 앨범 상세: 트랙 목록(디스크·트랙 순) + [재생] (끝나면 다음 트랙). 정보는 곡 캡션에서 */
+    _albumDetail(id, channel, data) {
+        const eps = data.episodes;
+        const infos = eps.map((v) => musicInfo(v));
+        const multiDisc = new Set(eps.map((v) => v.season)).size > 1;
+        const children = eps.map((v, i) => {
+            const it = this.toItem({ ...v, series: undefined });
+            const no = v.ep < 1000 ? v.ep : '';
+            return { ...it, raw: { ...v, index: no ? (multiDisc ? `${v.season}-${no}` : no) : i + 1, title: infos[i].title,
+                duration: (v.duration || 0) * 1000 } };
+        });
+        const first = infos.find((x) => x.album_artist || x.artist) || {};
+        const artist = first.album_artist || first.artist || '';
+        const pick = (f) => infos.map((x) => x[f]).find(Boolean) || '';
+        const uniq = (f) => [...new Set(infos.map((x) => x[f]).filter(Boolean))].join(', ');
+        const total = eps.reduce((a, v) => a + (v.duration || 0), 0);
+        const cover = children.map((c) => c.thumb).find(Boolean) || '';
+        return {
+            pid: this.id, id, type: 'album', title: data.title, subtitle: artist,
+            poster: cover, posterShape: 'square', art: '',
+            metaLine: [artist, pick('year'), `${eps.length}곡`, total ? fmtDuration(total * 1000) : ''].filter(Boolean),
+            rating: null, summary: '', tagline: '', genres: pick('genre') ? [pick('genre')] : [], directors: [], cast: [],
+            extraFacts: [['작곡', uniq('composer')], ['작사', uniq('lyricist')], ['편곡', uniq('arranger')]].filter(([, v]) => v),
+            playable: false, unwatched: 0, watched: false,
+            viewOffset: 0, duration: 0, progress: 0,
+            parent: { label: this.channelTitle(channel), route: `#/library/${this.id}/${channel}` },
+            children, childrenTitle: '트랙', childrenStyle: 'track',
+            onDeck: children[0] ? { ...children[0], subtitle: '재생' } : null,
+        };
+    }
+
     // ----- 웹툰 보기 (reader.js) -----
     /** 재생기 대신 이 소스가 직접 여는 항목이면 열고 true (웹툰 한 화 / 웹툰 작품 -> 다음 볼 회차) */
     async openItem(id) {
@@ -617,11 +703,57 @@ export class TelegramProvider {
 
     async _seriesNext(id) {
         const d = await this._seriesDetail(id);
+        if (d.type === 'album') return (d.children[0] && d.children[0].id) || null;   // 앨범은 늘 첫 곡부터
         return (d.onDeck && d.onDeck.id) || (d.children[0] && d.children[0].id) || null;
+    }
+
+    /** 곡 재생: 원본 그대로 (브라우저가 mp3·flac·m4a·ogg를 직접), 오디오 화면(앨범 아트), 끝나면 앨범의 다음 곡.
+     *  음악은 곡 중간부터 이어 듣지 않는다 (처음부터) */
+    async _audioPlayback(id, startAt = null) {
+        const v = await this._video(id);
+        const [channel, msg] = String(id).split(':');
+        const mi = musicInfo(v);
+        const report = (position, duration) => fetch(`${this.base}/progress`, {
+            method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ channel, msg, position, duration: duration || v.duration }),
+        }).catch(() => {});
+        const n = v.series && v.series.next;
+        return {
+            live: false, audioOnly: true,
+            title: mi.title, subtitle: [mi.artist, mi.album].filter(Boolean).join(' · '),
+            poster: v.has_thumb ? `${this.base}/thumb/${channel}/${msg}` : '',
+            durationHint: v.duration || 0,
+            url: `${this.base}/stream/${channel}/${msg}`, kind: 'direct', startTime: startAt || 0,
+            onProgress: (state, sec) => report(sec), onStop: (sec) => report(sec),
+            getNext: n ? async () => ({ pid: this.id, id: `${channel}:${n.msg}`, title: n.title }) : null,
+            explainError: () => api(`${this.base}/play-error/${channel}/${msg}`).then((j) => j.error || '').catch(() => ''),
+        };
+    }
+
+    /** 곡 하나의 상세 (앨범이 있으면 위쪽 링크는 그 앨범) */
+    async _trackDetail(id) {
+        const v = await this._video(id);
+        const mi = musicInfo(v);
+        const it = this.toItem({ ...v, series: undefined });
+        const facts = [['앨범', mi.album], ['앨범 아티스트', mi.album_artist !== mi.artist ? mi.album_artist : ''],
+            ['트랙', mi.track ? `${mi.track}${mi.track_total ? `/${mi.track_total}` : ''}` : ''], ['작곡', mi.composer],
+            ['작사', mi.lyricist], ['편곡', mi.arranger], ['파일', v.file_name]].filter(([, x]) => x);
+        return {
+            pid: this.id, id, type: 'movie', title: mi.title, subtitle: mi.artist || '',
+            poster: it.thumb, posterShape: 'square', art: '',
+            metaLine: [mi.artist, mi.year, v.duration ? fmtClockSec(v.duration) : '', fmtSize(v.size)].filter(Boolean),
+            rating: null, summary: '', tagline: '', genres: mi.genre ? [mi.genre] : [], directors: [], cast: [], extraFacts: facts,
+            playable: true, watched: !!v.watched, viewOffset: 0, duration: (v.duration || 0) * 1000, progress: 0,
+            parent: v.series ? { label: v.series.title, route: `#/item/${this.id}/${encodeURIComponent(`series:${v.channel}:${v.series.key}`)}` }
+                : { label: this.channelTitle(v.channel), route: `#/library/${this.id}/${v.channel}` },
+            children: [],
+        };
     }
 
     async getDetail(id) {
         if (String(id).startsWith('series:')) return this._seriesDetail(id);
+        const seenV = this._seen.get(String(id));
+        if (seenV && seenV.kind === 'audio') return this._trackDetail(id);
 
         this.warm(id);
         const v = await this._video(id);
@@ -774,6 +906,8 @@ export class TelegramProvider {
     async getPlayback(id, { fromStart = false, startAt = null } = {}) {
         if (String(id).startsWith('series:')) id = await this._seriesNext(id);   // (confirmPlay를 거치지 않은 경우에도)
         id = plainId(id);
+        const seenV = this._seen.get(id) || (String(id).includes(':') ? await this._video(id).catch(() => null) : null);
+        if (seenV && seenV.kind === 'audio') return this._audioPlayback(id, startAt);
         const v = await this._video(id, true);
         const [channel, msg] = String(id).split(':');
         const play = v.play || { mode: 'direct' };

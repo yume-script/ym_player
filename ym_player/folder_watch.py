@@ -258,14 +258,15 @@ async def _run(*args, timeout=600):
     return proc.returncode, out, err.decode("utf-8", "replace")
 
 
-def _scan_local(folder):
+def _scan_local(folder, exts=None):
+    exts = exts or VIDEO_EXT
     if not os.path.isdir(folder):
         raise FolderError(f"폴더가 없습니다 (드라이브가 붙어 있는지 확인): {folder}")
     out = []
     for root, dirs, files in os.walk(folder):
         dirs[:] = sorted(d for d in dirs if not d.startswith("."))
         for n in files:
-            if n.startswith(".") or os.path.splitext(n)[1].lower() not in VIDEO_EXT:
+            if n.startswith(".") or os.path.splitext(n)[1].lower() not in exts:
                 continue
             p = os.path.join(root, n)
             try:
@@ -304,14 +305,15 @@ async def _lsjson(target, recursive=True):
     return rows if isinstance(rows, list) else []
 
 
-async def scan(folder):
-    """폴더 안의 동영상 [{key(폴더 기준 상대 경로), size, mtime}]"""
+async def scan(folder, exts=None):
+    """폴더 안의 동영상(exts를 주면 그 확장자 - 음악 규칙) [{key(폴더 기준 상대 경로), size, mtime}]"""
+    exts = exts or VIDEO_EXT
     if not is_remote(folder):
-        return await asyncio.to_thread(_scan_local, folder)
+        return await asyncio.to_thread(_scan_local, folder, exts)
     out = []
     for r in await _lsjson(folder):
         path = str(r.get("Path") or "")
-        if not path or any(x.startswith(".") for x in path.split("/")) or os.path.splitext(path)[1].lower() not in VIDEO_EXT:
+        if not path or any(x.startswith(".") for x in path.split("/")) or os.path.splitext(path)[1].lower() not in exts:
             continue
         out.append({"key": path, "size": int(r.get("Size") or 0), "mtime": _parse_time(r.get("ModTime"))})
     return out[:MAX_FILES]
@@ -357,6 +359,15 @@ def match_subs(video_name, names):
     if len(videos) == 1:
         return [(n, lang_of(n), SUB_EXT[os.path.splitext(n)[1][1:].lower()]) for n in subs]
     return []
+
+
+async def remote_names(folder, key):
+    """rclone 원격에서 그 파일과 같은 폴더의 파일 이름들 (음악 규칙의 앨범 아트 찾기)"""
+    d = os.path.dirname(key)
+    try:
+        return [str(r.get("Name") or r.get("Path") or "") for r in await _lsjson(_join_remote(folder, d) if d else folder, recursive=False)]
+    except FolderError:
+        return []
 
 
 async def remote_subs(folder, key):

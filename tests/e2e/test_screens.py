@@ -453,3 +453,46 @@ def test_telegram_list_title_and_lines(page, server):
     subs = page.locator(".card-sub").all_inner_texts()
     assert subs[0] == "1시간 26분 · 2개 파일" and "영화 > 최신" not in " ".join(subs)
     assert page.locator(".card-file").first.inner_text() == "2026-11-19 등록"
+
+
+def test_telegram_music_album(page, server):
+    """음악 채널: 앨범 카드(정사각형, 아티스트·곡 수) -> 앨범 상세(트랙 순 목록, 작곡·작사) -> 곡 재생은 오디오 화면, 다음 곡 이어서"""
+    set_sources(page, server, [{"id": "tg", "type": "telegram", "name": "텔레", "api_id": "1", "api_hash": "h", "enabled": True,
+                                "channels": [{"id": 777, "title": "음악", "kind": "music"}]}])
+    cap = "🎵 {t}\n아티스트: 아이유\n앨범: Palette (2017)\n트랙: {n}/10\n작곡: 김제휘\n작사: 아이유\n앨범ID: abc"
+
+    def track(msg, t, n):
+        return {"channel": 777, "msg": msg, "kind": "audio", "title": t, "caption": cap.format(t=t, n=n), "file_name": f"{n:02d} {t}.flac",
+                "date": "2026-11-19T01:00:00+00:00", "duration": 215, "size": 1, "position": 0, "watched": False, "poster": 0,
+                "has_thumb": 1, "season": 1, "ep": n, "special": False}
+    album = {**track(3, "셋째", 3), "series": {"key": "m:abc", "title": "Palette", "count": 3, "unwatched": 3,
+                                                "album": {"artist": "아이유", "year": "2017", "genre": ""}}}
+    eps = [track(2, "첫째", 1), track(1, "둘째", 2), track(3, "셋째", 3)]
+
+    def route(r):
+        u = r.request.url
+        if "/api/tg/tg/videos" in u:
+            return r.fulfill(json={"success": True, "items": [album], "total": 1})
+        if "/api/tg/tg/series/777" in u:
+            return r.fulfill(json={"success": True, "key": "m:abc", "title": "Palette", "channel": 777, "episodes": eps})
+        if "/api/tg/tg/video/777/2" in u:
+            return r.fulfill(json={"success": True, "item": {**eps[0], "series": {"key": "m:abc", "title": "Palette",
+                                                                                     "next": {"msg": 1, "title": "둘째"}}}})
+        if "/api/tg/tg/thumb/" in u:
+            return r.fulfill(status=404, body="")
+        return r.continue_()
+    page.route("**/api/tg/**", route)
+    page.goto(server + "/#/library/tg/777")
+    page.wait_for_selector(".card-title")
+    assert page.locator(".card-title").first.inner_text() == "Palette"
+    assert page.locator(".card-sub").first.inner_text() == "아이유 · 3곡 · 2017"
+    page.goto(server + "/#/item/tg/" + "series%3A777%3Am%3Aabc")
+    page.wait_for_selector(".track-row")
+    rows = page.locator(".track-row").all_inner_texts()
+    assert len(rows) == 3 and "첫째" in rows[0] and "셋째" in rows[2] and "3:35" in rows[0]
+    facts = page.inner_text(".detail-facts")
+    assert "김제휘" in facts and "아이유" in facts
+    js_modules(page)
+    pb = page.evaluate("window._reg.byId('tg').getPlayback('777:2').then(p => p.getNext().then(n => "
+                       "({audio: p.audioOnly, url: p.url, title: p.title, sub: p.subtitle, next: n.id})))")
+    assert pb == {"audio": True, "url": "/api/tg/tg/stream/777/2", "title": "첫째", "sub": "아이유 · Palette", "next": "777:1"}
