@@ -137,14 +137,17 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
             });
             if (myGen !== gen || !ctx.alive()) return;
             total = res.total;
-            start += res.items.length;
-            if (!res.items.length) total = start;
+            // nextStart: 다음 쪽을 어디서부터 (텔레그램 - 나눠 올린 조각을 한 카드로 합쳐 카드 수보다 앞으로 더 간다)
+            const nextStart = res.nextStart != null ? res.nextStart : start + res.items.length;
+            const moved = nextStart > start;
+            start = nextStart;
+            if (!res.items.length && (!moved || res.nextStart == null)) total = start;
             // 텔레그램처럼 오래된 쪽을 아직 다 훑지 않은 소스는 "지금까지 찾은 수+"로
-            countEl.textContent = res.approx ? `${(res.shown || 0).toLocaleString()}개+` : `${total.toLocaleString()}개`;
+            countEl.textContent = res.approx ? `${(res.shown || 0).toLocaleString()}개+` : `${(res.count != null ? res.count : total).toLocaleString()}개`;
             // 라디오 방송국처럼 채널이면 채널 카드 (누르면 바로 재생, 위/아래로 다른 방송국)
             loaded = loaded.concat(res.items);
             draw(res.items);
-            if (!start) grid.appendChild(searchBox && searchBox.value.trim()
+            if (!loaded.length && start >= total) grid.appendChild(searchBox && searchBox.value.trim()
                 ? emptyState('magnifying-glass', `"${searchBox.value.trim()}" 검색 결과가 없습니다`) : emptyState('film', '항목이 없습니다'));
         } catch (e) {
             if (myGen === gen) grid.appendChild(emptyState('triangle-exclamation', '불러오지 못했습니다', e.message));

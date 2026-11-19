@@ -116,6 +116,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 178,
+        "version": "1.3.19",
+        "date": "2026-11-19",
+        "title": "텔레그램 목록: 나눠 올린 영상(_0000/_0001)을 한 카드로 합친 뒤 다음 쪽 위치를 카드 수로 넘겨 스크롤하면 앞의 영화가 다시 나오던 것 고침 (읽은 행 수 기준으로)"
+    },
+    {
         "pr": 177,
         "version": "1.3.18",
         "date": "2026-11-19",

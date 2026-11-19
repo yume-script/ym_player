@@ -302,8 +302,11 @@ export class TelegramProvider {
         const p = new URLSearchParams({ channel, offset: start, limit: size, sort, kind, group: 1 }); // 회차는 시리즈로 묶어서
         const data = await api(`${this.base}/videos?${p}`);
         // 아직 훑지 않은 오래된 메시지가 남았으면 total보다 더 있을 수 있다 -> 한 칸 더 있다고 알려 계속 불러오게
-        const total = data.more ? Math.max(data.total, start + data.items.length + 1) : data.total;
-        return { items: data.items.map((v) => this.toItem(v)), total, shown: data.total, approx: !!data.more };
+        // 다음 쪽은 서버가 알려 준 위치부터 (나눠 올린 조각을 한 카드로 합쳐 카드 수가 읽은 수보다 적다 -
+        // 카드 수로 넘기면 앞쪽 영화가 다시 나온다). total·nextStart는 그 위치 기준, 보이는 수는 shown/count
+        const next = data.next_offset != null ? data.next_offset : start + data.items.length;
+        const total = data.more ? next + 1 : next;
+        return { items: data.items.map((v) => this.toItem(v)), total, nextStart: next, shown: data.total, count: data.total, approx: !!data.more };
     }
 
     seriesCoverUrl(channel, key) {
