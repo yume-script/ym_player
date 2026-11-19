@@ -392,6 +392,9 @@ export class TelegramProvider {
             cast: m.cast || [],
             rating: m.rating || null,
             metaLine: [m.year, ...d.metaLine].filter(Boolean),
+            // TMDB가 아닌 곳에서 온 정보는 출처를 (위키백과 글은 CC BY-SA - 출처 링크를 보여야 한다)
+            metaSource: m.source === 'wikipedia' ? { label: '한국어 위키백과 (CC BY-SA 4.0)', url: m.url || '' }
+                : m.source === 'anilist' ? { label: 'AniList', url: m.url || '' } : null,
         };
     }
 

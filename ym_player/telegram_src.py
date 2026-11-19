@@ -477,8 +477,21 @@ _B, _E = r"(?<![A-Za-z0-9])", r"(?![A-Za-z0-9])"   # 밑줄(_)도 구분자로 (
 _EP_RE = re.compile(_B + r"S(\d{1,3})[\s._-]*E(\d{1,4})" + _E + "|" + _B + r"EP?(\d{1,4})" + _E
                     + r"|(\d{1,4})\s*(?:화|회)(?![가-힣A-Za-z0-9])", re.I)
 _YEAR_RE = re.compile(r"(?<!\d)(19\d{2}|20\d{2})(?!\d)")
+# 방송일 (예능·드라마 파일 이름에 흔함): 241124 / 20241124 - 달·날이 맞는 것만 (연도 2026·해상도 1080은 아님)
+_AIR_RE = re.compile(r"(?<!\d)(?:20)?(\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?!\d)")
 _CUT_RE = re.compile(_B + r"S\d{1,3}[\s._-]*E\d|" + _B + r"EP?\d{1,4}" + _E + r"|\d{1,4}\s*(?:화|회)(?![가-힣A-Za-z0-9])"
-                     r"|(?<!\d)(?:19|20)\d{2}(?!\d)|" + _B + r"\d{3,4}p" + _E + r"|[\[(]", re.I)
+                     r"|(?<!\d)(?:19|20)\d{2}(?!\d)|" + _B + r"\d{3,4}p" + _E + r"|[\[(]"
+                     r"|(?<!\d)(?:20)?\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])(?!\d)", re.I)
+
+
+def air_date(title, file_name=""):
+    """제목·파일 이름의 방송일 '2024-11-24' (없으면 ""). '런닝맨.E730.241124.1080p' / '나 혼자 산다 20241122'"""
+    for text in (title or "", os.path.splitext(file_name or "")[0]):
+        for m in _AIR_RE.finditer(text):
+            yy, mm, dd = m.groups()
+            if 0 <= int(yy) <= 49:   # 2000~2049년 방송
+                return f"20{yy}-{mm}-{dd}"
+    return ""
 
 
 # 이름 앞에 붙은 표시 "(자막) 주홍색 가면.E06…", "[더빙] …", "<한국어> …", "【자막】…" - 떼고 읽는다.
@@ -498,6 +511,7 @@ def _media_key(title, file_name=""):
     best = ("", None, "")
     for text in (title or "", os.path.splitext(file_name or "")[0]):
         text = _strip_lead_tags(text)
+        text = _PREFIX_RE.sub("", text) or text   # 앞의 방송사·편성 표시 ("tvN 금토드라마 정년이 E12" -> "정년이 E12")
         if not text:
             continue
         m = _EP_RE.search(text)
@@ -1121,13 +1135,22 @@ def meta_target(sid, channel, msg=None, series_key=None):
     poster_title = _display_title(prow["title"]) if prow else ""
     if srow:
         return {"mkey": f"tv:{srow['skey']}", "kind": "tv", "titles": search_titles([srow["title"], poster_title]),
-                "year": "", "season": srow["season"], "ep": srow["ep"], "pic": bool(prow)}
+                "year": "", "season": srow["season"], "ep": srow["ep"], "pic": bool(prow), "aired": air_date(r["title"], r["file_name"])}
     t = meta_target_for(r["title"], r["file_name"], poster_title)
     return t and {**t, "pic": bool(prow)}
 
 
+# 이름 앞의 방송사·편성 표시 ("KBS2 ", "tvN 금토드라마 ", "MBC 일일드라마 ") - 대괄호로 싼 것([KBS2])은 아래 첫 줄이 뗀다
+_BROADCASTERS = r"KBS\s?[12]?|MBC(?:\s?every1)?|SBS(?:\s?(?:Plus|funE))?|EBS\s?[12]?|tvN|JTBC|MBN|ENA|OCN|Mnet|TV조선|TVCHOSUN|채널\s?A|Channel\s?A|" \
+                r"쿠팡플레이|티빙|TVING|넷플릭스|Netflix|웨이브|wavve|디즈니\+?|Disney\+?"
+# 편성 표시는 요일·때가 붙은 것만 ("금토드라마", "일일 드라마") - "드라마 스페셜"처럼 이름의 일부인 맨 '드라마'는 그대로
+_SLOTS = r"(?:월화|수목|금토|토일|일일|주말|아침|저녁)\s*(?:드라마|미니시리즈|특별기획|예능)|미니시리즈|특별기획"
+_PREFIX_RE = re.compile(r"^\s*(?:(?:" + _BROADCASTERS + r")(?![A-Za-z0-9가-힣])[\s._-]*)?(?:" + _SLOTS + r"[\s._-]+)?", re.I)
 _SEARCH_JUNK = [
     re.compile(r"<[^<>]*>|【[^【】]*】|\[[^\[\]]*\]|\((?:19|20)\d{2}\)"),              # <한국어/더빙>, [2023], (2018)
+    _PREFIX_RE,                                                                                 # KBS2 금토드라마 …
+    re.compile(r"(?<!\d)(?:20)?\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])(?!\d)"),         # 방송일 241124
+    re.compile(r"(?<![가-힣0-9])\d부\s*$"),                                                     # 예능 1부·2부
     re.compile(r"(?<![A-Za-z0-9])(?:[FU]?HD|SD|[48]K|\d{3,4}p|x26[45]|HEVC|WEB-?DL|WEB-?Rip|BluRay|HDR|"
                r"SPE?\d*|\d{1,3}m)(?![A-Za-z0-9])", re.I),                                   # 화질·특별편·분 (FHD, SPE03, 8m)
     re.compile(r"(?:시즌|Season)\s*\d+|(?<![A-Za-z0-9])S\d{1,2}(?![A-Za-z0-9])", re.I),          # 신병 시즌 3
@@ -1165,10 +1188,13 @@ def meta_target_for(title, file_name, poster_title=""):
     titles = search_titles([poster_title, _display_title(title), _display_title(file_name)])
     if not name:
         return None
+    aired = air_date(title, file_name)
     info = _episode_info(title, file_name)
     if info:
-        return {"mkey": f"tv:{info[0]}", "kind": "tv", "titles": titles, "year": "", "season": info[1], "ep": info[2]}
-    return {"mkey": f"movie:{name}:{year}", "kind": "movie", "titles": titles, "year": year, "season": None, "ep": None}
+        return {"mkey": f"tv:{info[0]}", "kind": "tv", "titles": titles, "year": "", "season": info[1], "ep": info[2], "aired": aired}
+    if aired:   # 회차 번호 없이 방송일만 있는 예능 ("런닝맨 241124") - TV 작품으로, 회차는 방송일로 맞춘다
+        return {"mkey": f"tv:{name}", "kind": "tv", "titles": titles, "year": "", "season": None, "ep": None, "aired": aired}
+    return {"mkey": f"movie:{name}:{year}", "kind": "movie", "titles": titles, "year": year, "season": None, "ep": None, "aired": ""}
 
 
 def channel_sig(sid, channel):

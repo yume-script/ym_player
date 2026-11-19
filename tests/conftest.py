@@ -13,9 +13,10 @@ import pytest  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _no_real_anilist(monkeypatch):
-    """테스트는 진짜 AniList에 묻지 않는다 (작품 정보 보강 - 결과 없음). AniList를 보는 테스트는 search를 다시 바꾼다"""
-    from ym_player import anilist
+    """테스트는 진짜 AniList·위키백과에 묻지 않는다 (작품 정보 보강 - 결과 없음). 그것을 보는 테스트는 search를 다시 바꾼다"""
+    from ym_player import anilist, wiki
 
     async def nothing(http, query):
         return []
     monkeypatch.setattr(anilist, "search", nothing)
+    monkeypatch.setattr(wiki, "search", nothing)

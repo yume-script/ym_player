@@ -1470,3 +1470,96 @@ def test_anilist_error_not_saved_as_miss(data, monkeypatch):
         finally:
             await c.close()
     asyncio.run(main())
+
+
+def test_air_date_and_broadcaster_names():
+    """예능·드라마 파일 이름: 방송일, 방송사·편성 표시 떼기 (이름의 일부인 '드라마 스페셜'은 그대로)"""
+    from ym_player import telegram_src as t
+    assert t.air_date("런닝맨.E730.241124.1080p") == "2024-11-24"
+    assert t.air_date("나 혼자 산다 20241122 1부") == "2024-11-22"
+    assert t.air_date("Hope.2026.1080p_0001") == "" and t.air_date("영화 1080p") == ""
+    g = t.meta_target_for("나 혼자 산다 20241122 1부", "")
+    assert g["kind"] == "tv" and g["mkey"] == "tv:나혼자산다" and g["aired"] == "2024-11-22" and g["titles"][0] == "나 혼자 산다"
+    assert t.meta_target_for("tvN 금토드라마 정년이 E12 241117", "")["mkey"] == "tv:정년이"
+    assert t.meta_target_for("[KBS2] 1박 2일 시즌4.E250.241124.1080p", "")["titles"][0] == "1박 2일"
+    assert t.meta_target_for("KBS 드라마 스페셜 E01", "")["mkey"] == "tv:드라마스페셜"
+    assert t.meta_target_for("Hope.2026.1080p", "")["mkey"] == "movie:hope:2026"
+
+
+def test_wiki_pick_and_fallback_order(monkeypatch):
+    """위키백과: TV 작품 문서만(괄호 꼬리 떼고 이름 비교), 순서는 AniList -> 위키백과(TV만), 실패는 failed"""
+    from ym_player import anilist, metasource, wiki
+    assert wiki.bare("신병 (2022년 드라마)") == "신병" and wiki.bare("무빙 (드라마)") == "무빙"
+    page = {"type": "standard", "title": "나 혼자 산다", "description": "대한민국의 MBC 예능 프로그램",
+            "extract": "《나 혼자 산다》는 2013년 3월 22일부터 방송 중인 MBC의 예능 프로그램이다.",
+            "thumbnail": {"source": "https://upload/x.png"}, "content_urls": {"desktop": {"page": "https://ko.wikipedia.org/wiki/x"}}}
+    assert wiki.looks_tv(page) and not wiki.looks_tv({"type": "disambiguation", "extract": "드라마"})
+    assert not wiki.looks_tv({"type": "standard", "title": "김철수", "extract": "대한민국의 정치인이다."})
+    m = wiki.to_meta(page)
+    assert m["source"] == "wikipedia" and m["title"] == "나 혼자 산다" and m["year"] == "2013" and m["poster"] == "https://upload/x.png"
+
+    async def ani_none(http, q):
+        return []
+
+    async def wsearch(http, q):
+        return ["나 혼자 산다 (동음이의)", "나 혼자 산다"]
+
+    async def wsum(http, title):
+        return {"type": "disambiguation"} if "동음이의" in title else page
+    monkeypatch.setattr(anilist, "search", ani_none)
+    monkeypatch.setattr(wiki, "search", wsearch)
+    monkeypatch.setattr(wiki, "summary", wsum)
+    data, failed = asyncio.run(metasource.fallback(None, {"titles": ["나 혼자 산다"], "kind": "tv", "year": ""}))
+    assert data["source"] == "wikipedia" and not failed
+    data, failed = asyncio.run(metasource.fallback(None, {"titles": ["나 혼자 산다"], "kind": "movie", "year": ""}))
+    assert data is None and not failed                      # 영화는 위키백과로 찾지 않는다
+
+    async def boom(http, q):
+        raise RuntimeError("막힘")
+    monkeypatch.setattr(wiki, "search", boom)
+    data, failed = asyncio.run(metasource.fallback(None, {"titles": ["나 혼자 산다"], "kind": "tv", "year": ""}))
+    assert data is None and failed
+
+
+def test_tg_meta_matches_episode_by_air_date(data, monkeypatch):
+    """예능: 파일의 회차 번호(E730)가 TMDB 시즌과 안 맞아도 방송일(241124)로 TMDB 회차를 찾는다"""
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from ym_player import server, telegram_src, tmdb
+    telegram_src._migrated.discard(str(data))
+    cfg = config_store.load()
+    config_store.replace_sources(cfg, [{"id": "tg", "type": "telegram", "name": "텔레", "api_id": "1", "api_hash": "h",
+                                        "tmdb_key": "k" * 32, "channels": [{"id": 777, "title": "예능"}]}])
+    config_store.save(cfg)
+    with telegram_src.db() as conn:
+        conn.execute("INSERT INTO videos(source,channel,msg,title,caption,file_name,mime,duration,size,width,height,date,has_thumb,kind)"
+                     " VALUES('tg',777,1,'런닝맨.E730.241124.1080p','','런닝맨.E730.241124.1080p.mp4','video/mp4',60,1,1,1,"
+                     "'2026-11-19T00:00:00+00:00',0,'video')")
+    show = {"id": 33238, "kind": "tv", "title": "런닝맨", "poster": "https://img/r.jpg", "seasons": [1, 2024, 2025]}
+
+    async def find(self, kind, titles, year=""):
+        return 33238
+
+    async def details(self, kind, tid):
+        return show
+    asked = []
+
+    async def season(self, tid, s):
+        asked.append(s)
+        return {2025: {1: {"name": "새해", "air_date": "2025-01-05"}},
+                2024: {47: {"name": "가을 운동회", "air_date": "2024-11-24", "overview": "운동회 줄거리"}}}.get(s, {})
+    monkeypatch.setattr(tmdb.Tmdb, "find", find)
+    monkeypatch.setattr(tmdb.Tmdb, "details", details)
+    monkeypatch.setattr(tmdb.Tmdb, "season", season)
+
+    async def main():
+        c = TestClient(TestServer(server.create_app(require_auth=False)))
+        await c.start_server()
+        try:
+            d = await (await c.get("/api/tg/tg/meta/777/1")).json()
+            assert d["target"]["season"] == 2024 and d["target"]["ep"] == 47
+            assert d["episodes"]["2024"]["47"]["name"] == "가을 운동회"
+            assert asked[:2] == [2025, 2024]                   # 최근 시즌부터
+        finally:
+            await c.close()
+    asyncio.run(main())

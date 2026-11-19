@@ -70,6 +70,11 @@ export const CREDITS = {
             "note": "텔레그램 EPUB 책 보기 (JSZip과 함께)"
         },
         {
+            "name": "한국어 위키백과",
+            "url": "https://ko.wikipedia.org",
+            "note": "TMDB에 없는 한국 드라마·예능의 소개 (CC BY-SA 4.0 - 상세 화면에 출처 링크)"
+        },
+        {
             "name": "AniList API",
             "url": "https://anilist.co",
             "note": "TMDB에서 못 찾은 애니의 작품 정보(포스터·줄거리·장르·평점) - 키 없이 GraphQL"
@@ -110,6 +115,12 @@ export const CREDITS = {
 export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
+    {
+        "pr": 177,
+        "version": "1.3.18",
+        "date": "2026-11-19",
+        "title": "텔레그램 한국 드라마·예능 작품 정보: 파일 이름의 방송사·편성·방송일 떼고 찾기, 방송일로 TMDB 회차 맞추기(장수 예능), TMDB·AniList에 없으면 한국어 위키백과에서 (출처 표시)"
+    },
     {
         "pr": 176,
         "version": "1.3.17",

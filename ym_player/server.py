@@ -44,7 +44,7 @@ from urllib.parse import quote, urlencode
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
 from yarl import URL
 
-from . import __version__, activity, anilist, auth, bookoasis, brunch, perf, cctv, chatfind, config_store, discord_feed, folder_watch, iptv, kradio, mcp, media_cache, memtrim, mp4cache, plex_to_tg, podcast, prefs, radio, recipe, subtitles, telegram_src, tmdb, transcode, updates
+from . import __version__, activity, auth, metasource, bookoasis, brunch, perf, cctv, chatfind, config_store, discord_feed, folder_watch, iptv, kradio, mcp, media_cache, memtrim, mp4cache, plex_to_tg, podcast, prefs, radio, recipe, subtitles, telegram_src, tmdb, transcode, updates
 
 log = logging.getLogger("ym_player")
 
@@ -2053,16 +2053,13 @@ def _tmdb_for(request, tg):
 
 
 async def _anilist_meta(request, target):
-    """TMDB에서 못 찾은 작품을 AniList(애니)에서 -> (정보 또는 None, 실패했나). 실패(요청 제한·연결)는 '못 찾음'으로 적지 않게"""
-    try:
-        return await anilist.find(request.app[HTTP], target["titles"], target.get("year") or "", target["kind"]), False
-    except Exception as e:  # noqa: BLE001 - 화면은 그대로 나오게
-        log.info("AniList 실패 (%s): %s", target.get("mkey"), e)
-        return None, True
+    """TMDB에서 못 찾은 작품을 AniList(애니) -> 한국어 위키백과(드라마·예능)에서 -> (정보 또는 None, 실패했나).
+    실패(요청 제한·연결)는 '못 찾음'으로 적지 않게"""
+    return await metasource.fallback(request.app[HTTP], target)
 
 
 async def _tg_meta(request, tg, target, refresh=False):
-    """target(meta_target) -> 저장한 정보 또는 새로 찾은 정보. TMDB에서 못 찾았거나 TMDB 키가 없으면 AniList(애니)에서"""
+    """target(meta_target) -> 저장한 정보 또는 새로 찾은 정보. TMDB에서 못 찾았거나 TMDB 키가 없으면 AniList(애니) -> 위키백과(드라마·예능)"""
     if not target:
         return None
     api = _tmdb_for(request, tg)
@@ -2104,6 +2101,32 @@ async def _tg_seasons(request, tg, meta, seasons):
     return out
 
 
+async def _match_aired(request, tg, meta, aired):
+    """방송일(파일 이름의 241124)로 TMDB 회차 찾기 -> (시즌, 회차) 또는 None. 장수 예능은 TMDB가 해마다 시즌을 나눠 두어
+    파일의 회차 번호(E730)와 맞지 않는다 - 방송일은 맞다. 시즌 회차 목록은 저장해 두고 다시 쓴다 (최근 시즌부터, 40개까지)"""
+    if not aired or not meta or meta.get("kind") != "tv" or not meta.get("id"):
+        return None
+    api = _tmdb_for(request, tg)
+    seasons = sorted({int(s) for s in meta.get("seasons") or [] if s is not None}, key=lambda s: (s == 0, -s))[:40]
+    for s in seasons:
+        data, fetched = telegram_src.season_get(meta["id"], s)
+        if data is None or time.time() - fetched > SEASON_FRESH_SEC:
+            if not api.key:
+                continue
+            try:
+                data = await api.season(meta["id"], s)
+            except tmdb.TmdbError:
+                data = data or {}
+            telegram_src.season_put(meta["id"], s, data)
+        for ep, info in (data or {}).items():
+            if str((info or {}).get("air_date") or "") == aired:
+                return s, int(ep)
+        dates = [str((i or {}).get("air_date") or "") for i in (data or {}).values() if (i or {}).get("air_date")]
+        if dates and max(dates) < aired[:4]:   # 이 시즌(과 그 앞 시즌들)은 방송일보다 앞 - 더 볼 것 없음
+            break
+    return None
+
+
 @telegram_api
 async def tg_meta(request, tg):
     """GET /api/tg/{sid}/meta/{channel}/{msg} (영상) 또는 /meta/{channel}?series=키 -> {meta, episodes}"""
@@ -2132,6 +2155,14 @@ async def tg_meta(request, tg):
         log.warning("TMDB 실패: %s", e)
         return web.json_response({"success": True, "meta": None, "error": f"{type(e).__name__}: {e}"})
     seasons = []
+    if target and target.get("aired") and meta and meta.get("kind") == "tv":   # 방송일로 회차 맞추기 (예능 E730 ↔ TMDB 시즌·회차)
+        try:
+            hit = await _match_aired(request, tg, meta, target["aired"])
+        except Exception as e:  # noqa: BLE001
+            log.info("방송일로 회차 찾기 실패: %s", e)
+            hit = None
+        if hit:
+            target = {**target, "season": hit[0], "ep": hit[1]}
     if target and target.get("season") is not None:
         seasons = [target["season"]]
     elif msg is None and meta and meta.get("kind") == "tv":
