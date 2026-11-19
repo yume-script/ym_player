@@ -70,6 +70,11 @@ export const CREDITS = {
             "note": "텔레그램 EPUB 책 보기 (JSZip과 함께)"
         },
         {
+            "name": "AniList API",
+            "url": "https://anilist.co",
+            "note": "TMDB에서 못 찾은 애니의 작품 정보(포스터·줄거리·장르·평점) - 키 없이 GraphQL"
+        },
+        {
             "name": "Telethon",
             "url": "https://github.com/LonamiWebs/Telethon",
             "note": "텔레그램 접속"
@@ -105,6 +110,12 @@ export const CREDITS = {
 export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
+    {
+        "pr": 176,
+        "version": "1.3.17",
+        "date": "2026-11-19",
+        "title": "텔레그램 작품 정보: TMDB에서 못 찾은(또는 TMDB 키가 없는) 애니는 AniList에서 찾아 포스터·줄거리·장르·평점을 채움"
+    },
     {
         "pr": 175,
         "version": "1.3.16",
