@@ -360,6 +360,7 @@ def test_older_pages_are_prefetched_in_background(env):
         assert telegram_src.sync_state("tg", 777)["oldest"] == 601
         page = await tg.videos([777], offset=60, limit=40)  # 이 페이지는 꽉 차지만 뒤에 남은 게 33개 < 80
         assert len(page["items"]) == 40 and telegram_src.sync_state("tg", 777)["oldest"] == 601  # 기다리진 않음
+        assert page["next_offset"] == 100   # 다음 쪽 위치 (읽은 행 기준)
         await tg._tasks[("older", 777)]  # 다음 페이지 몫은 뒤에서
         assert telegram_src.sync_state("tg", 777)["oldest"] == 201
         await asyncio.gather(*[t for t in tg._tasks.values() if not t.done()], return_exceptions=True)
@@ -1988,3 +1989,36 @@ def test_list_uses_found_movie_title(monkeypatch, tmp_path):
     by = {x["msg"]: x for x in items}
     assert by[1]["meta_title"] == "총알 탄 사나이" and by[2]["meta_title"] == "웨폰"
     assert "meta_title" not in by[3] and "meta_title" not in by[4]
+
+
+def test_split_movies_paging_no_repeat(monkeypatch, tmp_path):
+    """나눠 올린 영화(_0000/_0001)를 한 카드로 합쳐도 다음 쪽은 DB에서 읽은 행 수만큼 뒤에서 -
+    합친 카드 수로 넘기면 앞쪽 영화가 다시 나왔다 (페이지 경계에 걸린 조각도 빠지거나 겹치지 않게)"""
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    telegram_src._migrated.discard(str(tmp_path))
+    telegram_src._GROUPS.clear()
+    rows, msg = [], 0
+    for i in range(10):          # 영화 10편, 편마다 두 조각 (+ 사이사이 조각 아닌 영화 3편)
+        for part in (0, 1):
+            msg += 1
+            rows.append((msg, f"Movie{i}.2025.1080p_000{part}", f"Movie{i}.2025.1080p_000{part}.mkv",
+                         f"2026-11-{10 + i:02d}T10:00:{part:02d}+00:00"))
+        if i % 4 == 0:
+            msg += 1
+            rows.append((msg, f"Single{i} (2024)", f"Single{i}.2024.mkv", f"2026-11-{10 + i:02d}T11:00:00+00:00"))
+    with telegram_src.db() as conn:
+        conn.executemany(
+            "INSERT INTO videos(source,channel,msg,title,caption,file_name,mime,duration,size,width,height,date,has_thumb,kind)"
+            " VALUES('tg',1,?,?,'',?,'video/mp4',60,1,1,1,?,0,'video')", rows)
+    seen, offset = [], 0
+    for _ in range(20):
+        counts = {}
+        items, _total = telegram_src.query_videos("tg", [1], offset=offset, limit=5, counts=counts)
+        seen += [x["title"] for x in items]
+        if not counts["raw"]:
+            break
+        assert counts["raw"] >= len(items)
+        offset += counts["raw"]
+    assert len(seen) == len(set(seen)), seen                     # 다시 나온 영화 없음
+    assert sorted(t for t in seen if t.startswith("Movie")) == [f"Movie{i}.2025.1080p" for i in range(10)]
+    assert sum(t.startswith("Single") for t in seen) == 3

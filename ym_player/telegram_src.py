@@ -1632,8 +1632,10 @@ def _channel_clause(channels, kinds, col=""):
     return "(" + " OR ".join(parts) + ")", args
 
 
-def query_videos(sid, channels, offset=0, limit=40, q="", sort="latest", user="", kind="", kinds=None, group=False):
-    """kind: "video" / "image" / "book" / "doc" / "video,doc"처럼 여럿 / ""(전부 - 영상의 포스터로 짝지은 사진은 뺌).
+def query_videos(sid, channels, offset=0, limit=40, q="", sort="latest", user="", kind="", kinds=None, group=False, counts=None):
+    """counts: dict를 주면 counts["raw"]에 DB에서 읽은 행 수(나눈 조각을 하나로 합치기 전)를 적는다 - 다음 쪽은 offset+raw부터
+    (합친 뒤 카드 수로 넘기면 앞쪽 영상이 다시 나온다).
+    kind: "video" / "image" / "book" / "doc" / "video,doc"처럼 여럿 / ""(전부 - 영상의 포스터로 짝지은 사진은 뺌).
     kinds: 채널마다 정한 종류"""
     if not channels:
         return [], 0
@@ -1665,6 +1667,8 @@ def query_videos(sid, channels, offset=0, limit=40, q="", sort="latest", user=""
         total = conn.execute(f"SELECT COUNT(*) FROM videos WHERE {where}", args).fetchone()[0]
         rows = conn.execute(f"SELECT * FROM videos WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
                             [*args, int(limit), int(offset)]).fetchall()
+        if counts is not None:
+            counts["raw"] = len(rows)
         prog = _progress_map(conn, sid, rows, user)
         posters = _poster_map(conn, sid, rows)
         series = _series_map(conn, sid, rows, user) if group else {}
@@ -1672,7 +1676,10 @@ def query_videos(sid, channels, offset=0, limit=40, q="", sort="latest", user=""
         plex = _plex_posters(conn, sid, [(r["channel"], r["msg"]) for r in rows], names)
         out = [_row(r, prog, posters) for r in rows]
         if kind != "image":   # 나눠 올린 조각들은 목록에서 하나로
-            total -= _merge_parts(conn, sid, out)
+            dropped = _merge_parts(conn, sid, out)
+            total -= dropped
+            if counts is not None:
+                counts["dropped"] = dropped
     for d in out:
         s = series.get((d["channel"], d["msg"]))
         if s:
@@ -2497,7 +2504,8 @@ class TelegramSource:
         if HIDE_BL and meta_flags_pending(self.sid, channels):
             self.background(("meta_flags",), self.scan_meta_flags)
         # 색인 조회는 따로 도는 스레드에서 (큰 채널은 수백 ms - 그동안 서버의 다른 요청이 멈추지 않게)
-        rows, total = await asyncio.to_thread(query_videos, self.sid, channels, offset, limit, q, sort, user, kind, self.kinds, group)
+        counts = {}
+        rows, total = await asyncio.to_thread(query_videos, self.sid, channels, offset, limit, q, sort, user, kind, self.kinds, group, counts)
         if fill and len(channels) == 1 and not q and sort == "latest":
             ch = channels[0]
             for _ in range(OLDER_BATCHES_PER_PAGE):
@@ -2505,18 +2513,21 @@ class TelegramSource:
                     break
                 more = await self.sync_older(ch)
                 # 더 받을 게 없다고 해도 다시 읽는다 - 뒤에서 돌던 훑기가 기다리는 사이에 채널 끝까지 채워 두었을 수 있다
-                rows, total = await asyncio.to_thread(query_videos, self.sid, channels, offset, limit, q, sort, user, kind, self.kinds, group)
+                rows, total = await asyncio.to_thread(query_videos, self.sid, channels, offset, limit, q, sort, user, kind, self.kinds, group, counts)
                 if not more:
                     break
-            ahead = total - (offset + len(rows))
+            ahead = total - (offset + counts.get("raw", len(rows)))
             if ahead < limit * 2 and not sync_state(self.sid, ch)["complete"]:
                 self.background(("older", ch), lambda: self.sync_older(ch))
         complete = all(sync_state(self.sid, c)["complete"] for c in channels)
         took = time.time() - t0
         if took > 2:
             log.info("telegram 목록이 %.1f초 걸림 (채널 %s, offset %s, 받은 %s개)", took, channels, offset, len(rows))
-        return {"items": rows, "total": total, "more": (offset + len(rows) < total) or not complete,
-                "syncing": syncing}
+        # 다음 쪽은 DB에서 읽은 행 수만큼 뒤에서 (나눈 조각을 합쳐 카드가 줄어도 - 합친 카드 수로 넘기면 앞의 영화가 다시 나온다)
+        raw = counts.get("raw", len(rows))
+        raw_total = total + counts.get("dropped", 0)
+        return {"items": rows, "total": total, "next_offset": offset + raw,
+                "more": (offset + raw < raw_total) or not complete, "syncing": syncing}
 
     # ----- 파일 -----
     def _remember(self, channel, msg):
