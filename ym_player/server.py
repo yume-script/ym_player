@@ -2269,6 +2269,22 @@ async def tg_series(request, tg):
 
 
 @telegram_api
+async def tg_artists(request, tg):
+    """음악 채널의 아티스트들 GET /api/tg/{sid}/artists/{channel}?q=   /  한 아티스트 ?name=이름 (앨범·곡)"""
+    channel = int(request.match_info["channel"])
+    if channel not in _user_channels(request, tg):
+        return _json_error(404, "설정에서 고르지 않은 채널입니다.")
+    name = request.query.get("name")
+    if name is not None:
+        data = await asyncio.to_thread(telegram_src.music_artist, tg.sid, channel, name, username(request))
+        if not data:
+            return _json_error(404, "아티스트를 찾을 수 없습니다.")
+        return web.json_response({"success": True, **data})
+    items = await asyncio.to_thread(telegram_src.music_artists, tg.sid, channel, request.query.get("q", ""))
+    return web.json_response({"success": True, "items": items})
+
+
+@telegram_api
 async def tg_series_cover(request, tg):
     """작품 카드/상세 그림 GET /api/tg/{sid}/series-cover/{channel}?key=작품키 - 작품 정보 파일의 표지 (서버가 한 번 받아 둠).
     없으면 그 작품 회차의 썸네일로"""
@@ -4401,6 +4417,7 @@ def create_app(require_auth=True):
     app.router.add_get(r"/api/tg/{sid}/image/{channel:-?\d+}/{msg:\d+}", tg_image)
     app.router.add_get(r"/api/tg/{sid}/sub/{channel:-?\d+}/{msg:\d+}", tg_subtitle)
     app.router.add_get(r"/api/tg/{sid}/series/{channel:-?\d+}", tg_series)
+    app.router.add_get(r"/api/tg/{sid}/artists/{channel:-?\d+}", tg_artists)
     app.router.add_get(r"/api/tg/{sid}/series-cover/{channel:-?\d+}", tg_series_cover)
     app.router.add_get(r"/api/tg/{sid}/book/{channel:-?\d+}/{msg:\d+}", tg_book)
     app.router.add_get(r"/api/tg/{sid}/book/{channel:-?\d+}/{msg:\d+}/{n:\d+}", tg_book_page)

@@ -474,6 +474,10 @@ body.player-open { overflow: hidden; }
 .pip-art-video { position: fixed; left: 0; bottom: 0; width: 2px; height: 2px; opacity: 0; pointer-events: none; }
 .player.is-live .vod-only { display: none !important; }
 .player:not(.is-shuffle) .shuffle-only, .player.is-live .shuffle-only { display: none !important; }
+/* 음악(곡 목록): 이전·다음 곡, 섞어 듣기, 반복 (한 곡 반복은 1 표시) */
+.player:not(.is-music) .music-only { display: none !important; }
+.pbtn.repeat-one { position: relative; }
+.pbtn.repeat-one::after { content: '1'; position: absolute; right: 4px; bottom: 3px; font-size: 0.6rem; font-weight: 800; line-height: 1; }
 
 .seek { display: flex; align-items: center; gap: 0.9rem; margin-bottom: 0.4rem; }
 .seek-time { font-variant-numeric: tabular-nums; font-size: 0.85rem; color: #ddd; min-width: 3.4rem; text-align: center; }

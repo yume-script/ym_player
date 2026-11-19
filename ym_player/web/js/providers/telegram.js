@@ -317,6 +317,7 @@ export class TelegramProvider {
     /** 라이브러리 화면의 보기 고르기 (영상/사진). 관리자가 채널 종류를 정해 두었으면 고를 것 없음(null) */
     libraryKinds(channel) {
         const c = this.channels.find((x) => x.id === String(channel));
+        if (c && c.kind === 'music') return [['', '앨범'], ['artist', '아티스트'], ['track', '곡']];
         if (c && c.kind) return null;
         return [['', '전체'], ['video', '영상'], ['image', '사진'], ['doc', '책']];
     }
@@ -350,8 +351,16 @@ export class TelegramProvider {
         return [btn];
     }
 
-    async getLibraryItems(channel, { start = 0, size = 60, sort = 'latest', kind = '' } = {}) {
-        const p = new URLSearchParams({ channel, offset: start, limit: size, sort, kind, group: 1 }); // 회차는 시리즈로 묶어서
+    async getLibraryItems(channel, { start = 0, size = 60, sort = 'latest', kind = '', q = '' } = {}) {
+        if (this._isMusic(channel) && kind === 'artist') {   // 음악: 아티스트 (이름 순, 한 번에)
+            if (start > 0) return { items: [], total: start };
+            const data = await api(`${this.base}/artists/${channel}?${new URLSearchParams({ q })}`);
+            const items = (data.items || []).map((a) => this._artistItem(channel, a));
+            return { items, total: items.length };
+        }
+        const music = this._isMusic(channel);
+        if (music && kind === 'track') kind = 'audio';   // 음악: 곡 하나하나 (앨범으로 묶지 않음)
+        const p = new URLSearchParams({ channel, offset: start, limit: size, sort, kind, group: music && kind === 'audio' ? 0 : 1 }); // 회차는 시리즈로 묶어서
         const data = await api(`${this.base}/videos?${p}`);
         // 아직 훑지 않은 오래된 메시지가 남았으면 total보다 더 있을 수 있다 -> 한 칸 더 있다고 알려 계속 불러오게
         // 다음 쪽은 서버가 알려 준 위치부터 (나눠 올린 조각을 한 카드로 합쳐 카드 수가 읽은 수보다 적다 -
@@ -622,6 +631,15 @@ export class TelegramProvider {
             parent: { label: this.channelTitle(channel), route: `#/library/${this.id}/${channel}` },
             children, childrenTitle: '트랙', childrenStyle: 'track',
             onDeck: children[0] ? { ...children[0], subtitle: '재생' } : null,
+            extraActions: [{ icon: 'shuffle', label: '섞어 듣기', title: '이 앨범을 섞어서', onClick: async () => {
+                const queue = children.map((c) => ({ pid: this.id, id: c.id, title: c.raw.title }));
+                if (!queue.length) return;
+                const { player } = await import('../player.js');
+                if (!player.music.shuffle) player.toggleMusicShuffle();
+                player.playItem(this, queue[Math.floor(Math.random() * queue.length)].id, { queue, fromStart: true });
+            } }, ...(artist ? [{ icon: 'user', label: artist, title: '이 아티스트의 앨범·곡', onClick: () => {
+                location.hash = `#/item/${this.id}/${encodeURIComponent(`artist:${channel}:${artist}`)}`;
+            } }] : [])],
         };
     }
 
@@ -709,10 +727,18 @@ export class TelegramProvider {
 
     /** 곡 재생: 원본 그대로 (브라우저가 mp3·flac·m4a·ogg를 직접), 오디오 화면(앨범 아트), 끝나면 앨범의 다음 곡.
      *  음악은 곡 중간부터 이어 듣지 않는다 (처음부터) */
-    async _audioPlayback(id, startAt = null) {
+    async _audioPlayback(id, startAt = null, opts = {}) {
         const v = await this._video(id);
         const [channel, msg] = String(id).split(':');
         const mi = musicInfo(v);
+        // 곡 목록(섞어 듣기·반복·이전/다음 곡): 넘겨받은 목록(아티스트 전체 재생 등)에 이 곡이 있으면 그것, 아니면 이 곡의 앨범
+        let queue = Array.isArray(opts.queue) && opts.queue.some((x) => x.id === id) ? opts.queue : null;
+        if (!queue && v.series && v.series.key) {
+            try {
+                const al = await api(`${this.base}/series/${channel}?${new URLSearchParams({ key: v.series.key })}`);
+                queue = (al.episodes || []).map((e) => { this._seen.set(`${e.channel}:${e.msg}`, e); return { pid: this.id, id: `${e.channel}:${e.msg}`, title: musicInfo(e).title }; });
+            } catch (e) { queue = null; }
+        }
         const report = (position, duration) => fetch(`${this.base}/progress`, {
             method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ channel, msg, position, duration: duration || v.duration }),
@@ -725,8 +751,61 @@ export class TelegramProvider {
             durationHint: v.duration || 0,
             url: `${this.base}/stream/${channel}/${msg}`, kind: 'direct', startTime: startAt || 0,
             onProgress: (state, sec) => report(sec), onStop: (sec) => report(sec),
-            getNext: n ? async () => ({ pid: this.id, id: `${channel}:${n.msg}`, title: n.title }) : null,
+            getNext: n && !queue ? async () => ({ pid: this.id, id: `${channel}:${n.msg}`, title: n.title }) : null,
+            queue: queue && queue.length ? queue : null, queueIndex: queue ? Math.max(0, queue.findIndex((x) => x.id === id)) : 0,
             explainError: () => api(`${this.base}/play-error/${channel}/${msg}`).then((j) => j.error || '').catch(() => ''),
+        };
+    }
+
+    // ----- 음악 채널: 보기 (앨범 / 아티스트 / 곡) -----
+    _isMusic(channel) {
+        const c = this.channels.find((x) => x.id === String(channel));
+        return !!(c && c.kind === 'music');
+    }
+
+    /** 아티스트 카드 (누르면 그 아티스트의 앨범·곡) */
+    _artistItem(channel, a) {
+        const id = `artist:${channel}:${a.name}`;
+        const cover = a.cover ? `${this.base}/thumb/${channel}/${a.cover}` : '';
+        return {
+            pid: this.id, id, type: 'show', title: a.name,
+            subtitle: [a.albums ? `앨범 ${a.albums}` : '', `${a.tracks}곡`].filter(Boolean).join(' · '),
+            thumb: cover, wideThumb: cover, shape: 'square', cardClass: 'card-artist',
+            route: `#/item/${this.id}/${encodeURIComponent(id)}`, raw: a,
+        };
+    }
+
+    /** 아티스트 상세: 앨범 카드들 + [전체 재생]·[섞어 듣기] (곡 목록 = 그 아티스트의 모든 곡, 앨범·트랙 순) */
+    async _artistDetail(id) {
+        const [, channel, ...rest] = String(id).split(':');
+        const name = rest.join(':');
+        const data = await api(`${this.base}/artists/${channel}?${new URLSearchParams({ name })}`);
+        const tracks = data.tracks || [];
+        tracks.forEach((t) => this._seen.set(`${t.channel}:${t.msg}`, t));
+        const queue = tracks.map((t) => ({ pid: this.id, id: `${t.channel}:${t.msg}`, title: musicInfo(t).title }));
+        const albums = (data.albums || []).map((v) => this.toItem(v));
+        const singles = tracks.filter((t) => !t.series && t.ep == null).map((t) => this.toItem(t));
+        const cover = albums.map((a) => a.thumb).find(Boolean) || tracks.map((t) => (t.has_thumb ? `${this.base}/thumb/${t.channel}/${t.msg}` : '')).find(Boolean) || '';
+        const total = tracks.reduce((a, t) => a + (t.duration || 0), 0);
+        const play = (shuffle) => async () => {
+            if (!queue.length) return;
+            const { player } = await import('../player.js');
+            if (!!player.music.shuffle !== shuffle) player.toggleMusicShuffle();
+            const first = shuffle ? queue[Math.floor(Math.random() * queue.length)] : queue[0];
+            player.playItem(this, first.id, { queue, fromStart: true });
+        };
+        return {
+            pid: this.id, id, type: 'artist', title: data.name, subtitle: '',
+            poster: cover, posterShape: 'square', art: '',
+            metaLine: [albums.length ? `앨범 ${albums.length}` : '', `${tracks.length}곡`, total ? fmtDuration(total * 1000) : ''].filter(Boolean),
+            rating: null, summary: '', tagline: '', genres: [], directors: [], cast: [],
+            playable: false, unwatched: 0, watched: false, viewOffset: 0, duration: 0, progress: 0,
+            parent: { label: this.channelTitle(channel), route: `#/library/${this.id}/${channel}` },
+            children: [...albums, ...singles], childrenTitle: albums.length ? '앨범 · 곡' : '곡',
+            extraActions: [
+                { icon: 'play', label: '전체 재생', title: '이 아티스트의 모든 곡 (앨범·트랙 순)', onClick: play(false) },
+                { icon: 'shuffle', label: '섞어 듣기', title: '이 아티스트의 모든 곡을 섞어서', onClick: play(true) },
+            ],
         };
     }
 
@@ -752,6 +831,7 @@ export class TelegramProvider {
 
     async getDetail(id) {
         if (String(id).startsWith('series:')) return this._seriesDetail(id);
+        if (String(id).startsWith('artist:')) return this._artistDetail(id);
         const seenV = this._seen.get(String(id));
         if (seenV && seenV.kind === 'audio') return this._trackDetail(id);
 
@@ -907,7 +987,7 @@ export class TelegramProvider {
         if (String(id).startsWith('series:')) id = await this._seriesNext(id);   // (confirmPlay를 거치지 않은 경우에도)
         id = plainId(id);
         const seenV = this._seen.get(id) || (String(id).includes(':') ? await this._video(id).catch(() => null) : null);
-        if (seenV && seenV.kind === 'audio') return this._audioPlayback(id, startAt);
+        if (seenV && seenV.kind === 'audio') return this._audioPlayback(id, startAt, arguments[1] || {});
         const v = await this._video(id, true);
         const [channel, msg] = String(id).split(':');
         const play = v.play || { mode: 'direct' };

@@ -380,6 +380,75 @@ def album_key(info):
     return "m:" + hashlib.sha1(base.encode("utf-8")).hexdigest()[:12]
 
 
+def artist_of(info):
+    """아티스트별 보기의 이름: 앨범 아티스트(컴필레이션은 'Various Artists' 등으로 한데) > 곡 아티스트"""
+    return (info.get("album_artist") or info.get("artist") or "").strip()
+
+
+def _audio_rows(conn, sid, channel):
+    return conn.execute("SELECT * FROM videos WHERE source=? AND channel=? AND kind='audio' ORDER BY msg DESC",
+                        (sid, channel)).fetchall()
+
+
+def music_artists(sid, channel, q=""):
+    """음악 채널의 아티스트들 [{name, albums, tracks, cover(그림 있는 최근 곡 msg), latest(최근 곡 날짜)}] - 이름 순"""
+    with db() as conn:
+        rows = _audio_rows(conn, sid, channel)
+        albums = {r["video"]: r["skey"] for r in conn.execute(
+            "SELECT video, skey FROM series WHERE source=? AND channel=? AND skey LIKE 'm:%'", (sid, channel)).fetchall()}
+    out = {}
+    for r in rows:
+        name = artist_of(music_info(r["caption"], r["title"])) or "알 수 없는 아티스트"
+        if q and q.casefold() not in name.casefold():
+            continue
+        a = out.setdefault(name.casefold(), {"name": name, "albums": set(), "tracks": 0, "cover": 0, "latest": ""})
+        a["tracks"] += 1
+        if albums.get(r["msg"]):
+            a["albums"].add(albums[r["msg"]])
+        if r["has_thumb"] and not a["cover"]:
+            a["cover"] = r["msg"]
+        a["latest"] = max(a["latest"], r["date"] or "")
+    return sorted(({**a, "albums": len(a["albums"])} for a in out.values()), key=lambda a: a["name"].casefold())
+
+
+def music_artist(sid, channel, name, user=""):
+    """한 아티스트: {name, albums: [목록 행(앨범 카드 - series 포함)], tracks: [곡 행 - 앨범·디스크·트랙 순]}. 없으면 None"""
+    want = (name or "").strip().casefold()
+    with db() as conn:
+        rows = [r for r in _audio_rows(conn, sid, channel)
+                if (artist_of(music_info(r["caption"], r["title"])) or "알 수 없는 아티스트").casefold() == want]
+        if not rows:
+            return None
+        msgs = [r["msg"] for r in rows]
+        marks = ",".join("?" * len(msgs))
+        srows = conn.execute(f"SELECT video, skey, title, season, ep, rep FROM series WHERE source=? AND channel=? AND video IN ({marks})",
+                             [sid, channel, *msgs]).fetchall()
+        sinfo = {s["video"]: s for s in srows}
+        keys = {s["skey"] for s in srows}
+        reps = [r for r in conn.execute(
+            f"SELECT v.* FROM series s JOIN videos v ON v.source=s.source AND v.channel=s.channel AND v.msg=s.video "
+            f"WHERE s.source=? AND s.channel=? AND s.rep=1 AND s.skey IN ({','.join('?' * len(keys)) or 'NULL'})",
+            [sid, channel, *keys]).fetchall()] if keys else []
+        prog, posters = _progress_map(conn, sid, rows + reps, user), _poster_map(conn, sid, rows + reps)
+        series = _series_map(conn, sid, reps, user)
+    albums = []
+    for r in sorted(reps, key=lambda r: (str(music_info(r["caption"]).get("year") or ""), r["msg"]), reverse=True):
+        d = _row(r, prog, posters)
+        s = series.get((d["channel"], d["msg"]))
+        if s:
+            d["series"] = s
+        albums.append(d)
+    order = {r["msg"]: r for r in rows}
+
+    def track_key(r):
+        s = sinfo.get(r["msg"])
+        return (s["title"].casefold() if s else "~", s["season"] if s else 0, s["ep"] if s else 0, r["msg"])
+    tracks = [{**_row(r, prog, posters), **({"season": sinfo[r["msg"]]["season"], "ep": sinfo[r["msg"]]["ep"]} if r["msg"] in sinfo else {})}
+              for r in sorted(order.values(), key=track_key)]
+    return {"name": artist_of(music_info(rows[0]["caption"], rows[0]["title"])) or "알 수 없는 아티스트",
+            "albums": albums, "tracks": tracks}
+
+
 def message_to_video(msg):
     """동영상 메시지면 색인용 dict, 아니면 None (예전 이름 - 사진은 None)."""
     item = message_to_media(msg)

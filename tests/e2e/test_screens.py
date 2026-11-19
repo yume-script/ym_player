@@ -493,6 +493,71 @@ def test_telegram_music_album(page, server):
     facts = page.inner_text(".detail-facts")
     assert "김제휘" in facts and "아이유" in facts
     js_modules(page)
-    pb = page.evaluate("window._reg.byId('tg').getPlayback('777:2').then(p => p.getNext().then(n => "
-                       "({audio: p.audioOnly, url: p.url, title: p.title, sub: p.subtitle, next: n.id})))")
-    assert pb == {"audio": True, "url": "/api/tg/tg/stream/777/2", "title": "첫째", "sub": "아이유 · Palette", "next": "777:1"}
+    pb = page.evaluate("window._reg.byId('tg').getPlayback('777:2').then(p => "
+                       "({audio: p.audioOnly, url: p.url, title: p.title, sub: p.subtitle, q: p.queue.map(x => x.id), i: p.queueIndex}))")
+    assert pb == {"audio": True, "url": "/api/tg/tg/stream/777/2", "title": "첫째", "sub": "아이유 · Palette",
+                  "q": ["777:2", "777:1", "777:3"], "i": 0}   # 다음 곡은 앨범 곡 목록에서 (트랙 순)
+
+
+def test_music_queue_and_artist_view(page, server):
+    """음악: 곡 목록의 다음 곡 고르기(반복 안 함·전체·한 곡, 섞어 듣기), 앨범 곡의 재생 목록, 아티스트 보기·상세"""
+    set_sources(page, server, [{"id": "tg", "type": "telegram", "name": "텔레", "api_id": "1", "api_hash": "h", "enabled": True,
+                                "channels": [{"id": 777, "title": "음악", "kind": "music"}]}])
+    cap = "🎵 {t}\n아티스트: 아이유\n앨범: Palette (2017)\n트랙: {n}/3\n앨범ID: abc"
+
+    def track(msg, t, n):
+        return {"channel": 777, "msg": msg, "kind": "audio", "title": t, "caption": cap.format(t=t, n=n), "file_name": f"{n}.flac",
+                "date": "2026-11-19T01:00:00+00:00", "duration": 200, "size": 1, "position": 0, "watched": False, "poster": 0,
+                "has_thumb": 0, "season": 1, "ep": n, "special": False}
+    eps = [track(1, "첫째", 1), track(2, "둘째", 2), track(3, "셋째", 3)]
+    album = {**eps[2], "series": {"key": "m:abc", "title": "Palette", "count": 3, "unwatched": 3, "album": {"artist": "아이유", "year": "2017"}}}
+
+    def route(r):
+        u = r.request.url
+        if "/api/tg/tg/artists/777?name=" in u:
+            return r.fulfill(json={"success": True, "name": "아이유", "albums": [album], "tracks": eps})
+        if "/api/tg/tg/artists/777" in u:
+            return r.fulfill(json={"success": True, "items": [{"name": "아이유", "albums": 1, "tracks": 3, "cover": 0, "latest": ""}]})
+        if "/api/tg/tg/series/777" in u:
+            return r.fulfill(json={"success": True, "key": "m:abc", "title": "Palette", "channel": 777, "episodes": eps})
+        if "/api/tg/tg/video/777/2" in u:
+            return r.fulfill(json={"success": True, "item": {**eps[1], "series": {"key": "m:abc", "title": "Palette", "next": None}}})
+        return r.continue_()
+    page.route("**/api/tg/**", route)
+    page.goto(server + "/#/home")
+    page.wait_for_timeout(800)
+    js_modules(page)
+    # 앨범 곡 재생: 곡 목록은 앨범 (가운데 곡이 지금)
+    pb = page.evaluate("window._reg.byId('tg').getPlayback('777:2').then(p => ({q: p.queue.map(x => x.id), i: p.queueIndex, next: p.getNext}))")
+    assert pb == {"q": ["777:1", "777:2", "777:3"], "i": 1, "next": None}
+    pick = page.evaluate("""Promise.resolve(window._pl).then((player) => {
+        const q = ['a', 'b', 'c'].map(id => ({pid: 'tg', id, title: id}));
+        const at = (i) => ({queue: q, queueIndex: i});
+        const r = {};
+        player.music = {shuffle: false, repeat: 'off', played: [], sig: ''};
+        r.off = [player.musicPick(at(0), 1, true), player.musicPick(at(2), 1, true), player.musicPick(at(0), -1, false)];
+        player.music.repeat = 'all'; r.all = player.musicPick(at(2), 1, true);
+        player.music.repeat = 'one'; r.one = [player.musicPick(at(1), 1, true), player.musicPick(at(1), 1, false)];
+        player.music = {shuffle: true, repeat: 'off', played: [], sig: ''};
+        const seen = [0]; let cur = 0;
+        for (let k = 0; k < 2; k++) { cur = player.musicPick(at(cur), 1, true); seen.push(cur); }
+        r.shuffleAll = seen.slice().sort().join(',');
+        r.shuffleEnd = player.musicPick(at(cur), 1, true);
+        player.music.repeat = 'all'; r.shuffleRepeat = player.musicPick(at(cur), 1, true) !== cur;
+        return r;
+    })""")
+    assert pick["off"] == [1, -1, 2] and pick["all"] == 0 and pick["one"] == [1, 2]
+    assert pick["shuffleAll"] == "0,1,2" and pick["shuffleEnd"] == -1 and pick["shuffleRepeat"] is True
+    # 곡을 틀면 재생기에 이전·다음 곡·섞어 듣기·반복 단추
+    page.evaluate("window._pl.playItem(window._reg.byId('tg'), '777:2')")
+    page.wait_for_selector(".player.is-music")
+    assert page.locator(".player .music-only:visible").count() == 4
+    page.evaluate("window._pl.stop()")
+    # 아티스트 보기
+    items = page.evaluate("window._reg.byId('tg').getLibraryItems('777', {kind: 'artist'}).then(r => r.items.map(i => [i.id, i.title, i.subtitle]))")
+    assert items == [["artist:777:아이유", "아이유", "앨범 1 · 3곡"]]
+    page.goto(server + "/#/item/tg/" + "artist%3A777%3A%EC%95%84%EC%9D%B4%EC%9C%A0")
+    page.wait_for_selector(".detail h1")
+    assert page.inner_text(".detail h1") == "아이유"
+    assert page.locator("button:has-text('전체 재생')").count() == 1 and page.locator("button:has-text('섞어 듣기')").count() == 1
+    assert "Palette" in page.inner_text(".page.detail")
