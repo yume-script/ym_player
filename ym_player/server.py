@@ -44,7 +44,7 @@ from urllib.parse import quote, urlencode
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
 from yarl import URL
 
-from . import __version__, activity, auth, bookoasis, brunch, perf, cctv, chatfind, config_store, discord_feed, folder_watch, iptv, kradio, mcp, media_cache, memtrim, mp4cache, plex_to_tg, podcast, prefs, radio, recipe, subtitles, telegram_src, tmdb, transcode, updates
+from . import __version__, activity, anilist, auth, bookoasis, brunch, perf, cctv, chatfind, config_store, discord_feed, folder_watch, iptv, kradio, mcp, media_cache, memtrim, mp4cache, plex_to_tg, podcast, prefs, radio, recipe, subtitles, telegram_src, tmdb, transcode, updates
 
 log = logging.getLogger("ym_player")
 
@@ -2052,19 +2052,36 @@ def _tmdb_for(request, tg):
     return tmdb.Tmdb(request.app[HTTP], src.get("tmdb_key", ""))
 
 
+async def _anilist_meta(request, target):
+    """TMDB에서 못 찾은 작품을 AniList(애니)에서 -> (정보 또는 None, 실패했나). 실패(요청 제한·연결)는 '못 찾음'으로 적지 않게"""
+    try:
+        return await anilist.find(request.app[HTTP], target["titles"], target.get("year") or "", target["kind"]), False
+    except Exception as e:  # noqa: BLE001 - 화면은 그대로 나오게
+        log.info("AniList 실패 (%s): %s", target.get("mkey"), e)
+        return None, True
+
+
 async def _tg_meta(request, tg, target, refresh=False):
-    """target(meta_target) -> 저장한 정보 또는 새로 찾은 정보. 키가 없으면 None"""
-    api = _tmdb_for(request, tg)
-    if not api.key or not target:
+    """target(meta_target) -> 저장한 정보 또는 새로 찾은 정보. TMDB에서 못 찾았거나 TMDB 키가 없으면 AniList(애니)에서"""
+    if not target:
         return None
+    api = _tmdb_for(request, tg)
     hit = telegram_src.meta_get(tg.sid, target["mkey"])
     if hit and not refresh:
         age = time.time() - (hit["fetched"] or 0)
         if hit["manual"] or (hit["data"] and age < META_FRESH_SEC) or (not hit["data"] and age < META_MISS_SEC):
             return hit["data"]
-    tmdb_id = hit["tmdb_id"] if hit and hit["manual"] else None
-    tmdb_id = tmdb_id or await api.find(target["kind"], target["titles"], target["year"])
-    data = await api.details(target["kind"], tmdb_id) if tmdb_id else None
+    if hit and hit["manual"] and not hit["tmdb_id"] and hit["data"]:   # 직접 고른 AniList 정보 등은 그대로
+        return hit["data"]
+    tmdb_id, data = (hit["tmdb_id"] if hit and hit["manual"] else None), None
+    if api.key:
+        tmdb_id = tmdb_id or await api.find(target["kind"], target["titles"], target["year"])
+        data = await api.details(target["kind"], tmdb_id) if tmdb_id else None
+    if not data:
+        data, failed = await _anilist_meta(request, target)
+        tmdb_id = None
+        if failed:   # AniList에 못 물어봄 - 못 찾은 것으로 적지 않고 다음에 다시
+            return hit["data"] if hit else None
     telegram_src.meta_put(tg.sid, target["mkey"], target["kind"], tmdb_id, data, manual=bool(hit and hit["manual"]))
     return data
 
@@ -2072,7 +2089,7 @@ async def _tg_meta(request, tg, target, refresh=False):
 async def _tg_seasons(request, tg, meta, seasons):
     """{시즌: {회차: 정보}} - TV 작품의 고른 시즌들"""
     out = {}
-    if not meta or meta.get("kind") != "tv":
+    if not meta or meta.get("kind") != "tv" or not meta.get("id"):   # (AniList 정보는 TMDB 번호가 없어 회차 정보 없음)
         return out
     api = _tmdb_for(request, tg)
     for s in sorted({int(x) for x in seasons if x is not None}):
@@ -2107,9 +2124,7 @@ async def tg_meta(request, tg):
                 target = {**target, "season": ep.get("season"), "ep": ep.get("ep")}
         return web.json_response({"success": True, "meta": meta, "episodes": episodes,
                                   "target": {k: target[k] for k in ("kind", "season", "ep")} if target else None})
-    if not _tmdb_for(request, tg).key:
-        return web.json_response({"success": True, "meta": None, "reason": "nokey"})
-    try:
+    try:   # (TMDB 키가 없어도 AniList에서 애니는 찾는다)
         meta = await _tg_meta(request, tg, target, refresh=request.query.get("refresh") == "1" and is_admin(request))
     except tmdb.TmdbError as e:
         return web.json_response({"success": True, "meta": None, "error": str(e)})

@@ -1377,3 +1377,96 @@ def test_plex_mp4_setting_off(data, monkeypatch):
         finally:
             await c.close()
     asyncio.run(main())
+
+
+FAKE_ANI = [{"id": 101, "siteUrl": "https://anilist.co/anime/101", "format": "TV", "episodes": 12, "duration": 24, "seasonYear": 2022,
+             "title": {"romaji": "Tensei shitara Ken deshita", "english": "Reincarnated as a Sword", "native": "転生したら剣でした"},
+             "synonyms": ["전생했더니 검이었습니다", "Tenken"], "description": "A sword <br>and a girl.", "genres": ["Action", "Fantasy"],
+             "averageScore": 72, "coverImage": {"extraLarge": "https://img/x.jpg"}, "bannerImage": "https://img/b.jpg",
+             "studios": {"nodes": [{"name": "C2C"}]}},
+            {"id": 202, "format": "MOVIE", "seasonYear": 2016, "title": {"romaji": "Kimi no Na wa.", "english": "Your Name.", "native": "君の名は。"},
+             "synonyms": [], "genres": ["Romance"], "averageScore": 85, "coverImage": {"large": "https://img/y.jpg"}}]
+
+
+def test_anilist_pick_and_meta():
+    """AniList: 별칭(한국어 제목)까지 비교, 이름이 다르면 받지 않음, 화면 제목은 한글 별칭 > 영어 > 로마자"""
+    from ym_player import anilist
+    hit = anilist.pick(FAKE_ANI, "전생했더니 검이었습니다 II")
+    assert hit["id"] == 101
+    assert anilist.pick(FAKE_ANI, "Reincarnated as a Sword")["id"] == 101
+    assert anilist.pick(FAKE_ANI, "무빙") is None                     # 애니가 아닌 작품은 맞춰지지 않음
+    m = anilist.to_meta(hit)
+    assert m["source"] == "anilist" and m["id"] is None and m["kind"] == "tv" and m["title"] == "전생했더니 검이었습니다"
+    assert m["original"] == "転生したら剣でした" and m["genres"] == ["액션", "판타지"] and m["rating"] == 7.2
+    assert m["poster"] == "https://img/x.jpg" and m["overview"] == "A sword and a girl." and m["directors"] == ["C2C"]
+    mv = anilist.to_meta(anilist.pick(FAKE_ANI, "Your Name", "2016"))
+    assert mv["kind"] == "movie" and mv["title"] == "Your Name."
+
+
+def test_tg_meta_falls_back_to_anilist(data, monkeypatch):
+    """TMDB 키가 없거나 TMDB에서 못 찾은 애니는 AniList에서 찾아 저장 (목록 카드 포스터·상세 화면)"""
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from ym_player import anilist, server, telegram_src
+    telegram_src._migrated.discard(str(data))
+    cfg = config_store.load()
+    config_store.replace_sources(cfg, [{"id": "tg", "type": "telegram", "name": "텔레", "api_id": "1", "api_hash": "h",
+                                        "channels": [{"id": 777, "title": "애니"}]}])
+    config_store.save(cfg)
+    with telegram_src.db() as conn:
+        conn.execute("INSERT INTO videos(source,channel,msg,title,caption,file_name,mime,duration,size,width,height,date,has_thumb,kind)"
+                     " VALUES('tg',777,1,'전생했더니 검이었습니다 II E08','','전생했더니 검이었습니다 II E08.mp4','video/mp4',60,1,1,1,"
+                     "'2026-11-19T00:00:00+00:00',0,'video')")
+    asked = []
+
+    async def fake_search(http, query):
+        asked.append(query)
+        return FAKE_ANI
+    monkeypatch.setattr(anilist, "search", fake_search)
+
+    async def main():
+        c = TestClient(TestServer(server.create_app(require_auth=False)))
+        await c.start_server()
+        try:
+            d = await (await c.get("/api/tg/tg/meta/777/1")).json()
+            assert d["meta"]["source"] == "anilist" and d["meta"]["title"] == "전생했더니 검이었습니다" and d["episodes"] == {}
+            assert asked
+            n = len(asked)
+            d = await (await c.get("/api/tg/tg/meta/777/1")).json()   # 저장한 것을 그대로 (다시 묻지 않음)
+            assert d["meta"]["anilist_id"] == 101 and len(asked) == n
+            items, _ = telegram_src.query_videos("tg", [777])
+            assert items[0]["plex_poster"] == "https://img/x.jpg"
+        finally:
+            await c.close()
+    asyncio.run(main())
+
+
+def test_anilist_error_not_saved_as_miss(data, monkeypatch):
+    """AniList 요청 제한·연결 실패는 '못 찾음'으로 적지 않는다 (다음에 다시 물어봄)"""
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from ym_player import anilist, server, telegram_src
+    telegram_src._migrated.discard(str(data))
+    cfg = config_store.load()
+    config_store.replace_sources(cfg, [{"id": "tg", "type": "telegram", "name": "텔레", "api_id": "1", "api_hash": "h",
+                                        "channels": [{"id": 777, "title": "애니"}]}])
+    config_store.save(cfg)
+    with telegram_src.db() as conn:
+        conn.execute("INSERT INTO videos(source,channel,msg,title,caption,file_name,mime,duration,size,width,height,date,has_thumb,kind)"
+                     " VALUES('tg',777,1,'Tenken E08','','Tenken E08.mp4','video/mp4',60,1,1,1,'2026-11-19T00:00:00+00:00',0,'video')")
+
+    async def busy(http, query):
+        raise RuntimeError("AniList 요청 제한 (잠시 뒤 다시)")
+    monkeypatch.setattr(anilist, "search", busy)
+
+    async def main():
+        c = TestClient(TestServer(server.create_app(require_auth=False)))
+        await c.start_server()
+        try:
+            d = await (await c.get("/api/tg/tg/meta/777/1")).json()
+            assert d["meta"] is None
+            tgt = telegram_src.meta_target("tg", 777, msg=1)
+            assert telegram_src.meta_get("tg", tgt["mkey"]) is None     # 못 찾음으로 적지 않음
+        finally:
+            await c.close()
+    asyncio.run(main())
