@@ -116,6 +116,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 181,
+        "version": "1.3.22",
+        "date": "2026-11-20",
+        "title": "나눠 올린 영화 상세: 상영 시간·크기를 조각을 모두 더한 값으로, 파일 이름은 '골라서 재생' 목록에만 (두 곳에 같은 것을 보이지 않게)"
+    },
+    {
         "pr": 180,
         "version": "1.3.21",
         "date": "2026-11-19",

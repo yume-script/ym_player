@@ -420,8 +420,10 @@ def test_split_movie_resume_and_part_list(page, server):
     assert page.evaluate(f"{tg}.confirmPlay('777:10', {{}})") == "777:11"            # 목록 카드: 보다 만 2번째부터
     assert page.evaluate(f"{tg}.confirmPlay('777:10:p', {{}})") == "777:10"          # 조각 목록에서 고른 1번째는 그대로
     assert page.evaluate(f"{tg}.confirmPlay('777:11', {{fromStart: true}})") == "777:10"   # [처음부터]는 첫 조각
-    d = page.evaluate(f"{tg}.getDetail('777:10').then(d => ({{id: d.id, off: d.viewOffset, kids: d.children.map(c => [c.id, c.raw.index, c.raw.title])}}))")
+    d = page.evaluate(f"{tg}.getDetail('777:10').then(d => ({{id: d.id, off: d.viewOffset, kids: d.children.map(c => [c.id, c.raw.index, c.raw.title]), meta: d.metaLine, facts: d.extraFacts}}))")
     assert d["id"] == "777:11" and d["off"] == 600000
+    assert any("(전체)" in x for x in d["meta"]) and not any(f[0] == "파일" for f in d["facts"])   # 상영 시간은 조각을 더한 값, 파일 이름은 아래 목록에만
+    assert "쥬라기 (1/3)" in d["kids"][0][2]
     assert [k[1] for k in d["kids"]] == ["(1/3)", "(2/3)", "(3/3)"] and d["kids"][0][0] == "777:10:p"
     assert "다 봄" in d["kids"][0][2] and "이어 볼 곳" in d["kids"][1][2]
     # 화면: 상세에 조각 줄 3개
