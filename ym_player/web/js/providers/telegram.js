@@ -895,19 +895,25 @@ export class TelegramProvider {
         d.viewOffset = (cur.position || 0) * 1000;
         d.duration = (cur.duration || 0) * 1000;
         d.watched = parts.every((p) => p.watched);
-        d.metaLine = [...(d.metaLine || []), `${n}개 파일 · 이어 볼 곳 (${ci + 1}/${n})`];
+        // 위 줄의 상영 시간·크기는 조각 하나 것 -> 전체 (조각을 모두 더한 값)
+        const totDur = parts.reduce((a, p) => a + (p.duration || 0), 0);
+        const totSize = parts.reduce((a, p) => a + (p.size || 0), 0);
+        const one = { [v.duration ? fmtDuration(v.duration * 1000) : '-']: totDur ? `${fmtDuration(totDur * 1000)} (전체)` : '',
+            [v.size ? fmtSize(v.size) : '-']: totSize ? fmtSize(totSize) : '' };
+        d.metaLine = (d.metaLine || []).map((x) => (x in one && one[x] ? one[x] : x));
+        d.metaLine = [...d.metaLine, `${n}개 파일 · 이어 볼 곳 (${ci + 1}/${n})`];
         d.childrenStyle = 'track';
         d.childrenTitle = `파일 ${n}개 - 골라서 재생`;
         d.children = parts.map((p, i) => ({
             id: `${v.channel}:${p.msg}${EXACT}`,
-            title: `(${i + 1}/${n}) 재생`,
+            title: `(${i + 1}/${n}) ${p.title || '재생'}`,
             raw: {
                 index: `(${i + 1}/${n})`,
-                title: `재생${p.watched ? ' · 다 봄' : p.position > 30 ? ` · ${fmtDuration(p.position * 1000)}까지 봄` : ''}${i === ci ? ' · 이어 볼 곳' : ''}`,
+                title: `${p.title || '재생'}${p.watched ? ' · 다 봄' : p.position > 30 ? ` · ${fmtDuration(p.position * 1000)}까지 봄` : ''}${i === ci ? ' · 이어 볼 곳' : ''}`,
                 duration: (p.duration || 0) * 1000,
             },
         }));
-        d.extraFacts = [['파일', parts.map((p, i) => `(${i + 1}/${n}) ${p.title}`).join('\n')]];
+        d.extraFacts = [];   // 파일 이름은 아래 '골라서 재생' 목록에서 (두 곳에 같은 것을 보이지 않게)
         return d;
     }
 
