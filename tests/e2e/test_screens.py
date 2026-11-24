@@ -291,18 +291,20 @@ def test_brunch_and_recipe_reader(page, server):
     # 라이브러리: 분류 칩 대신 [분류] 고르기
     page.goto(server + "/#/library/" + page.evaluate("fetch('/api/config').then(r => r.json()).then(c => c.sources.find(s => s.type === 'recipe').id)") + "/recipes")
     page.wait_for_selector(".page.library .card")
-    assert "밑반찬" in page.inner_text(".page.library select")
+    page.click(".lib-filters .lib-menu-btn >> nth=0")   # Plex처럼 왼쪽 [분류 ▾] 메뉴
+    assert "밑반찬" in page.inner_text(".lib-filters .view-menu:not(.hidden)")
+    page.keyboard.press("Escape")
     # 검색: 멈추거나 Enter를 누르면 사이트 검색(q=)으로 다시 받고, 주소에도 남는다. 검색 중에는 분류를 쓰지 않는다
     with page.expect_request(lambda r: "/api/recipe/" in r.url and "q=%EA%B9%80%EC%B9%98" in r.url):
         page.fill(".lib-search", "김치")
         page.press(".lib-search", "Enter")
     page.wait_for_selector(".page.library .card")
     assert "q=%EA%B9%80%EC%B9%98" in page.url or "q=김치" in page.url
-    assert page.locator(".page.library select").first.is_disabled()
+    assert page.locator(".lib-filters .lib-menu-box").first.evaluate("e => e.classList.contains('disabled')")
     with page.expect_request(lambda r: "/api/recipe/" in r.url and "cat=" in r.url):
         page.fill(".lib-search", "")
         page.press(".lib-search", "Enter")
-    assert not page.locator(".page.library select").first.is_disabled()
+    assert not page.locator(".lib-filters .lib-menu-box").first.evaluate("e => e.classList.contains('disabled')")
     # 전체 검색 화면: 제목이 한 줄로, 결과 줄이 그 아래 (위 검색창의 .search 모양을 물려받아 세로로 찌그러지던 것)
     page.goto(server + "/#/search?q=" + "김치")
     page.wait_for_selector(".search-page .card")
@@ -455,6 +457,18 @@ def test_telegram_list_title_and_lines(page, server):
     subs = page.locator(".card-sub").all_inner_texts()
     assert subs[0] == "1시간 26분 · 2개 파일" and "영화 > 최신" not in " ".join(subs)
     assert page.locator(".card-file").first.inner_text() == "2026-11-19 등록"
+    # Plex처럼 왼쪽 정렬 메뉴: "추가된 날짜별로" - 같은 항목을 다시 누르면 방향이 바뀌고, 오른쪽 검색은 채널 안에서 (q=)
+    assert "추가된 날짜별로" in page.inner_text(".lib-filters")
+    sort_btn = page.locator(".lib-filters .lib-menu-btn", has_text="추가된 날짜")
+    with page.expect_request(lambda r: "/api/tg/tg/videos" in r.url and "sort=oldest" in r.url):
+        sort_btn.click()
+        page.locator(".lib-filters .view-menu:not(.hidden) .view-item", has_text="추가된 날짜").click()
+    with page.expect_request(lambda r: "/api/tg/tg/videos" in r.url and "sort=title" in r.url):
+        page.locator(".lib-filters .lib-menu-btn", has_text="추가된 날짜").click()
+        page.locator(".lib-filters .view-menu:not(.hidden) .view-item", has_text="제목").click()
+    with page.expect_request(lambda r: "/api/tg/tg/videos" in r.url and "channel=777" in r.url and "q=%EC%96%BC%EA%B5%B4" in r.url):
+        page.fill(".lib-search", "얼굴")
+        page.press(".lib-search", "Enter")
 
 
 def test_telegram_music_album(page, server):

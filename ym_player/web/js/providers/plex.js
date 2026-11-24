@@ -193,19 +193,31 @@ export class PlexProvider {
             .map((hub) => ({ title: hub.title, items: hub.Metadata.map((m) => this.toItem(m)) }));
     }
 
-    librarySorts() {
+    /** 정렬 (Plex 웹과 같은 항목 - [값, 이름, 기본 방향]). 같은 항목을 다시 누르면 방향이 바뀐다. TV는 보지 않음·최근 에피소드 날짜 */
+    librarySorts(_libId, lib) {
+        const show = lib && lib.type === 'show';
         return [
-            ['titleSort', '제목'],
-            ['addedAt:desc', '최근 추가'],
-            ['originallyAvailableAt:desc', '공개일'],
-            ['audienceRating:desc', '평점'],
-            ['lastViewedAt:desc', '최근 시청'],
+            ['titleSort', '제목', 'asc'],
+            ['year', '년도', 'desc'],
+            ['originallyAvailableAt', '개봉일', 'desc'],
+            ['rating', '평점', 'desc'],
+            ['audienceRating', '관객 평점', 'desc'],
+            ['userRating', '별점', 'desc'],
+            ['contentRating', '컨텐츠 등급', 'asc'],
+            ...(show ? [['unviewedLeafCount', '보지 않음', 'desc'], ['episode.addedAt', '최근 에피소드 날짜', 'desc']]
+                : [['duration', '길이', 'desc'], ['viewCount', '재생 횟수', 'desc']]),
+            ['addedAt', '추가된 날짜', 'desc'],
+            ['lastViewedAt', '감상한 날짜', 'desc'],
+            ['random', '무작위로'],
         ];
     }
 
-    async getLibraryItems(libId, { start = 0, size = 60, sort = 'titleSort', unwatched = false } = {}) {
+    librarySearchHint() { return '이 라이브러리에서 찾기 (제목)'; }
+
+    async getLibraryItems(libId, { start = 0, size = 60, sort = 'titleSort', unwatched = false, q = '' } = {}) {
         const params = { sort, 'X-Plex-Container-Start': start, 'X-Plex-Container-Size': size };
         if (unwatched) params.unwatched = 1;
+        if (q) params.title = q;   // (Plex 필터: title=글자 - 제목에 그 글자가 들어 있는 것)
         const mc = await this.req(`/library/sections/${libId}/all`, params);
         const items = (mc.Metadata || []).map((m) => this.toItem(m));
         return { items, total: mc.totalSize ?? mc.size ?? items.length };

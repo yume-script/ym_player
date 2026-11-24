@@ -116,6 +116,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 182,
+        "version": "1.3.23",
+        "date": "2026-11-24",
+        "title": "라이브러리 화면: Plex·텔레그램 채널 안에서 찾기(검색창), 정렬·분류를 Plex처럼 왼쪽 메뉴로 ([분류 ▾] [안 본 것 ▾] [정렬 ▴] 개수 - 같은 정렬을 다시 누르면 방향이 바뀜, Plex는 년도·평점·별점·최근 에피소드 날짜·무작위 등)"
+    },
+    {
         "pr": 181,
         "version": "1.3.22",
         "date": "2026-11-20",
