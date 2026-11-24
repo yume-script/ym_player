@@ -2105,3 +2105,23 @@ def test_music_artists(monkeypatch, tmp_path):
     assert [a["series"]["title"] for a in one["albums"]] == ["Love poem", "Palette"]    # 최근 앨범부터
     assert [t["title"] for t in one["tracks"]] == ["새 곡", "A곡", "B곡", "싱글"]       # 앨범 이름·트랙 순, 낱곡은 뒤
     assert telegram_src.music_artist("tg", 1, "없는 가수") is None
+
+
+def test_title_sort_uses_shown_titles(monkeypatch, tmp_path):
+    """제목 순: DB 제목(영어 파일 이름)이 아니라 화면에 보이는 제목 - 찾아 둔 우리말 영화 제목·시리즈 이름, 숫자는 크기대로"""
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    telegram_src._migrated.discard(str(tmp_path))
+    telegram_src._TITLE_ORDER.clear()
+    _insert([(1, "video", "Anaconda (2025)", "Anaconda.2025.mp4", 1), (2, "video", "Apex (2025)", "Apex.2025.mp4", 2),
+             (3, "video", "Ballerina (2025)", "Ballerina.2025.mp4", 3), (4, "video", "가족 10화", "가족 10화.mp4", 4),
+             (5, "video", "가족 2화", "가족 2화.mp4", 5)], channel=1)
+    telegram_src.plex_meta_put("tg", 1, [1], {"kind": "movie", "title": "아나콘다", "poster": "/a.jpg"})
+    telegram_src.plex_meta_put("tg", 1, [2], {"kind": "movie", "title": "정점", "poster": "/b.jpg"})
+    telegram_src.plex_meta_put("tg", 1, [3], {"kind": "movie", "title": "발레리나", "poster": "/c.jpg"})
+    rows, total = telegram_src.query_videos("tg", [1], limit=50, sort="title")
+    shown = [r.get("meta_title") or r["title"] for r in rows]
+    assert shown == ["가족 2화", "가족 10화", "발레리나", "아나콘다", "정점"] and total == 5
+    # 쪽으로 나눠도 같은 순서
+    a, _ = telegram_src.query_videos("tg", [1], limit=2, sort="title")
+    b, _ = telegram_src.query_videos("tg", [1], offset=2, limit=3, sort="title")
+    assert [r["msg"] for r in a + b] == [r["msg"] for r in rows]

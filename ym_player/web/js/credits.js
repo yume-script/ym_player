@@ -116,6 +116,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 183,
+        "version": "1.3.24",
+        "date": "2026-11-24",
+        "title": "텔레그램 채널 제목 순 정렬: 화면에 보이는 제목(찾아 둔 우리말 영화 제목·시리즈 이름) 순으로, 숫자는 크기대로 (전엔 영어 파일 이름 순이라 뒤섞여 보였음)"
+    },
+    {
         "pr": 182,
         "version": "1.3.23",
         "date": "2026-11-24",
