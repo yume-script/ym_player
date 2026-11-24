@@ -1804,6 +1804,48 @@ def _channel_clause(channels, kinds, col=""):
     return "(" + " OR ".join(parts) + ")", args
 
 
+_TITLE_ORDER = {}   # (소스, 조건) -> (표시, 만든 때, [(채널, 메시지)] 보이는 제목 순)
+TITLE_ORDER_TTL = 120
+
+
+def title_sort_key(name):
+    """제목 정렬: 대소문자·앞뒤 빈칸·따옴표 무시, 숫자는 크기대로 ("2화" < "10화")"""
+    t = re.sub(r"^[\s'\"‘’“”「『\[(]+", "", str(name or "")).casefold()
+    return [(0, int(x), "") if x.isdigit() else (1, 0, x) for x in re.findall(r"\d+|\D+", t)]
+
+
+def _title_order(conn, sid, where, args):
+    """목록 조건에 맞는 모든 행을 화면에 보이는 제목 순으로 [(채널, 메시지)] - 시리즈는 시리즈 이름, 찾아 둔 작품 정보가 있는
+    영화는 그 (우리말) 제목, 그 밖은 제목. 영상이 바뀌지 않았으면 잠깐(TITLE_ORDER_TTL) 기억해 쪽마다 다시 계산하지 않는다"""
+    sig = tuple(conn.execute(f"SELECT COUNT(*), MAX(msg), MAX(date) FROM videos WHERE {where}", args).fetchone())
+    ck = (sid, where, tuple(args))
+    hit = _TITLE_ORDER.get(ck)
+    if hit and hit[0] == sig and time.time() - hit[1] < TITLE_ORDER_TTL:
+        return hit[2]
+    rows = conn.execute(f"SELECT channel, msg, title, (SELECT s.title FROM series s WHERE s.source=videos.source AND s.channel=videos.channel "
+                        f"AND s.video=videos.msg LIMIT 1) AS stitle FROM videos WHERE {where}", args).fetchall()
+    keys = [(r["channel"], r["msg"]) for r in rows]
+    names = {}
+    if keys:
+        _plex_posters(conn, sid, [k for k, r in zip(keys, rows) if not r["stitle"]], names)
+    shown = [((r["stitle"] or names.get(k) or r["title"] or ""), k) for k, r in zip(keys, rows)]
+    order = [k for _t, k in sorted(shown, key=lambda x: (title_sort_key(x[0]), -x[1][1]))]
+    if len(_TITLE_ORDER) > 50:
+        _TITLE_ORDER.clear()
+    _TITLE_ORDER[ck] = (sig, time.time(), order)
+    return order
+
+
+def _rows_by_keys(conn, sid, keys):
+    """[(채널, 메시지)] 순서 그대로 videos 행"""
+    out = {}
+    for c in {c for c, _m in keys}:
+        msgs = [m for cc, m in keys if cc == c]
+        for r in conn.execute(f"SELECT * FROM videos WHERE source=? AND channel=? AND msg IN ({','.join('?' * len(msgs))})", [sid, c, *msgs]):
+            out[(c, r["msg"])] = r
+    return [out[k] for k in keys if k in out]
+
+
 def query_videos(sid, channels, offset=0, limit=40, q="", sort="latest", user="", kind="", kinds=None, group=False, counts=None):
     """counts: dict를 주면 counts["raw"]에 DB에서 읽은 행 수(나눈 조각을 하나로 합치기 전)를 적는다 - 다음 쪽은 offset+raw부터
     (합친 뒤 카드 수로 넘기면 앞쪽 영상이 다시 나온다).
@@ -1832,13 +1874,17 @@ def query_videos(sid, channels, offset=0, limit=40, q="", sort="latest", user=""
         args += [like, like, like]
     if HIDE_BL:   # 설정 > 공통: 웹툰 목록에서 BL·GL 작품 빼기
         where += " AND NOT (kind='book' AND ymp_bl(channel, msg, title, caption, file_name))"
-    order = {"latest": "date DESC, msg DESC", "oldest": "date ASC, msg ASC", "title": "title COLLATE NOCASE ASC"}.get(sort, "date DESC, msg DESC")
+    order = {"latest": "date DESC, msg DESC", "oldest": "date ASC, msg ASC"}.get(sort, "date DESC, msg DESC")
     with db() as conn:
         if HIDE_BL:
             _bl_function(conn, sid, channels)
         total = conn.execute(f"SELECT COUNT(*) FROM videos WHERE {where}", args).fetchone()[0]
-        rows = conn.execute(f"SELECT * FROM videos WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
-                            [*args, int(limit), int(offset)]).fetchall()
+        if sort == "title":   # 화면에 보이는 제목(시리즈 이름 · 찾아 둔 우리말 영화 제목 · 그 밖은 제목) 순 - DB 제목(영어 파일 이름 등) 순이 아니라
+            keys = _title_order(conn, sid, where, args)[int(offset):int(offset) + int(limit)]
+            rows = _rows_by_keys(conn, sid, keys)
+        else:
+            rows = conn.execute(f"SELECT * FROM videos WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
+                                [*args, int(limit), int(offset)]).fetchall()
         if counts is not None:
             counts["raw"] = len(rows)
         prog = _progress_map(conn, sid, rows, user)
