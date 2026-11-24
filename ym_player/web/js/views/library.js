@@ -51,8 +51,13 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
     // 정렬/필터는 라이브러리마다 기억해둔다
     const prefKey = `yp_lib_${pid}_${libId}`;
     const pref = storeGet(prefKey, { sort: 'titleSort', unwatched: false, kind: '' });
-    const sortSel = h('select', { class: 'select' },
-        p.librarySorts(libId).map(([v, label]) => h('option', { value: v, text: label, selected: v === pref.sort })));
+    // 정렬: [값, 이름, 기본 방향('asc'|'desc' - 있으면 Plex처럼 같은 항목을 다시 눌러 방향을 뒤집는다)]
+    const sortOpts = p.librarySorts(libId, lib);
+    const sortDirs = new Map(sortOpts.filter((o) => o[2]).map((o) => [o[0], o[2]]));
+    const sortSel = h('select', { class: 'select hidden' },
+        sortOpts.map(([v, label]) => h('option', { value: v, text: label, selected: v === pref.sort })));
+    let sortDir = pref.dir || sortDirs.get(sortSel.value) || '';
+    const sortValue = () => (sortDirs.has(sortSel.value) ? `${sortSel.value}:${sortDir || sortDirs.get(sortSel.value)}` : sortSel.value);
     const unwatchedChk = h('input', { type: 'checkbox', checked: !!pref.unwatched });
     // 텔레그램: 영상/사진 골라 보기 (관리자가 "영상만/사진만"으로 정한 채널은 없음)
     const kindOpts = p.libraryKinds ? p.libraryKinds(libId) : null;
@@ -75,7 +80,7 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
     const searchBox = searchHint ? h('input', {
         type: 'search', class: 'input lib-search', placeholder: searchHint, value: query.get('q') || '', enterkeyhint: 'search',
     }) : null;
-    const countEl = h('span', { class: 'muted' });
+    const countEl = h('span', { class: 'lib-count' });
     // 고르기 귀찮을 때: 이 라이브러리(채널)에서 아무거나 틀고, 끝나면 또 아무거나 (Plex는 [안 본 것만]을 따름)
     const randomBtn = p.randomPick && (!p.canRandom || p.canRandom(libId)) ? h('button', {
         class: 'btn', title: '이 라이브러리에서 아무거나 골라 계속 재생',
@@ -112,18 +117,39 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
     window.addEventListener('yp-view', onView);
     ctx.onLeave(() => window.removeEventListener('yp-view', onView));
     // (append는 null을 "null" 글자로 넣는다 - 단추 줄이 없는 소스는 빼고)
+    // Plex처럼 왼쪽에 [분류 ▾] [안 본 것 ▾] [정렬 ▴] [개수] - 오른쪽에 검색·랜덤·소스 단추
+    const watchedLabel = p.kind === 'podcast' ? '안 들은 것' : '안 본 것';
+    const watchMenu = p.kind === 'plex' || p.kind === 'podcast' ? libMenu(
+        () => (unwatchedChk.checked ? watchedLabel : '전체'),
+        () => [['all', '전체', !unwatchedChk.checked], ['unwatched', watchedLabel, unwatchedChk.checked]],
+        (v) => { unwatchedChk.checked = v === 'unwatched'; unwatchedChk.dispatchEvent(new Event('change')); }) : null;
+    const kindMenu = kindSel && !kindChips ? libMenu(
+        () => (kindSel.selectedOptions[0] || {}).text || '',
+        () => [...kindSel.options].map((o) => [o.value, o.text, o.value === kindSel.value]),
+        (v) => { if (kindSel.disabled || kindSel.value === v) return; kindSel.value = v; kindSel.dispatchEvent(new Event('change')); }) : null;
+    const sortMenu = sortSel.options.length > 1 ? libMenu(
+        () => `${(sortSel.selectedOptions[0] || {}).text || ''}${sortDirs.has(sortSel.value) ? '별로' : ''}`,
+        () => [...sortSel.options].map((o) => [o.value, o.text, o.value === sortSel.value,
+            o.value === sortSel.value && sortDirs.has(o.value) ? (sortDir === 'asc' ? 'arrow-up' : 'arrow-down') : '']),
+        (v) => {
+            if (v === sortSel.value) {
+                if (!sortDirs.has(v)) return;
+                sortDir = sortDir === 'asc' ? 'desc' : 'asc';   // 같은 항목을 다시 누르면 방향을 뒤집는다 (Plex처럼)
+            } else {
+                sortSel.value = v;
+                sortDir = sortDirs.get(v) || '';
+            }
+            sortSel.dispatchEvent(new Event('change'));
+        }, () => (sortDirs.has(sortSel.value) ? (sortDir === 'asc' ? 'caret-up' : 'caret-down') : 'caret-down')) : null;
     body.append(...[kindChips].filter(Boolean),
-        h('div', { class: 'toolbar' },
-            countEl,
+        h('div', { class: 'toolbar lib-toolbar' },
+            h('div', { class: 'lib-filters' }, kindMenu, watchMenu, sortMenu, countEl),
             searchBox,
             randomBtn,
-            p.kind === 'plex' || p.kind === 'podcast' ? h('label', { class: 'check' }, unwatchedChk, p.kind === 'podcast' ? ' 안 들은 것만' : ' 안 본 것만') : null,
-            kindSel && !kindChips ? h('label', { class: 'muted' }, `${p.libraryKindLabel ? p.libraryKindLabel() : '보기'} `, kindSel) : null,
             // 소스가 내는 단추 (공중파 라디오의 [편집] 등) - 누른 뒤 목록을 다시 그리게 reset을 넘긴다
-            ...(p.libraryTools ? p.libraryTools(libId, () => reset()) : []),
-            // 고를 것이 하나뿐이면(만개의레시피 등) 정렬 칸을 두지 않는다
-            sortSel.options.length > 1 ? h('label', { class: 'muted' }, '정렬 ', sortSel) : null),
+            ...(p.libraryTools ? p.libraryTools(libId, () => reset()) : [])),
         grid, sentinel);
+    const redrawMenus = () => [kindMenu, watchMenu, sortMenu].forEach((m) => m && m.redraw());
 
     let start = 0, total = Infinity, busy = false, gen = 0;
     const loadMore = async () => {
@@ -132,7 +158,7 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
         const myGen = gen;
         try {
             const res = await p.getLibraryItems(libId, {
-                start, size: PAGE, sort: sortSel.value, unwatched: unwatchedChk.checked, kind: kindSel ? kindSel.value : '',
+                start, size: PAGE, sort: sortValue(), unwatched: unwatchedChk.checked, kind: kindSel ? kindSel.value : '',
                 q: searchBox ? searchBox.value.trim() : '',
             });
             if (myGen !== gen || !ctx.alive()) return;
@@ -143,7 +169,7 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
             start = nextStart;
             if (!res.items.length && (!moved || res.nextStart == null)) total = start;
             // 텔레그램처럼 오래된 쪽을 아직 다 훑지 않은 소스는 "지금까지 찾은 수+"로
-            countEl.textContent = res.approx ? `${(res.shown || 0).toLocaleString()}개+` : `${(res.count != null ? res.count : total).toLocaleString()}개`;
+            countEl.textContent = res.approx ? `${(res.shown || 0).toLocaleString()}+` : (res.count != null ? res.count : total).toLocaleString();
             // 라디오 방송국처럼 채널이면 채널 카드 (누르면 바로 재생, 위/아래로 다른 방송국)
             loaded = loaded.concat(res.items);
             draw(res.items);
@@ -159,7 +185,8 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
         if (myGen === gen && sentinel.getBoundingClientRect().top < window.innerHeight + 400) loadMore();
     };
     const reset = () => {
-        storeSet(prefKey, { sort: sortSel.value, unwatched: unwatchedChk.checked, kind: kindSel ? kindSel.value : '' });
+        storeSet(prefKey, { sort: sortSel.value, dir: sortDir, unwatched: unwatchedChk.checked, kind: kindSel ? kindSel.value : '' });
+        redrawMenus();
         gen++; start = 0; total = Infinity; busy = false; loaded = [];
         clear(grid);
         loadMore();
@@ -178,6 +205,7 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
             last = q;
             if (kindSel) kindSel.disabled = !!q;
             if (kindChips) kindChips.classList.toggle('disabled', !!q);
+            if (kindMenu) kindMenu.classList.toggle('disabled', !!q);
             const params = new URLSearchParams(query);
             if (q) params.set('q', q); else params.delete('q');
             const qs = params.toString();
@@ -197,4 +225,42 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
     io.observe(sentinel);
     ctx.onLeave(() => io.disconnect());
     loadMore();
+}
+
+/**
+ * Plex처럼 생긴 메뉴 단추: "이름 ▾"를 누르면 아래로 항목 목록 (고른 것은 강조, 정렬은 방향 화살표).
+ * label(): 단추 글자, items(): [[값, 이름, 고름?, 화살표 아이콘]], pick(값), caret(): 단추 옆 아이콘 이름
+ */
+function libMenu(label, items, pick, caret = () => 'caret-down') {
+    const text = h('span');
+    const car = h('i');
+    const btn = h('button', { type: 'button', class: 'lib-menu-btn', 'aria-haspopup': 'menu' }, text, car);
+    const menu = h('div', { class: 'view-menu lib-menu hidden', role: 'menu' });
+    const box = h('div', { class: 'lib-menu-box' }, btn, menu);
+    const close = () => menu.classList.add('hidden');
+    const draw = () => {
+        text.textContent = label();
+        car.className = `fa-solid fa-${caret()} lib-menu-caret`;
+        menu.replaceChildren(...items().map(([v, name, on, arrow]) => h('button', {
+            type: 'button', class: `view-item${on ? ' active' : ''}`, role: 'menuitemradio', 'aria-checked': String(!!on),
+            on: { click: (e) => { e.stopPropagation(); close(); pick(v); draw(); } },
+        }, h('span', { class: 'lib-menu-name', text: name }), arrow ? icon(arrow) : null)));
+    };
+    btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (box.classList.contains('disabled')) return;
+        const opening = menu.classList.contains('hidden');
+        document.querySelectorAll('.lib-menu-box .view-menu').forEach((m) => m.classList.add('hidden'));
+        if (opening) { draw(); menu.classList.remove('hidden'); }
+    });
+    const outside = (e) => {
+        if (!box.isConnected) { document.removeEventListener('click', outside); document.removeEventListener('keydown', esc); return; }
+        if (!box.contains(e.target)) close();
+    };
+    const esc = (e) => { if (e.key === 'Escape') close(); };
+    document.addEventListener('click', outside);
+    document.addEventListener('keydown', esc);
+    box.redraw = draw;
+    draw();
+    return box;
 }

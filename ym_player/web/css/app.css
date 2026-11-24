@@ -278,6 +278,20 @@ body.lib-route .view-mode { display: block; }
 .grid-square { grid-template-columns: repeat(auto-fill, minmax(calc(170px * var(--poster-scale)), 1fr)); }
 .lib-body .toolbar { justify-content: flex-end; margin-bottom: 1rem; }
 .lib-body .toolbar .muted:first-child { margin-right: auto; }
+/* 라이브러리 위 왼쪽: Plex처럼 [분류 ▾] [안 본 것 ▾] [정렬 ▴] [개수] */
+.lib-filters { display: flex; align-items: center; gap: 1.1rem; margin-right: auto; flex-wrap: wrap; }
+.lib-menu-box { position: relative; }
+.lib-menu-box.disabled { opacity: 0.45; pointer-events: none; }
+.lib-menu-btn { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.3rem 0; border: none; background: none;
+    color: var(--text); font: inherit; font-size: 1.02rem; font-weight: 600; cursor: pointer; }
+.lib-menu-btn:hover { color: var(--accent); }
+.lib-menu-caret { font-size: 0.75rem; color: var(--muted); }
+.lib-menu-box .view-menu { left: 0; right: auto; min-width: 13rem; max-height: 70vh; overflow: auto; }
+.lib-menu-box .view-item { justify-content: space-between; }
+.lib-menu-box .view-item.active { color: var(--accent); }
+.lib-count { display: inline-flex; align-items: center; justify-content: center; min-width: 2.2rem; padding: 0.15rem 0.55rem;
+    border-radius: 6px; background: var(--bg-elev2); font-size: 0.95rem; font-variant-numeric: tabular-nums; }
+.lib-count:empty { display: none; }
 
 /* ---------- 상세 ---------- */
 .detail { padding-top: 0; min-height: 100%; }

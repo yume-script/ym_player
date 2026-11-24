@@ -310,9 +310,12 @@ export class TelegramProvider {
         return hubs;
     }
 
+    /** 정렬 ([값, 이름, 기본 방향] - 같은 항목을 다시 누르면 방향이 바뀐다) */
     librarySorts() {
-        return [['latest', '최신순'], ['oldest', '오래된 순'], ['title', '제목']];
+        return [['added', '추가된 날짜', 'desc'], ['title', '제목']];
     }
+
+    librarySearchHint() { return '이 채널에서 찾기 (제목·캡션)'; }
 
     /** 라이브러리 화면의 보기 고르기 (영상/사진). 관리자가 채널 종류를 정해 두었으면 고를 것 없음(null) */
     libraryKinds(channel) {
@@ -360,7 +363,9 @@ export class TelegramProvider {
         }
         const music = this._isMusic(channel);
         if (music && kind === 'track') kind = 'audio';   // 음악: 곡 하나하나 (앨범으로 묶지 않음)
-        const p = new URLSearchParams({ channel, offset: start, limit: size, sort, kind, group: music && kind === 'audio' ? 0 : 1 }); // 회차는 시리즈로 묶어서
+        // (정렬 값: 추가된 날짜 added:desc/asc -> 서버의 latest/oldest, 제목 -> title. 예전 값도 그대로 받는다)
+        sort = { 'added:desc': 'latest', 'added:asc': 'oldest', added: 'latest' }[sort] || sort;
+        const p = new URLSearchParams({ channel, offset: start, limit: size, sort, kind, q, group: music && kind === 'audio' ? 0 : 1 }); // 회차는 시리즈로 묶어서
         const data = await api(`${this.base}/videos?${p}`);
         // 아직 훑지 않은 오래된 메시지가 남았으면 total보다 더 있을 수 있다 -> 한 칸 더 있다고 알려 계속 불러오게
         // 다음 쪽은 서버가 알려 준 위치부터 (나눠 올린 조각을 한 카드로 합쳐 카드 수가 읽은 수보다 적다 -
