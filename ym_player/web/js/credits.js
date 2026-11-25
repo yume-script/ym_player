@@ -116,6 +116,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 185,
+        "version": "1.3.26",
+        "date": "2026-11-25",
+        "title": "자동 올리기: 올린 뒤 \"Could not find a matching Constructor ID\"(TypeNotFoundError)로 실패 처리돼 같은 영상을 다시 올리던 것 - 올라간 것으로 처리, Telethon 1.45로 고정 (텔레그램 채널 읽기도 같은 오류가 나지 않게)"
+    },
+    {
         "pr": 184,
         "version": "1.3.25",
         "date": "2026-11-25",

@@ -189,6 +189,17 @@ def drop_shot(rule_id, key):
         pass
 
 
+async def sent_anyway(coro, what):
+    """보내기 요청의 '답'을 Telethon이 읽지 못한 경우(TypeNotFoundError - 텔레그램이 이 Telethon이 모르는 형식을 섞어 보냄):
+    텔레그램은 이미 받아 채널에 올렸으므로 보낸 것으로 친다 (다시 올리면 같은 영상이 두 번 올라감). 메시지 번호만 모른다"""
+    try:
+        return await coro
+    except Exception as e:  # noqa: BLE001
+        if type(e).__name__ != "TypeNotFoundError":
+            raise
+        log.warning("자동 올리기: %s - 텔레그램이 보낸 답을 읽지 못했지만 올라간 것으로 봅니다 (Telethon 업데이트 필요): %s", what, str(e)[:160])
+        return None
+
 class Waiting(Exception):
     """자막이 아직 없음 - 나중에 다시"""
 _lock = threading.Lock()
@@ -2327,8 +2338,8 @@ class Mirror:
             def progress(done, total):
                 if self.current:
                     self.current.update(done=int(done), total=int(total))
-            sent = await client.send_file(peer, path, caption=cap[:1024], thumb=thumb, attributes=attrs,
-                                          supports_streaming=stream, force_document=False, progress_callback=progress)
+            sent = await sent_anyway(client.send_file(peer, path, caption=cap[:1024], thumb=thumb, attributes=attrs,
+                                                      supports_streaming=stream, force_document=False, progress_callback=progress), vname)
             msgs.append(getattr(sent, "id", None))
             self._note_sent(getattr(sent, "id", None))
             for spath, lang, sext in sub_files:   # 그 조각의 자막 (나눴으면 조각 시간만큼 잘라서)
@@ -2339,7 +2350,7 @@ class Mirror:
                     if not out:
                         continue
                 sname = f"{os.path.splitext(vname)[0]}{'.' + lang if lang else ''}.{'srt' if many and sext == 'smi' else sext}"
-                sub_msg = await client.send_file(peer, out, force_document=True, attributes=[DocumentAttributeFilename(sname)])
+                sub_msg = await sent_anyway(client.send_file(peer, out, force_document=True, attributes=[DocumentAttributeFilename(sname)]), sname)
                 self._note_sent(getattr(sub_msg, "id", None))
                 sent_subs += 1
             self._note_part(i, len(pieces), getattr(sent, "id", None))
