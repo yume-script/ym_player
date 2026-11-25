@@ -2332,6 +2332,118 @@ async def tg_subtitle(request, tg):
     return web.Response(text=vtt, content_type="text/vtt", charset="utf-8", headers={"Cache-Control": "private, max-age=3600"})
 
 
+ISUBS = web.AppKey("isubs", dict)   # (소스id, 채널, 메시지, 트랙) -> 영상 안 자막 뽑기 {"proc", "task", "tmp", "error", "seen"}
+ISUB_MAX_JOBS = 2                   # 동시에 뽑는 자막 수 (자막을 뽑으려면 영상 파일을 끝까지 받는다)
+ISUB_IDLE_SEC = 120                 # 재생기가 이만큼 묻지 않으면 (다른 것을 틂) 뽑기를 멈춘다
+
+
+def _isub_path(channel, msg, index):
+    return os.path.join(config_store.DATA_DIR, "telegram_subs", f"inner_{abs(int(channel))}_{int(msg)}_{int(index)}.vtt")
+
+
+async def _isub_run(app, key, job, url, token, out):
+    """ffmpeg로 자막 트랙을 끝까지 뽑아 out에 둔다 (도중에는 out.part에 쓰는 대로) - 아무도 안 보면 멈춤"""
+    proc = job["proc"]
+    errs = []
+
+    async def read_err():
+        async for line in proc.stderr:
+            errs.append(line.decode("utf-8", "replace").strip())
+            del errs[:-5]
+    err_task = asyncio.ensure_future(read_err())
+    try:
+        while proc.returncode is None:
+            try:
+                await asyncio.wait_for(proc.wait(), 15)
+            except asyncio.TimeoutError:
+                if time.time() - job["seen"] > ISUB_IDLE_SEC:
+                    proc.kill()
+                    await proc.wait()
+                    job["stopped"] = True
+                    break
+        await asyncio.wait_for(err_task, 5)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        if proc.returncode is None:
+            proc.kill()
+    finally:
+        err_task.cancel()
+        app[TG_INTERNAL].pop(token, None)
+    if proc.returncode == 0 and os.path.exists(job["tmp"]) and not job.get("stopped"):
+        os.replace(job["tmp"], out)
+        log.info("telegram %s/%s 영상 안 자막(트랙 %s) 뽑기 끝", key[1], key[2], key[3])
+        app[ISUBS].pop(key, None)
+        return
+    try:
+        os.remove(job["tmp"])
+    except OSError:
+        pass
+    if job.get("stopped"):   # 아무도 안 보거나 다른 자막에 자리를 내줌 - 다음에 물으면 처음부터 다시
+        app[ISUBS].pop(key, None)
+        return
+    job["error"] = (errs[-1] if errs else f"ffmpeg 종료 코드 {proc.returncode}")[:200]
+    job["ended"] = time.time()
+    log.warning("telegram %s/%s 영상 안 자막(트랙 %s) 뽑기 실패: %s", key[1], key[2], key[3], job["error"])
+
+
+@telegram_api
+async def tg_inner_subtitle(request, tg):
+    """영상 안 자막(소프트 자막) 트랙 -> WebVTT. GET /api/tg/{sid}/isub/{c}/{m}/{트랙}?since=글자수
+    자막은 파일 전체에 흩어져 있어 영상을 끝까지 받아야 다 나온다 - 뒤에서 뽑으며 그때까지 나온 것을 돌려준다.
+    -> {"done", "vtt"(since 뒤 글자만), "size"(지금까지 전체 글자 수), "error"}. 다 뽑은 것은 data/telegram_subs/에 둔다"""
+    channel, msg = _ids(request, tg)
+    try:
+        index, since = int(request.match_info["index"]), max(0, int(request.query.get("since") or 0))
+    except ValueError:
+        return _json_error(400, "트랙 번호가 잘못됐습니다.")
+    if not telegram_src.get_video(tg.sid, channel, msg):
+        return _json_error(404, "색인에 없는 영상입니다.")
+    out = _isub_path(channel, msg, index)
+
+    def reply(text, done, error=""):
+        if not done:   # 쓰는 중인 파일: 다 써진 자막 덩어리(빈 줄로 끝남)까지만
+            text = text[:text.rfind("\n\n") + 2] if "\n\n" in text else ""
+        return web.json_response({"success": True, "done": done, "vtt": text[since:], "size": len(text), "error": error},
+                                 headers={"Cache-Control": "no-store"})
+
+    def read(path):
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                return f.read()
+        except OSError:
+            return ""
+    if os.path.exists(out):
+        return reply(read(out), True)
+    if not transcode.available():
+        return _json_error(501, "서버에 ffmpeg가 없어 영상 안 자막을 꺼낼 수 없습니다.")
+    jobs = request.app[ISUBS]
+    key = (tg.sid, channel, msg, index)
+    job = jobs.get(key)
+    if job is not None and job.get("error"):   # 실패한 것은 10분 동안 그대로 알려 준다 (retry=1이면 바로 다시)
+        if time.time() - job.get("ended", 0) < 600 and not request.query.get("retry"):
+            return reply("", True, job["error"])
+        jobs.pop(key, None)
+        job = None
+    if job is None:
+        running = [j for j in jobs.values() if j["proc"].returncode is None]
+        if len(running) >= ISUB_MAX_JOBS:   # 가장 오래 안 물어본 것을 멈추고 자리를 낸다
+            old = min(running, key=lambda j: j["seen"])
+            old["stopped"] = True
+            old["proc"].kill()
+        await tg.authorized_client()
+        token, url = _internal_url(request, tg, channel, msg)
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        tmp = out + ".part"
+        proc = await asyncio.create_subprocess_exec(*transcode.build_sub_args(url, index, tmp), stdin=asyncio.subprocess.DEVNULL,
+                                                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+        job = jobs[key] = {"proc": proc, "tmp": tmp, "error": "", "seen": time.time(), "stopped": False}
+        job["task"] = asyncio.ensure_future(_isub_run(request.app, key, job, url, token, out))
+        log.info("telegram %s/%s 영상 안 자막(트랙 %s) 뽑기 시작", channel, msg, index)
+    job["seen"] = time.time()
+    if os.path.exists(out):
+        return reply(read(out), True)
+    return reply(read(job["tmp"]), False)
+
+
 def _play_err_key(request):
     m = request.match_info
     return (username(request) or "-", m.get("sid"), m.get("channel"), m.get("msg"))
@@ -4305,6 +4417,7 @@ def create_app(require_auth=True):
     app[TG_PLAY_ERR] = {}
     app[TRANSCODES] = {}
     app[PROBES] = {}
+    app[ISUBS] = {}
     app[HLS_JOBS] = {}
     app[UPDATES] = updates.UpdateChecker()
     app[DISCORD] = discord_feed.Feed()
@@ -4438,6 +4551,7 @@ def create_app(require_auth=True):
     app.router.add_get(r"/api/tg/{sid}/thumb/{channel:-?\d+}/{msg:\d+}", tg_thumb)
     app.router.add_get(r"/api/tg/{sid}/image/{channel:-?\d+}/{msg:\d+}", tg_image)
     app.router.add_get(r"/api/tg/{sid}/sub/{channel:-?\d+}/{msg:\d+}", tg_subtitle)
+    app.router.add_get(r"/api/tg/{sid}/isub/{channel:-?\d+}/{msg:\d+}/{index:\d+}", tg_inner_subtitle)
     app.router.add_get(r"/api/tg/{sid}/series/{channel:-?\d+}", tg_series)
     app.router.add_get(r"/api/tg/{sid}/artists/{channel:-?\d+}", tg_artists)
     app.router.add_get(r"/api/tg/{sid}/series-cover/{channel:-?\d+}", tg_series_cover)

@@ -2125,3 +2125,60 @@ def test_title_sort_uses_shown_titles(monkeypatch, tmp_path):
     a, _ = telegram_src.query_videos("tg", [1], limit=2, sort="title")
     b, _ = telegram_src.query_videos("tg", [1], offset=2, limit=3, sort="title")
     assert [r["msg"] for r in a + b] == [r["msg"] for r in rows]
+
+
+# ----- 영상 안 자막(소프트 자막) -----
+def test_inner_subs_listed_korean_first():
+    from ym_player import transcode
+    info = _probe("matroska,webm", ("video", "h264", {"pix_fmt": "yuv420p", "index": 0}), ("audio", "aac", {"index": 1}),
+                  ("subtitle", "subrip", {"index": 2, "tags": {"language": "eng"}}),
+                  ("subtitle", "hdmv_pgs_subtitle", {"index": 3, "tags": {"language": "kor"}}),   # 그림 자막은 못 씀
+                  ("subtitle", "ass", {"index": 4, "tags": {"language": "kor"}, "disposition": {"forced": 1}}),
+                  ("subtitle", "subrip", {"index": 5, "tags": {"title": "한국어 자막"}}))
+    subs = transcode.decide(info)["subs"]
+    assert [s["index"] for s in subs] == [5, 4, 2]          # 한국어(강제 아닌 것) 먼저
+    assert subs[0]["ko"] and subs[1]["forced"] and not subs[2]["ko"]
+    args = transcode.build_sub_args("http://x/y", 5, "/tmp/o.vtt")
+    assert args[args.index("-map") + 1] == "0:5" and args[args.index("-f") + 1] == "webvtt"
+
+
+def test_inner_subtitle_extract_end_to_end(env, tmp_path):
+    import shutil
+    import subprocess
+
+    from ym_player import server, transcode
+    if not transcode.available():
+        pytest.skip("ffmpeg 없음")
+    en, ko = tmp_path / "en.srt", tmp_path / "ko.srt"
+    en.write_text("1\n00:00:01,000 --> 00:00:02,000\nHello\n\n2\n00:00:03,000 --> 00:00:04,000\nBye\n", encoding="utf-8")
+    ko.write_text("1\n00:00:01,000 --> 00:00:02,000\n안녕하세요\n\n2\n00:00:03,000 --> 00:00:04,000\n잘 가요\n", encoding="utf-8")
+    src = tmp_path / "in.mkv"
+    subprocess.run([shutil.which("ffmpeg"), "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=10",
+                    "-i", str(en), "-i", str(ko), "-t", "5", "-map", "0", "-map", "1", "-map", "2", "-c:v", "libx264", "-preset", "ultrafast",
+                    "-pix_fmt", "yuv420p", "-c:s", "srt", "-metadata:s:s:0", "language=eng", "-metadata:s:s:1", "language=kor", str(src)], check=True)
+    data = src.read_bytes()
+    doc = env.msgs[999].document
+    doc.size, doc.data, doc.mime_type = len(data), data, "video/x-matroska"
+
+    async def flow(c):
+        env.authorized = True
+        await c.get("/api/tg/tg/videos?channel=777&limit=5")
+        item = (await (await c.get("/api/tg/tg/video/777/999?probe=1")).json())["item"]
+        subs = item["play"]["subs"]
+        assert [(s["index"], s["ko"]) for s in subs] == [(2, True), (1, False)]   # 한국어 트랙 먼저
+        got, since = "", 0
+        for _ in range(100):
+            j = await (await c.get(f"/api/tg/tg/isub/777/999/{subs[0]['index']}", params={"since": since})).json()
+            got, since = got + j["vtt"], j["size"]
+            if j["done"]:
+                break
+            await asyncio.sleep(0.1)
+        assert j["done"] and not j["error"] and "안녕하세요" in got and "잘 가요" in got and "Hello" not in got
+        assert "00:01.000 --> 00:02.000" in got   # (ffmpeg는 한 시간 안이면 분:초)
+        # 다 뽑은 것은 파일로 남아 다시 물으면 바로
+        j = await (await c.get("/api/tg/tg/isub/777/999/2")).json()
+        assert j["done"] and "안녕하세요" in j["vtt"]
+        assert c.server.app[server.ISUBS] == {} and c.server.app[server.TG_INTERNAL] == {}
+        assert (await c.get("/api/tg/tg/isub/777/12345/2")).status == 404
+
+    run(flow)

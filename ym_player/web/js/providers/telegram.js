@@ -32,6 +32,15 @@ function subInfo(s) {
     return { id: String(s.msg), msg: s.msg, text: true, lang: hit ? hit[1] : '', label: `${hit ? `${hit[2]} · ` : ''}${stem || '자막'}${ext ? ` (${ext})` : ''}` };
 }
 
+// 영상 안 자막 트랙 (ffprobe: {index, codec, lang, title, ko, forced}) -> 자막 메뉴 한 줄
+const INNER_LANGS = { kor: '한국어', ko: '한국어', eng: '영어', en: '영어', jpn: '일본어', ja: '일본어', chi: '중국어', zho: '중국어', zh: '중국어' };
+function innerSubInfo(s) {
+    const lang = s.ko ? 'ko' : (s.lang || '');
+    const name = s.ko ? '한국어' : (INNER_LANGS[s.lang] || (s.lang && s.lang !== 'und' ? s.lang : '언어 모름'));
+    return { id: `i${s.index}`, inner: s.index, text: true, lang: lang === 'kor' ? 'ko' : lang.slice(0, 2), forced: !!s.forced,
+        label: `${name}${s.title ? ` · ${s.title}` : ''}${s.forced ? ' (강제)' : ''} (영상 안 자막)` };
+}
+
 /** 이번에 본 가장 새 영상 시각을 서버에 (다음 방문의 NEW 기준) */
 function markSeen(items) {
     const newest = items.reduce((m, v) => (v.date && v.date > m ? v.date : m), '');
@@ -1023,14 +1032,23 @@ export class TelegramProvider {
         };
         // 자막 파일: 고른 것은 영상마다 기억 (처음엔 한국어, 없으면 첫 자막). 서버 변환 스트림은 요청 위치가 0초라
         // 자막 시각도 그만큼 당겨 받는다 (shift)
-        const subs = (v.subs || []).map(subInfo);
+        // 영상 안 자막(소프트 자막, 서버가 ffprobe로 본 글자 자막 트랙)도 고를 수 있게 - 한국어 먼저.
+        // 처음 켜는 자막: 한국어 자막 파일 > 영상 안 한국어 자막 > 첫 자막 파일 (영상 안 다른 언어는 골라야 켬)
+        const files = (v.subs || []).map(subInfo);
+        const vmsg = v.msg || msg;
+        const inner = ((play.subs) || []).map(innerSubInfo);
+        const subs = [...files, ...inner];
         const subKey = `yp_tg_sub_${channel}:${msg}`;
         let activeSub = storeGet(subKey, null);
         if (activeSub == null || (activeSub !== '0' && !subs.some((x) => x.id === activeSub))) {
-            activeSub = subs.length ? (subs.find((x) => x.lang === 'ko') || subs[0]).id : '0';
+            const first = files.find((x) => x.lang === 'ko') || inner.find((x) => x.lang === 'ko' && !x.forced) || inner.find((x) => x.lang === 'ko') || files[0];
+            activeSub = first ? first.id : '0';
         }
         const trackFor = (shift) => {
             const st = subs.find((x) => x.id === activeSub);
+            if (st && st.inner != null) {
+                return { id: st.id, inner: true, src: `${this.base}/isub/${channel}/${vmsg}/${st.inner}`, shift: Math.floor(shift || 0), lang: st.lang, label: st.label };
+            }
             return st ? { id: st.id, src: `${this.base}/sub/${channel}/${st.msg}?shift=${Math.floor(shift || 0)}`, lang: st.lang, label: st.label } : null;
         };
         const withSubs = (pb, shift) => (subs.length ? {
