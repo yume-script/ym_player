@@ -1,4 +1,4 @@
 aiohttp>=3.9
-telethon>=1.36
+telethon>=1.45,<1.46   # 1.45(레이어 229): 지금 텔레그램이 보내는 채널 형식(0xd49f34c6)을 읽음 - 1.44 이하·1.46은 TypeNotFoundError
 cryptg>=0.4
 PyYAML>=6.0          # 웹툰 작품 정보 파일(웹툰명.yaml) - 없으면 간단한 내장 파서로 읽음
