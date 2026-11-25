@@ -2163,7 +2163,7 @@ def get_probe(sid, channel, msg):
         return None
     data = json.loads(r[0])
     # 예전 판단에는 음성 트랙 정보가 없다 -> 한 번 다시 확인 (실패 결과는 그대로 둔다)
-    if data.get("container") and "audio_tracks" not in data:
+    if data.get("container") and ("audio_tracks" not in data or "subs" not in data):   # (영상 안 자막 목록도 없으면)
         return None
     return data
 

@@ -70,6 +70,25 @@ function rememberProxyFirst(id) {
     try { sessionStorage.setItem(PROXY_FIRST_KEY, JSON.stringify([...set])); } catch (e) { /* 저장 못 해도 이번 재생엔 영향 없음 */ }
 }
 
+/** WebVTT 글 -> [{start, end, text}] (시:분:초.ms 또는 분:초.ms) */
+function vttTime(t) {
+    const p = t.trim().replace(',', '.').split(':').map(Number);
+    return p.length === 3 ? p[0] * 3600 + p[1] * 60 + p[2] : p[0] * 60 + p[1];
+}
+export function parseVttCues(text) {
+    const out = [];
+    for (const block of String(text).replace(/\r/g, '').split(/\n{2,}/)) {
+        const lines = block.split('\n');
+        const i = lines.findIndex((l) => l.includes('-->'));
+        if (i < 0) continue;
+        const [a, b] = lines[i].split('-->');
+        const start = vttTime(a), end = vttTime(b.trim().split(/\s+/)[0]);
+        const body = lines.slice(i + 1).join('\n').trim();
+        if (body && Number.isFinite(start) && Number.isFinite(end)) out.push({ start, end, text: body });
+    }
+    return out;
+}
+
 class Player {
     constructor() {
         this.pb = null;
@@ -1682,13 +1701,54 @@ class Player {
     /** 외부 텍스트 자막을 <track>으로 붙인다 (null이면 떼기). 엔진과 상관없이 같은 <video>에 붙는다. */
     _applyTrack(track) {
         const v = this.video;
+        if (this._innerSub) { this._innerSub.stop = true; this._innerSub = null; }
         v.querySelectorAll('track').forEach((t) => t.remove());
         if (!track) return;
+        if (track.inner) { this._loadInnerTrack(track); return; }
         const el = h('track', { kind: 'subtitles', src: track.src, label: track.label, srclang: track.lang || 'und', default: true });
         el.addEventListener('load', () => { el.track.mode = 'showing'; });
         el.addEventListener('error', () => toast('자막 파일을 불러오지 못했습니다.', 'error'));
         v.appendChild(el);
         el.track.mode = 'showing';
+    }
+
+    /**
+     * 영상 안 자막(소프트 자막): 서버가 영상을 끝까지 받으며 WebVTT로 뽑는 중이라 나온 것부터 차례로 붙인다.
+     * track.src?since=글자수 -> {done, vtt, size, error}. 서버 변환 스트림은 요청 위치가 0초라 shift만큼 당긴다
+     */
+    _loadInnerTrack(track) {
+        const v = this.video;
+        const el = h('track', { kind: 'subtitles', label: track.label, srclang: track.lang || 'und', default: true });
+        v.appendChild(el);
+        el.track.mode = 'showing';
+        const st = { stop: false, since: 0 };
+        this._innerSub = st;
+        const shift = track.shift || 0;
+        let told = false;
+        const tick = async () => {
+            if (st.stop || !el.isConnected) return;
+            let j;
+            try {
+                const res = await fetch(`${track.src}${track.src.includes('?') ? '&' : '?'}since=${st.since}`, { credentials: 'same-origin' });
+                j = await res.json();
+                if (!res.ok || j.success === false) throw new Error(j.error || `HTTP ${res.status}`);
+            } catch (e) {
+                if (!st.stop) setTimeout(tick, 10000);
+                return;
+            }
+            if (st.stop) return;
+            st.since = j.size;
+            for (const c of parseVttCues(j.vtt || '')) {
+                if (c.end - shift <= 0) continue;
+                try { el.track.addCue(new VTTCue(Math.max(0, c.start - shift), c.end - shift, c.text)); } catch (e) { /* 이상한 줄은 건너뜀 */ }
+            }
+            if (j.error) { toast(`영상 안 자막을 꺼내지 못했습니다: ${j.error}`, 'error'); return; }
+            if (!j.done) {
+                if (!told) { told = true; toast('영상 안 자막을 꺼내는 중입니다 - 앞부분부터 차례로 나옵니다.'); }
+                setTimeout(tick, 4000);
+            }
+        };
+        tick();
     }
 
     toggleSubMenu() {

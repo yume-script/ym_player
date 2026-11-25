@@ -116,6 +116,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 186,
+        "version": "1.3.27",
+        "date": "2026-11-25",
+        "title": "텔레그램 재생기: 영상 안 자막(소프트 자막)도 자막 메뉴에서 고르기 - 한국어 트랙을 먼저 켜고, 서버가 뽑는 대로 앞부분부터 차례로 나옴 (다 뽑은 것은 남겨 두어 다음엔 바로)"
+    },
+    {
         "pr": 185,
         "version": "1.3.26",
         "date": "2026-11-25",

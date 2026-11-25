@@ -16,6 +16,7 @@
 import asyncio
 import json
 import os
+import re
 import shutil
 
 MODES = ("direct", "remux", "audio", "transcode")
@@ -57,7 +58,8 @@ async def probe(url, timeout=45):
         # 기본값(5MB, 5초 분석)대로면 텔레그램에서 몇 MB를 더 받느라 [재생]이 몇 초 늦어진다.
         ffprobe_path(), "-v", "error", "-probesize", "1500000", "-analyzeduration", "0",
         "-show_entries",
-        "format=format_name,duration:stream=index,codec_type,codec_name,profile,pix_fmt,width,height,channels,start_time",
+        "format=format_name,duration:stream=index,codec_type,codec_name,profile,pix_fmt,width,height,channels,start_time"
+        ":stream_tags=language,title:stream_disposition=default,forced",
         "-of", "json", url,
         stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     try:
@@ -75,6 +77,27 @@ def _first(streams, kind):
     return next((s for s in streams if s.get("codec_type") == kind), None)
 
 
+# 영상 안 자막(소프트 자막) 중 글자 자막 - WebVTT로 뽑아 재생기에 붙일 수 있는 것 (그림 자막 PGS·VobSub은 안 됨)
+TEXT_SUB_CODECS = {"subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "text"}
+_KO_LANGS = {"kor", "ko", "kr", "korean", "ko-kr"}
+_KO_TITLE = re.compile(r"한국|한글|korean|\bkor\b|\bko\b", re.I)
+
+
+def inner_subs(streams):
+    """영상 안의 글자 자막 트랙 [{index, codec, lang, title, ko, forced}] - 한국어 먼저 (같으면 파일 안 순서)"""
+    out = []
+    for s in streams or []:
+        if s.get("codec_type") != "subtitle" or str(s.get("codec_name") or "").lower() not in TEXT_SUB_CODECS:
+            continue
+        tags = s.get("tags") or {}
+        lang = str(tags.get("language") or "").strip().lower()
+        title = str(tags.get("title") or "").strip()[:80]
+        out.append({"index": int(s.get("index", 0)), "codec": str(s.get("codec_name")), "lang": lang, "title": title,
+                    "ko": lang in _KO_LANGS or bool(_KO_TITLE.search(title)),
+                    "forced": bool((s.get("disposition") or {}).get("forced"))})
+    return sorted(out, key=lambda x: (not x["ko"], x["forced"]))
+
+
 def decide(info):
     """ffprobe 결과로 보낼 방법을 정한다. 반환 {"mode", "container", "video", "audio", "reason"}."""
     streams = (info or {}).get("streams") or []
@@ -90,7 +113,7 @@ def decide(info):
     else:
         container = fmt.split(",")[0] or "?"
     out = {"container": container, "video": vc + (f" {pix}" if pix and pix not in _8BIT else ""), "audio": ac,
-           "audio_tracks": sum(s.get("codec_type") == "audio" for s in streams)}
+           "audio_tracks": sum(s.get("codec_type") == "audio" for s in streams), "subs": inner_subs(streams)}
     # 소리가 영상보다 늦게 시작하도록 만들어진 파일 (재생 첫 몇 초가 조용함) 확인용
     try:
         out["av_offset"] = round(float(a["start_time"]) - float(v["start_time"]), 3) if a and v else 0.0
@@ -133,6 +156,12 @@ def _codec_args(url, mode, start, max_height=0):
     else:
         args += ["-c:a", "aac", "-b:a", "192k", "-ac", "2"]
     return args
+
+
+def build_sub_args(url, index, out):
+    """영상 안 자막 트랙 하나를 WebVTT 파일로 (자막은 파일 전체에 흩어져 있어 끝까지 읽어야 한다 - 쓰는 대로 내보냄)"""
+    return [ffmpeg_path() or "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", url,
+            "-map", f"0:{int(index)}", "-c:s", "webvtt", "-flush_packets", "1", "-f", "webvtt", out]
 
 
 def build_args(url, mode, start=0.0, max_height=0):
