@@ -44,7 +44,7 @@ from urllib.parse import quote, urlencode
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
 from yarl import URL
 
-from . import __version__, activity, auth, metasource, bookoasis, brunch, perf, cctv, chatfind, config_store, discord_feed, folder_watch, iptv, kradio, mcp, media_cache, memtrim, mp4cache, plex_to_tg, podcast, prefs, radio, recipe, subtitles, telegram_src, tmdb, transcode, updates
+from . import __version__, activity, auth, metasource, bookoasis, brunch, perf, cctv, chatfind, config_store, discord_feed, folder_watch, iptv, kradio, mcp, media_cache, memtrim, mp4cache, plex_to_tg, podcast, prefs, radio, recipe, selfupdate, subtitles, telegram_src, tmdb, transcode, updates
 
 log = logging.getLogger("ym_player")
 
@@ -3540,6 +3540,24 @@ async def admin_update_get(request):
 
 
 @admin_only
+async def admin_selfupdate_get(request):
+    """화면에서 업데이트: 받을 커밋·진행 상황 (?fetch=1이면 GitHub에서 새로 받아 봄) - selfupdate.py"""
+    fetch = request.query.get("fetch") == "1"
+    return web.json_response(await asyncio.to_thread(selfupdate.status, fetch))
+
+
+@admin_only
+async def admin_selfupdate_post(request):
+    """{action: update | rollback} - 받고 점검한 뒤 스스로 다시 시작 (실패하면 되돌림)"""
+    body = await _json_body(request)
+    try:
+        await asyncio.to_thread(selfupdate.start, str(body.get("action") or "update"))
+    except RuntimeError as e:
+        return _json_error(400, str(e))
+    return web.json_response({"success": True, "started": True})
+
+
+@admin_only
 async def admin_update_check(request):
     """지금 바로 GitHub 확인 ([지금 확인] 버튼)"""
     return web.json_response({"success": True, **await request.app[UPDATES].check(request.app[HTTP])})
@@ -4268,6 +4286,8 @@ def create_app(require_auth=True):
                                        activity.middleware(tracker, lambda r: username(r) or (r.remote or ""))],
                           client_max_size=8 * 1024 * 1024)
     app[ACTIVITY] = tracker
+    # 화면 업데이트 확인 창에 보일 "지금 하는 일" (재생 중인 스트림)
+    selfupdate.set_busy(lambda: [f"재생 중: {who or '?'} - {what}" for _k, who, what in tracker.active()][:10])
     app[TIMINGS] = timings
     root = logging.getLogger()
     if RECENT not in root.handlers:
@@ -4329,6 +4349,8 @@ def create_app(require_auth=True):
     app.router.add_get("/api/admin/logs/download", admin_logs_download)
     app.router.add_get("/api/admin/backup", admin_backup)
     app.router.add_get("/api/admin/update", admin_update_get)
+    app.router.add_get("/api/admin/selfupdate", admin_selfupdate_get)
+    app.router.add_post("/api/admin/selfupdate", admin_selfupdate_post)
     app.router.add_get("/api/admin/mcp", admin_mcp_list)
     app.router.add_post("/api/admin/mcp", admin_mcp_create)
     app.router.add_delete("/api/admin/mcp/{tid}", admin_mcp_delete)
@@ -4443,7 +4465,12 @@ def main():
             os.environ.get("MP_USER") and os.environ.get("MP_PASSWORD")):
         log.warning("MP_HOST=%s 로 열었고 아직 사용자가 없습니다 - 가장 먼저 접속한 사람이 관리자 계정을 만들게 됩니다. "
                     "바로 접속해서 관리자를 만들거나 MP_USER/MP_PASSWORD를 넣고 시작하세요.", host)
+    # 화면에서 업데이트한 뒤: 자기에게 SIGTERM -> run_app이 정상 종료 -> 같은 프로세스를 새 코드로 다시 띄움 (selfupdate.py)
+    import signal
+    selfupdate.set_restart(lambda: os.kill(os.getpid(), signal.SIGTERM))
     web.run_app(create_app(), host=host, port=port, print=lambda *_: log.info("YMPlayer %s: http://%s:%d", __version__, host, port))
+    if selfupdate.restart_pending():
+        selfupdate.exec_self()
 
 
 if __name__ == "__main__":

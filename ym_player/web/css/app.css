@@ -1353,3 +1353,10 @@ body.docpip { margin: 0; background: #000; overflow: hidden; }
     display: flex; align-items: center; justify-content: center; color: var(--muted); }
 .mirror-pick-item span { display: flex; flex-direction: column; min-width: 0; }
 .mirror-pick-dlg .toolbar { flex-wrap: wrap; }
+
+/* 설정 > 상태 > 화면에서 업데이트 */
+.selfupdate-box { margin-top: 0.6rem; }
+.selfupdate-commits { margin: 0.4rem 0 0.6rem; padding-left: 1.2rem; max-height: 14rem; overflow: auto; font-size: 0.88rem; }
+.selfupdate-commits code { font-size: 0.8rem; opacity: 0.75; }
+.selfupdate-log { margin: 0 0 0.6rem; padding: 0.6rem 0.75rem; max-height: 12rem; overflow: auto; background: var(--bg); border: 1px solid var(--border);
+    border-radius: var(--radius); font-size: 0.8rem; white-space: pre-wrap; word-break: break-all; }

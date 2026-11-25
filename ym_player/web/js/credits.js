@@ -116,6 +116,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 184,
+        "version": "1.3.25",
+        "date": "2026-11-25",
+        "title": "화면에서 업데이트: 설정 > 상태 > 업데이트에서 받을 변경 보기 · 지금 업데이트(git pull + 필요하면 pip + 새 코드 점검, 실패하면 되돌림 → 스스로 다시 시작) · 이전 버전으로 (venv/systemd 설치)"
+    },
+    {
         "pr": 183,
         "version": "1.3.24",
         "date": "2026-11-24",
