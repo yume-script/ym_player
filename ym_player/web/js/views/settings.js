@@ -961,6 +961,7 @@ async function renderStatus(pane) {
         slowBox(st.slow || [], st.slow_since),
         h('h3', { class: 'pane-title', text: '업데이트 (GitHub)' }),
         updateBox(),
+        selfUpdateBox(),
         h('h3', { class: 'pane-title', text: `최근 경고 (${st.warnings.length})` }),
         h('div', { class: 'src-card warn-list' }, st.warnings.length
             ? st.warnings.map((w) => h('div', { class: `warn-row ${w.level.toLowerCase()}` },
@@ -1062,6 +1063,88 @@ function updateBox() {
     };
     box.appendChild(h('p', { class: 'muted', text: '불러오는 중...' }));
     api('/api/admin/update').then((u) => draw(u)).catch((e) => clear(box).appendChild(h('p', { class: 'muted error', text: e.message })));
+    return box;
+}
+
+/**
+ * 화면에서 업데이트 (venv/systemd 설치): 받을 변경 보기 · [지금 업데이트](git pull + 필요하면 pip + 새 코드 점검, 실패하면 되돌림
+ * → 스스로 다시 시작) · [이전 버전으로]. 도커·git이 아닌 설치는 이유와 직접 할 명령을 보여 준다 (서버 selfupdate.py)
+ */
+function selfUpdateBox() {
+    const box = h('div', { class: 'src-card selfupdate-box' }, h('p', { class: 'muted', text: '확인 중...' }));
+    let timer = 0, wasRunning = false, waiting = false;
+    const stop = () => { clearTimeout(timer); timer = 0; };
+    const btn = (text, cls, onClick) => h('button', { class: `btn btn-sm${cls ? ` ${cls}` : ''}`, type: 'button', on: { click: onClick } }, text);
+    const waitBack = (from) => {   // 다시 시작하는 동안 서버가 잠깐 끊긴다 - 돌아오면 새로고침
+        if (waiting) return;
+        waiting = true;
+        const t0 = Date.now();
+        let sawDown = false;
+        const poll = () => {
+            if (!document.body.contains(box)) return;
+            fetch('/api/admin/update', { credentials: 'same-origin' }).then((r) => (r.ok ? r.json() : null)).then((u) => {
+                if (u && u.current && u.current !== from) { toast(`${u.current}(으)로 다시 시작했습니다.`, 'success'); setTimeout(() => location.reload(), 800); return; }
+                if (u && sawDown) { location.reload(); return; }
+                if (!u) sawDown = true;
+                if (Date.now() - t0 > 240000) { toast('다시 시작을 기다리다 멈췄습니다 - 서비스 상태를 확인하세요.', 'error'); return; }
+                setTimeout(poll, 3000);
+            }, () => { sawDown = true; setTimeout(poll, 3000); });
+        };
+        poll();
+    };
+    let current = '';
+    api('/api/admin/update').then((u) => { current = u.current || ''; }).catch(() => {});
+    const draw = (st) => {
+        stop();
+        clear(box);
+        if (st.blocked) {
+            box.append(h('p', { class: 'muted', text: `화면에서 업데이트할 수 없음: ${st.blocked}` }),
+                h('p', { class: 'field-hint', text: '직접 하려면: cd 설치폴더 && git pull && sudo systemctl restart ym_player' }));
+            return;
+        }
+        const behind = st.behind || [];
+        box.append(h('div', { class: 'update-line' }, icon(behind.length ? 'circle-up' : 'code-branch'), ' ',
+            st.fetch_error ? h('span', { class: 'error', text: 'GitHub 확인 실패' })
+                : behind.length ? h('b', { class: 'update-new', text: `받을 변경 ${behind.length}개` }) : h('span', { class: 'ok', text: '받을 변경 없음 (최신)' })),
+        h('div', { class: 'muted update-meta', text: `지금 코드 ${st.branch || ''} @ ${st.current || ''}`
+            + (st.last && st.last.at ? ` · 마지막 화면 업데이트 ${new Date(st.last.at * 1000).toLocaleString()} (${st.last.result === 'ok' ? `${st.last.from || ''} → ${st.last.to || ''}` : st.last.result || ''})` : '') }));
+        if (st.fetch_error) box.append(h('p', { class: 'muted error', text: st.fetch_error }));
+        if (behind.length) {
+            box.append(h('ul', { class: 'selfupdate-commits' }, ...behind.slice(0, 15).map((c) => h('li', {}, h('code', { text: c.sha }), ` ${c.title}`)),
+                behind.length > 15 ? h('li', { class: 'muted', text: `... 외 ${behind.length - 15}개` }) : null));
+        }
+        if (st.dirty && st.dirty.length) box.append(h('p', { class: 'muted error', text: `설치 폴더에 직접 고친 파일이 있어 업데이트할 수 없습니다: ${st.dirty.join(', ')}` }));
+        if (st.ahead) box.append(h('p', { class: 'muted', text: `GitHub에 없는 커밋 ${st.ahead}개가 있습니다 - 빨리 감기(ff)가 안 되면 업데이트하지 않습니다.` }));
+        if ((st.busy || []).length && !st.running) box.append(h('p', { class: 'muted', text: `지금 하는 일 (업데이트하면 끊김): ${st.busy.join(' · ')}` }));
+        if (st.running || st.restart || (st.log || []).length) box.append(h('pre', { class: 'selfupdate-log', text: (st.log || []).join('\n') || st.phase || '' }));
+        const bar = h('div', { class: 'toolbar' });
+        if (st.running || st.restart) bar.append(h('span', { class: 'muted', text: st.restart ? '다시 시작하는 중...' : '진행 중...' }));
+        else {
+            bar.append(btn('새 변경 확인', '', () => load(true)));
+            if (behind.length && !(st.dirty || []).length) {
+                bar.append(btn('지금 업데이트', 'btn-accent', () => {
+                    let msg = `변경 ${behind.length}개를 받아 적용하고 YMPlayer를 다시 시작합니다 (잠깐 끊김).`;
+                    if ((st.busy || []).length) msg += `\n\n지금 하는 일이 끊깁니다:\n- ${st.busy.join('\n- ')}`;
+                    if (window.confirm(`${msg}\n\n계속할까요?`)) start('update');
+                }));
+            }
+            if (st.prev) {
+                bar.append(btn('이전 버전으로', '', () => {
+                    if (window.confirm(`바로 전 버전(${st.prev_title || st.prev.slice(0, 7)})으로 되돌리고 다시 시작할까요?`)) start('rollback');
+                }));
+            }
+        }
+        box.append(bar);
+        wasRunning = !!(st.running || st.restart);
+        if (st.restart) { waitBack(current); return; }
+        if (st.running) timer = setTimeout(() => load(false), 1500);
+    };
+    const start = (action) => api('/api/admin/selfupdate', { method: 'POST', json: { action } }).then(() => load(false), (e) => toast(e.message, 'error'));
+    const load = (fetchNew) => api(`/api/admin/selfupdate${fetchNew ? '?fetch=1' : ''}`).then(draw, (e) => {
+        if (wasRunning) { waitBack(current); return; }   // 다시 시작하느라 서버가 끊김
+        draw({ blocked: e.message });
+    });
+    load(true);
     return box;
 }
 

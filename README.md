@@ -50,7 +50,8 @@ sudo systemctl enable --now ym_player
 ```
 
 상태와 로그: `systemctl status ym_player`, `journalctl -u ym_player -f`.
-코드를 업데이트한 뒤에는 `git pull && sudo systemctl restart ym_player`.
+코드를 업데이트한 뒤에는 `git pull && sudo systemctl restart ym_player`. venv/systemd 설치는 **설정 > 상태 > 업데이트 > [지금 업데이트]**로 화면에서도 됩니다
+(git pull --ff-only → requirements가 바뀌었으면 pip → 새 코드 점검, 실패하면 원래대로 → 스스로 다시 시작, [이전 버전으로]로 되돌리기. 도커는 안 됨).
 
 | 환경변수 | 기본값 | 설명 |
 |---|---|---|
