@@ -81,7 +81,9 @@ function highlightNav() {
     let activeGroup = null;
     nav.querySelectorAll('a').forEach((a) => {
         const href = a.getAttribute('href');
-        const on = here === href || (href !== '#/home' && here.startsWith(href + '?')) || (href.startsWith('#/library') && here.startsWith(href));
+        // 소스 한 줄(라이브러리가 여럿인 소스): 그 소스의 어느 화면이든 켜짐
+        const on = here === href || (href !== '#/home' && here.startsWith(href + '?')) || (href.startsWith('#/library') && here.startsWith(href))
+            || (!!a.dataset.src && currentItemPid(here) === a.dataset.src);
         a.classList.toggle('active', on);
         if (on && a.closest('.nav-group')) activeGroup = a.closest('.nav-group');
     });
@@ -195,7 +197,9 @@ async function buildNav() {
     // 모든 IPTV 소스를 합친 편성표. 소스가 하나뿐이면 그 소스의 "채널 편성표"와 똑같아서 메뉴에서 뺀다
     if (iptvs.length > 1) nav.appendChild(navLink('#/live', 'tower-broadcast', '라이브 TV'));
 
-    const accordion = registry.providers.length > 1;
+    // 넷플릭스처럼 사이드바에는 소스만 한 줄씩 - 라이브러리(텔레그램 채널 등)는 그 화면 위쪽 칩으로 고른다 (views/library.js).
+    // 소스 줄을 누르면 그 소스에서 마지막으로 연 라이브러리로. 순서 바꾸기 중에만 라이브러리 목록이 보인다
+    const accordion = false;
     applySourceOrder();
     const libOrder = navOrder().libs || {};
     for (const p of registry.providers) {
@@ -216,9 +220,12 @@ async function buildNav() {
             const a = navLink(href, iconName, p.name);
             a.classList.add('nav-head', 'nav-single-link');
             a.title = p.name;
+            a.dataset.src = p.id;
             group.replaceChild(a, group.querySelector('.nav-head'));
             group.classList.add('nav-single');
+            return a;
         };
+        const srcLink = p.kind === 'iptv' ? null : single(`#/library/${encodeURIComponent(p.id)}/`, SOURCE_ICON[p.kind] || 'folder');
         if (p.kind === 'iptv') {
             items.appendChild(navLink(`#/live/${p.id}`, 'list', '채널 편성표'));
             single(`#/live/${p.id}`, 'tower-broadcast');
@@ -236,6 +243,12 @@ async function buildNav() {
                 items.appendChild(a);
             });
             if (libs.length === 1) single(`#/library/${p.id}/${libs[0].id}`, libs[0].icon || 'film');
+            else if (libs.length) {   // 마지막으로 연 라이브러리(없으면 순서상 첫 것)로
+                const last = storeGet(`yp_last_lib_${p.id}`, '');
+                const first = ordered(libs, (l) => l.id, libOrder[p.id])[0];
+                srcLink.href = `#/library/${p.id}/${libs.some((l) => l.id === last) ? last : first.id}`;
+                srcLink.title = `${p.name} (${libs.length}개)`;
+            }
             highlightNav();
         }).catch((e) => {
             spinner.remove();

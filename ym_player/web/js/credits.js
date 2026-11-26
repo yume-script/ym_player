@@ -116,6 +116,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 191,
+        "version": "1.3.32",
+        "date": "2026-11-27",
+        "title": "디자인 2단계(넷플릭스풍): 사이드바에는 소스만 한 줄씩(누르면 마지막으로 연 채널·라이브러리로), 텔레그램 채널·Plex 라이브러리는 화면 위쪽 칩으로 고르기, 아이패드 폭에서는 사이드바를 아이콘 줄로 접고 ☰로 펼침"
+    },
+    {
         "pr": 190,
         "version": "1.3.31",
         "date": "2026-11-27",
