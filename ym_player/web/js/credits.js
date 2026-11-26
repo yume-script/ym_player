@@ -116,6 +116,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 188,
+        "version": "1.3.29",
+        "date": "2026-11-26",
+        "title": "텔레그램 목록 빠르게: 뒤에서 채널을 다시 짝짓는 동안 목록 읽기가 멈추지 않게(DB WAL), 짝짓기는 한 번에 한 채널씩, 제목 해석·BL 숨김 판단은 기억해 두고, 서버가 DB를 기다리며 멈추지 않게. 느릴 때 로그에 어디서 걸렸는지"
+    },
+    {
         "pr": 187,
         "version": "1.3.28",
         "date": "2026-11-26",

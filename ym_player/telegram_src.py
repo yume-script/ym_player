@@ -23,7 +23,9 @@ import os
 import quopri
 import re
 import shutil
+import functools
 import sqlite3
+import threading
 import time
 import unicodedata
 import zipfile
@@ -468,6 +470,7 @@ CREATE TABLE IF NOT EXISTS videos(
     duration INTEGER, size INTEGER, width INTEGER, height INTEGER, date TEXT, has_thumb INTEGER,
     kind TEXT DEFAULT 'video', PRIMARY KEY(source, channel, msg));
 CREATE INDEX IF NOT EXISTS videos_by_date ON videos(source, channel, msg DESC);
+CREATE INDEX IF NOT EXISTS videos_by_posted ON videos(source, channel, date DESC);
 CREATE TABLE IF NOT EXISTS sync_state(
     source TEXT, channel INTEGER, newest INTEGER DEFAULT 0, oldest INTEGER DEFAULT 0,
     complete INTEGER DEFAULT 0, latest_at REAL DEFAULT 0, PRIMARY KEY(source, channel));
@@ -501,12 +504,18 @@ _migrated = set()
 
 def db():
     os.makedirs(config_store.DATA_DIR, exist_ok=True)
-    conn = sqlite3.connect(os.path.join(config_store.DATA_DIR, "telegram.db"))
+    # timeout: 다른 연결이 쓰는 동안 기다릴 시간. WAL이면 읽기는 쓰기를 기다리지 않는다 (예전엔 뒤에서 채널을 다시 짝짓는
+    # 큰 쓰기가 끝날 때까지 목록 읽기가 같이 멈춰서, 홈의 채널 줄들이 한꺼번에 10초씩 걸렸다)
+    conn = sqlite3.connect(os.path.join(config_store.DATA_DIR, "telegram.db"), timeout=30)
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA)
     path = config_store.DATA_DIR
     if path not in _migrated:
         _migrated.add(path)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.DatabaseError as e:
+            log.warning("telegram.db를 WAL로 바꾸지 못함: %s", e)
         if MIGRATE_USER and not conn.execute("SELECT 1 FROM user_progress LIMIT 1").fetchone():
             with conn:
                 conn.execute("""INSERT OR IGNORE INTO user_progress(source,user,channel,msg,position,duration,watched,updated)
@@ -658,6 +667,7 @@ def _strip_lead_tags(text):
     return rest if rest.strip() else (text or "")
 
 
+@functools.lru_cache(maxsize=100000)
 def _media_key(title, file_name=""):
     """제목/파일명 -> (작품 이름, 회차, 연도). "로또 1등도 출근합니다.E09.261008.1080p" -> ("로또1등도출근합니다", 9, "")
     앞에 붙은 (자막)·(더빙) 같은 표시는 떼고 읽는다"""
@@ -822,6 +832,7 @@ def link_subs(sid, channel):
 _SEASON_RE = re.compile(_B + r"S(\d{1,3})[\s._-]*E\d|시즌\s*(\d{1,2})", re.I)
 
 
+@functools.lru_cache(maxsize=100000)
 def _episode_info(title, file_name):
     """(작품 이름 키, 시즌, 회차) - 회차가 없으면 None"""
     name, ep, _year = _media_key(title, file_name)
@@ -842,6 +853,7 @@ _SPECIAL_RE = re.compile(r"특별\s*(?:편|회|화|판|호)?|외전|번외|후�
                          r"|작가\s*의?\s*말|Q\s*&\s*A", re.I)
 
 
+@functools.lru_cache(maxsize=100000)
 def _special_info(title, file_name):
     """특별회차면 (작품 이름 키, 시즌, 번호 또는 0), 아니면 None"""
     for text in (title or "", os.path.splitext(file_name or "")[0]):
@@ -861,6 +873,7 @@ def _special_info(title, file_name):
     return None
 
 
+@functools.lru_cache(maxsize=100000)
 def _display_title(text):
     """'로또_1등도_출근합니다_S01E04_1080p' / '로또 1등도 출근합니다 S01E09 [2026]' -> '로또 1등도 출근합니다'"""
     text = os.path.splitext(text or "")[0] if re.search(r"\.(mkv|mp4|avi|ts|mov|webm|m4v|zip|cbz)$", text or "", re.I) else (text or "")
@@ -1107,8 +1120,26 @@ def _bl_checker(conn, sid, channels):
     return check
 
 
+_BL_CACHE = {}   # (소스, 채널들) -> (표시, 만든 때, check) - 목록 요청마다 채널의 모든 웹툰 회차를 다시 보지 않게
+BL_CACHE_TTL = 300
+
+
 def _bl_function(conn, sid, channels):
-    check = _bl_checker(conn, sid, channels)
+    chans = tuple(sorted(int(c) for c in channels))
+    marks = ",".join("?" * len(chans))
+    sig = tuple(conn.execute(
+        f"SELECT (SELECT COUNT(*) FROM series WHERE source=? AND channel IN ({marks})), "
+        f"(SELECT COUNT(*) FROM meta_flags WHERE source=? AND channel IN ({marks}) AND bl=1), "
+        f"(SELECT MAX(msg) FROM videos WHERE source=? AND channel IN ({marks}))", [sid, *chans] * 3).fetchone()) if chans else ()
+    ck = (config_store.DATA_DIR, sid, chans)
+    hit = _BL_CACHE.get(ck)
+    if hit and hit[0] == sig and time.time() - hit[1] < BL_CACHE_TTL:
+        check = hit[2]
+    else:
+        check = _bl_checker(conn, sid, channels)
+        if len(_BL_CACHE) > 50:
+            _BL_CACHE.clear()
+        _BL_CACHE[ck] = (sig, time.time(), check)
     conn.create_function("ymp_bl", 5, lambda *a: 1 if check(*a) else 0, deterministic=True)
 
 
@@ -1766,6 +1797,17 @@ def _poster_map(conn, sid, rows):
     got = conn.execute(f"SELECT channel, video, image FROM posters WHERE source=? AND channel IN ({marks})",
                        [sid, *chans]).fetchall()
     return {(p["channel"], p["video"]): p["image"] for p in got}
+
+
+_RELINK_LOCK = threading.Lock()
+
+
+def sync_states(sid, channels):
+    """여러 채널의 sync_state를 한 번에 {채널: state}"""
+    with db() as conn:
+        rows = {r["channel"]: dict(r) for r in conn.execute(
+            f"SELECT * FROM sync_state WHERE source=? AND channel IN ({','.join('?' * len(channels))})", [sid, *channels])} if channels else {}
+    return {c: rows.get(c) or {"newest": 0, "oldest": 0, "complete": 0, "latest_at": 0} for c in channels}
 
 
 def sync_state(sid, channel):
@@ -2646,9 +2688,16 @@ class TelegramSource:
     def _index(self, channel, items):
         upsert_videos(self.sid, channel, items)
         if items:
-            link_posters(self.sid, channel)
-            link_subs(self.sid, channel)
-            link_series(self.sid, channel)
+            # 채널 전체를 다시 짝짓는 무거운 일 - 여러 채널이 한꺼번에 하면(서버를 켠 뒤 첫 목록 등) 파이썬 하나를 서로 나눠 써서
+            # 목록 읽기까지 같이 느려진다. 한 번에 한 채널씩
+            with _RELINK_LOCK:
+                t0 = time.time()
+                link_posters(self.sid, channel)
+                link_subs(self.sid, channel)
+                link_series(self.sid, channel)
+                took = time.time() - t0
+            if took > 1:
+                log.info("telegram 채널 %s 짝짓기(포스터·자막·시리즈)가 %.1f초 걸림 (새 메시지 %d개)", channel, took, len(items))
 
     async def _scan(self, channel, **kwargs):
         client = await self.authorized_client()
@@ -2702,25 +2751,25 @@ class TelegramSource:
     async def sync_latest(self, channel, force=False):
         """새로 올라온 것 받기 (LATEST_SYNC_SEC 안에 이미 했으면 건너뜀)."""
         async with self._lock(channel):
-            st = sync_state(self.sid, channel)
+            st = await asyncio.to_thread(sync_state, self.sid, channel)
             if not force and time.time() - st["latest_at"] < LATEST_SYNC_SEC:
                 return
             if st["newest"]:
                 _, ids = await self._scan(channel, min_id=st["newest"], limit=None)
-                save_sync_state(self.sid, channel, newest=max(ids + [st["newest"]]), latest_at=time.time())
+                await asyncio.to_thread(save_sync_state, self.sid, channel, newest=max(ids + [st["newest"]]), latest_at=time.time())
             else:
                 _, ids = await self._scan(channel, limit=SCAN_BATCH)
-                save_sync_state(self.sid, channel, newest=max(ids or [0]), oldest=min(ids or [0]),
-                                complete=int(len(ids) < SCAN_BATCH), latest_at=time.time())
+                await asyncio.to_thread(save_sync_state, self.sid, channel, newest=max(ids or [0]), oldest=min(ids or [0]),
+                                        complete=int(len(ids) < SCAN_BATCH), latest_at=time.time())
 
     async def sync_older(self, channel):
         """더 오래된 메시지 SCAN_BATCH개 훑기. 끝까지 갔으면 complete."""
         async with self._lock(channel):
-            st = sync_state(self.sid, channel)
+            st = await asyncio.to_thread(sync_state, self.sid, channel)
             if st["complete"] or not st["oldest"]:
                 return False
             _, ids = await self._scan(channel, offset_id=st["oldest"], limit=SCAN_BATCH)
-            save_sync_state(self.sid, channel, oldest=min(ids + [st["oldest"]]), complete=int(len(ids) < SCAN_BATCH))
+            await asyncio.to_thread(save_sync_state, self.sid, channel, oldest=min(ids + [st["oldest"]]), complete=int(len(ids) < SCAN_BATCH))
             return bool(ids)
 
     async def videos(self, channels, offset=0, limit=40, q="", sort="latest", fill=True, user="", kind="", group=False):
@@ -2736,8 +2785,10 @@ class TelegramSource:
         t0 = time.time()
         channels = [c for c in channels if c in self.channels] if self.channels else []
         syncing = False
+        # (DB 읽기는 따로 도는 스레드에서 - 이벤트 루프에서 하면 DB가 바쁠 때 서버의 모든 요청이 같이 멈춘다)
+        states = await asyncio.to_thread(sync_states, self.sid, channels)
         for c in channels:
-            st = sync_state(self.sid, c)
+            st = states[c]
             if not st["newest"]:
                 try:
                     await self.sync_latest(c)
@@ -2748,11 +2799,13 @@ class TelegramSource:
             elif time.time() - st["latest_at"] >= LATEST_SYNC_SEC:
                 self.background(("latest", c), lambda c=c: self.sync_latest(c))
                 syncing = True
-        if HIDE_BL and meta_flags_pending(self.sid, channels):
+        if HIDE_BL and await asyncio.to_thread(meta_flags_pending, self.sid, channels):
             self.background(("meta_flags",), self.scan_meta_flags)
         # 색인 조회는 따로 도는 스레드에서 (큰 채널은 수백 ms - 그동안 서버의 다른 요청이 멈추지 않게)
         counts = {}
+        t_wait = time.time() - t0
         rows, total = await asyncio.to_thread(query_videos, self.sid, channels, offset, limit, q, sort, user, kind, self.kinds, group, counts)
+        t_query = time.time() - t0 - t_wait
         if fill and len(channels) == 1 and not q and sort == "latest":
             ch = channels[0]
             for _ in range(OLDER_BATCHES_PER_PAGE):
@@ -2763,13 +2816,16 @@ class TelegramSource:
                 rows, total = await asyncio.to_thread(query_videos, self.sid, channels, offset, limit, q, sort, user, kind, self.kinds, group, counts)
                 if not more:
                     break
+        states = await asyncio.to_thread(sync_states, self.sid, channels)
+        if fill and len(channels) == 1 and not q and sort == "latest":
             ahead = total - (offset + counts.get("raw", len(rows)))
-            if ahead < limit * 2 and not sync_state(self.sid, ch)["complete"]:
-                self.background(("older", ch), lambda: self.sync_older(ch))
-        complete = all(sync_state(self.sid, c)["complete"] for c in channels)
+            if ahead < limit * 2 and not states[channels[0]]["complete"]:
+                self.background(("older", channels[0]), lambda ch=channels[0]: self.sync_older(ch))
+        complete = all(states[c]["complete"] for c in channels)
         took = time.time() - t0
         if took > 2:
-            log.info("telegram 목록이 %.1f초 걸림 (채널 %s, offset %s, 받은 %s개)", took, channels, offset, len(rows))
+            log.info("telegram 목록이 %.1f초 걸림 (채널 %s, offset %s, 받은 %s개 · 첫 색인·상태 %.1f초, 목록 읽기 %.1f초, 그 밖 %.1f초)",
+                     took, channels, offset, len(rows), t_wait, t_query, took - t_wait - t_query)
         # 다음 쪽은 DB에서 읽은 행 수만큼 뒤에서 (나눈 조각을 합쳐 카드가 줄어도 - 합친 카드 수로 넘기면 앞의 영화가 다시 나온다)
         raw = counts.get("raw", len(rows))
         raw_total = total + counts.get("dropped", 0)
