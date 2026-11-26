@@ -715,7 +715,7 @@ def test_existing_index_titles_are_repaired_once(monkeypatch, tmp_path):
     row = telegram_src.get_video("tg", 1, 2)
     assert row["title"] == "영화" and row["file_name"] == "영화.mkv"
     with telegram_src.db() as c:
-        assert c.execute("PRAGMA user_version").fetchone()[0] == 15
+        assert c.execute("PRAGMA user_version").fetchone()[0] == 16
 
 
 def test_split_parts_are_grouped(monkeypatch, tmp_path):
@@ -2182,3 +2182,40 @@ def test_inner_subtitle_extract_end_to_end(env, tmp_path):
         assert (await c.get("/api/tg/tg/isub/777/12345/2")).status == 404
 
     run(flow)
+
+
+def test_same_episode_uploaded_twice_shows_once(monkeypatch, tmp_path):
+    """같은 회차를 두 벌 올린 것(다른 파일·다시 올림)은 목록에 가장 최근 벌 하나만 - 회차가 하나뿐인 작품도 (예전엔 두 장이 나란히)"""
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    telegram_src._migrated.discard(str(tmp_path))
+    telegram_src._GROUPS.clear()
+    rows = [(1, "놀면 뭐하니 E353 (1/2)", "놀면 뭐하니.E353.261122.1080p-ST (1/2).mp4", 30),
+            (2, "놀면 뭐하니 E353 (2/2)", "놀면 뭐하니.E353.261122.1080p-ST (2/2).mp4", 30),
+            (3, "놀면 뭐하니 E353 (1/2)", "놀면 뭐하니.E353.261122.720p-SW (1/2).mp4", 31),
+            (4, "놀면 뭐하니 E353 (2/2)", "놀면 뭐하니.E353.261122.720p-SW (2/2).mp4", 31),
+            (5, "금타는 금요일 E46", "금타는 금요일.E46.mp4", 36),
+            (6, "동치미 E728", "동치미.E728.a.mp4", 78),
+            (7, "동치미 E728", "동치미.E728.b.mp4", 76),
+            (8, "동치미 E729", "동치미.E729.mp4", 70)]
+    with telegram_src.db() as conn:
+        conn.executemany(
+            "INSERT INTO videos(source,channel,msg,title,caption,file_name,mime,duration,size,width,height,date,has_thumb,kind)"
+            " VALUES('tg',1,?,?,'',?,'video/mp4',?,1,1,1,'2026-11-22T10:00:00+00:00',0,'video')", rows)
+    telegram_src.link_series("tg", 1)
+    items, total = telegram_src.query_videos("tg", [1], limit=50, group=True)
+    by = {x["msg"]: x for x in items}
+    assert set(by) == {3, 5, 8} and total == 3                    # 놀면 뭐하니는 최근 벌(3·4) 하나, 동치미는 시리즈(최근 회차)
+    assert by[3]["parts_count"] == 2 and by[3]["duration"] == 62
+    assert by[8]["series"]["count"] == 3                           # 시리즈 화면에는 두 벌 다 (지울 것을 고를 수 있게)
+    flat, _ = telegram_src.query_videos("tg", [1], limit=50)       # 묶지 않는 목록은 그대로 다
+    assert {1, 3, 6, 7} <= {x["msg"] for x in flat}
+
+
+def test_refresh_channel_syncs_latest():
+    calls = []
+
+    class FakeTg:
+        async def sync_latest(self, channel, force=False):
+            calls.append((channel, force))
+    asyncio.run(telegram_src.refresh_channel(FakeTg(), "-100"))
+    assert calls == [(-100, True)]
