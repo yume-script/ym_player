@@ -116,6 +116,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 189,
+        "version": "1.3.30",
+        "date": "2026-11-26",
+        "title": "아이폰·아이패드 홈 화면 앱: 위쪽 바가 상태바(시계·배터리)에 가리던 것 - 상태바 높이만큼 내림 (로그인·재생기 위쪽·창도)"
+    },
+    {
         "pr": 188,
         "version": "1.3.29",
         "date": "2026-11-26",
