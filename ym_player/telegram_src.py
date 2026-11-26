@@ -487,6 +487,7 @@ CREATE TABLE IF NOT EXISTS subs(source TEXT, channel INTEGER, video INTEGER, sub
 CREATE TABLE IF NOT EXISTS series(source TEXT, channel INTEGER, video INTEGER, skey TEXT, title TEXT,
     season INTEGER, ep INTEGER, rep INTEGER DEFAULT 0, special INTEGER DEFAULT 0, PRIMARY KEY(source, channel, video));
 CREATE INDEX IF NOT EXISTS series_by_key ON series(source, channel, skey);
+CREATE TABLE IF NOT EXISTS dups(source TEXT, channel INTEGER, video INTEGER, PRIMARY KEY(source, channel, video));
 CREATE TABLE IF NOT EXISTS meta(source TEXT, mkey TEXT, kind TEXT, tmdb_id INTEGER, data TEXT, fetched REAL,
     manual INTEGER DEFAULT 0, PRIMARY KEY(source, mkey));
 CREATE TABLE IF NOT EXISTS plex_meta(source TEXT, channel INTEGER, msg INTEGER, meta TEXT, ep TEXT, PRIMARY KEY(source, channel, msg));
@@ -575,6 +576,11 @@ def db():
             with conn:
                 conn.execute("DELETE FROM sync_state")
             conn.execute("PRAGMA user_version = 15")
+        if conn.execute("PRAGMA user_version").fetchone()[0] < 16:
+            # 같은 회차를 여러 벌 올린 것(dups)을 찾는다 -> 예전에 색인한 채널도 시리즈를 한 번 다시 묶는다
+            for sid, ch in conn.execute("SELECT DISTINCT source, channel FROM videos").fetchall():
+                _link_series(conn, sid, ch)
+            conn.execute("PRAGMA user_version = 16")
     return conn
 
 
@@ -872,6 +878,7 @@ def _link_series(conn, sid, channel):
     posters = {p["video"]: p["image"] for p in conn.execute(
         "SELECT video, image FROM posters WHERE source=? AND channel=?", (sid, channel)).fetchall()}
     groups, specials, albums = {}, [], {}
+    copies = {}   # (작품 키, 시즌, 회차) -> {올린 벌: [메시지]} - 같은 회차를 두 번 올린 것 찾기 (아래 dups)
     for r in rows:
         if r["kind"] == "audio":   # 음악: 같은 앨범의 곡을 묶는다 (시즌=디스크, 회차=트랙) - 곡 하나뿐인 앨범도
             info = music_info(r["caption"], r["title"])
@@ -887,6 +894,17 @@ def _link_series(conn, sid, channel):
         info = _episode_info(r["title"], r["file_name"])
         if info:
             groups.setdefault(prefix + info[0], []).append((r, info[1], info[2]))
+            if r["kind"] == "video":
+                part = _part_key(r)   # 나눠 올린 조각들은 한 벌
+                copies.setdefault(info, {}).setdefault(("p", part[0]) if part else ("m", r["msg"]), []).append(r["msg"])
+    # 같은 회차를 여러 벌 올렸으면(다른 파일·다시 올림) 가장 최근 벌만 목록에 - 나머지 벌은 dups에 두고 목록(group)에서 뺀다.
+    # 회차가 하나뿐인 작품은 시리즈로 묶이지 않아서 같은 회차 카드가 나란히 두 장 보였다 (시리즈 화면에는 그대로 다 보임)
+    dup_rows = []
+    for sets in copies.values():
+        if len(sets) < 2:
+            continue
+        newest = max(sets.values(), key=max)
+        dup_rows += [(sid, channel, m) for msgs in sets.values() if msgs is not newest for m in msgs]
     links = []
     for key, eps in groups.items():
         if len({(s, e) for _, s, e in eps}) < 2:   # 회차 하나뿐이면 묶지 않는다
@@ -925,6 +943,8 @@ def _link_series(conn, sid, channel):
     with conn:
         conn.execute("DELETE FROM series WHERE source=? AND channel=?", (sid, channel))
         conn.executemany("INSERT INTO series(source,channel,video,skey,title,season,ep,rep,special) VALUES(?,?,?,?,?,?,?,?,?)", links)
+        conn.execute("DELETE FROM dups WHERE source=? AND channel=?", (sid, channel))
+        conn.executemany("INSERT OR IGNORE INTO dups(source,channel,video) VALUES(?,?,?)", dup_rows)
     return len({x[3] for x in links})
 
 
@@ -1430,6 +1450,12 @@ def channel_episode(sid, channel, name_key, season, ep):
     return hit[2].get((name_key, int(season or 1), int(ep)), "")
 
 
+async def refresh_channel(tg, channel):
+    """자동 올리기의 중복 확인 직전: 채널에 새로 올라온 것을 색인에 바로 받는다 (다른 규칙·다른 프로그램·직접 올린 것도
+    channel_episode / channel_file이 보게). 예전엔 이 함수가 없어 몇 분 묵은 색인으로 확인해서 같은 회차가 두 번 올라갔다"""
+    await tg.sync_latest(int(channel), force=True)
+
+
 def file_stem_key(file_name):
     """같은 파일 이름 비교용: 확장자·나눈 조각 꼬리(_0000)를 떼고 대소문자 무시 - "Show.S01E01.mkv"와 "Show.S01E01_0000.mp4"는 같다"""
     stem = os.path.splitext(os.path.basename(str(file_name or "")))[0]
@@ -1868,6 +1894,9 @@ def query_videos(sid, channels, offset=0, limit=40, q="", sort="latest", user=""
         # 시리즈는 가장 최근 회차 하나만 (나머지 회차는 시리즈 화면에서)
         where += (" AND NOT EXISTS (SELECT 1 FROM series s WHERE s.source=videos.source AND s.channel=videos.channel"
                   " AND s.video=videos.msg AND s.rep=0)")
+        # 같은 회차를 여러 벌 올린 것은 가장 최근 벌만
+        where += (" AND NOT EXISTS (SELECT 1 FROM dups d WHERE d.source=videos.source AND d.channel=videos.channel"
+                  " AND d.video=videos.msg)")
     if q:
         where += " AND (title LIKE ? OR caption LIKE ? OR file_name LIKE ?)"
         like = f"%{q}%"
@@ -2214,7 +2243,7 @@ def forget_source(sid):
     """소스를 지우면 그 색인/진행 기록도 지운다 (세션 파일은 TelegramSource.logout이)."""
     media_cache.STORE.drop_prefix(f"tg:{sid}:")
     with db() as conn:
-        for table in ("videos", "sync_state", "peers", "progress", "user_progress", "probes", "posters", "subs", "series", "meta"):
+        for table in ("videos", "sync_state", "peers", "progress", "user_progress", "probes", "posters", "subs", "series", "dups", "meta"):
             conn.execute(f"DELETE FROM {table} WHERE source=?", (sid,))
     shutil.rmtree(os.path.join(config_store.DATA_DIR, "telegram_images", sid), ignore_errors=True)
     shutil.rmtree(os.path.join(config_store.DATA_DIR, "telegram_books", sid), ignore_errors=True)

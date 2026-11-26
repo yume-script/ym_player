@@ -116,6 +116,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 187,
+        "version": "1.3.28",
+        "date": "2026-11-26",
+        "title": "텔레그램 목록: 같은 회차를 두 번 올린 것은 가장 최근 것 하나만 (시리즈 화면에는 둘 다), 자동 올리기가 중복을 확인하기 직전에 채널을 새로 읽어 같은 회차를 두 번 올리지 않게"
+    },
+    {
         "pr": 186,
         "version": "1.3.27",
         "date": "2026-11-25",
