@@ -16,7 +16,9 @@
     --danger: #e5484d;
     --ok: #3fb950;
     --border: rgba(var(--fg-rgb), 0.08);
-    --topbar-h: 60px;
+    /* 아이폰·아이패드 홈 화면 앱(상태바가 화면 위에 겹침 - black-translucent): 그만큼 위쪽 바를 내린다. 브라우저에서는 0 */
+    --safe-top: env(safe-area-inset-top, 0px);
+    --topbar-h: calc(60px + var(--safe-top));
     --sidebar-w: 236px;
     --radius: 6px;
     --card-w: 160px;
@@ -75,7 +77,7 @@ img { display: block; }
 /* ---------- 위쪽 바 ---------- */
 .topbar {
     position: fixed; inset: 0 0 auto 0; height: var(--topbar-h); z-index: 30;
-    display: flex; align-items: center; gap: 1rem; padding: 0 1rem;
+    display: flex; align-items: center; gap: 1rem; padding: var(--safe-top) 1rem 0;
     background: linear-gradient(180deg, rgba(var(--bg-rgb), 0.98), rgba(var(--bg-rgb), 0.9));
     border-bottom: 1px solid var(--border);
     backdrop-filter: blur(8px);
@@ -420,7 +422,7 @@ body.lib-route .view-mode { display: block; }
 .pick-server .btn { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 
 /* ---------- 모달/토스트 ---------- */
-.modal { position: fixed; inset: 0; z-index: 200; background: rgba(0, 0, 0, 0.7); display: flex; align-items: center; justify-content: center; padding: 1rem; }
+.modal { position: fixed; inset: 0; z-index: 200; background: rgba(0, 0, 0, 0.7); display: flex; align-items: center; justify-content: center; padding: max(1rem, var(--safe-top)) 1rem 1rem; }
 .modal-card { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px; width: 560px; max-width: 100%; max-height: 85vh; display: flex; flex-direction: column; }
 .modal-head { display: flex; align-items: center; justify-content: space-between; padding: 0.9rem 1.1rem; border-bottom: 1px solid var(--border); }
 .modal-head h3 { margin: 0; font-size: 1.05rem; }
@@ -466,7 +468,7 @@ body.player-open { overflow: hidden; }
 .player.show-ui .player-top, .player.show-ui .player-bottom, .player.paused .player-top, .player.paused .player-bottom { opacity: 1; pointer-events: auto; }
 .player.show-ui, .player.paused { cursor: default; }
 .player:not(.show-ui):not(.paused) { cursor: none; }
-.player-top { top: 0; z-index: 7; display: flex; align-items: center; gap: 0.75rem; background: linear-gradient(180deg, rgba(0, 0, 0, 0.85), transparent); padding-bottom: 3rem; }
+.player-top { top: 0; padding-top: max(1rem, var(--safe-top)); z-index: 7; display: flex; align-items: center; gap: 0.75rem; background: linear-gradient(180deg, rgba(0, 0, 0, 0.85), transparent); padding-bottom: 3rem; }
 .player-titles { flex: 1; min-width: 0; }
 .player-title-row { display: flex; align-items: center; gap: 0.6rem; }
 .player-titles h2 { margin: 0; font-size: 1.3rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -704,7 +706,7 @@ body[data-cue-size="l"] .player video::cue { font-size: 2.2rem; }
 /* ---------- 로그인 화면 ---------- */
 body.login-body { overflow: auto; min-height: 100vh; display: flex; align-items: flex-start; justify-content: center;
     background: radial-gradient(ellipse at 50% -20%, rgba(var(--accent-rgb), 0.14) 0%, var(--bg) 55%); }
-.login-wrap { width: 100%; max-width: 420px; padding: 9vh 1rem 2rem; }
+.login-wrap { width: 100%; max-width: 420px; padding: calc(9vh + var(--safe-top)) 1rem 2rem; }
 .login-brand { display: flex; align-items: center; justify-content: center; gap: 0.6rem; font-weight: 700; font-size: 1.15rem; margin-bottom: 1.25rem; }
 .login-card { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px; padding: 1.75rem 1.5rem 1.25rem;
     display: flex; flex-direction: column; gap: 0.85rem; box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45); }
