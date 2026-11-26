@@ -207,7 +207,34 @@ export function channelCard(item, playlist) {
     },
     art,
     h('div', { class: 'card-title', text: item.title }),
-    h('div', { class: 'card-sub', text: item.subtitle || ' ' }));
+    h('div', { class: 'card-sub', text: item.subtitle || ' ' }),
+    item.timeLine ? h('div', { class: 'card-time', text: item.timeLine }) : null);
+}
+
+/** 홈 맨 위 큰 배너 (넷플릭스처럼): 그림 + 제목·부제·줄거리 + [재생]/[자세히]. actions: 덧붙일 단추들 */
+export function heroBanner(item, actions = []) {
+    const provider = registry.byId(item.pid);
+    const src = item.wideThumb || item.thumb || '';
+    const wideArt = item.shape === 'wide' || (item.wideThumb && item.wideThumb !== item.thumb);
+    const f = itemFacts(item);
+    const canPlay = (PLAYABLE.has(item.type) || item.playable) && provider;
+    const play = canPlay ? h('button', { class: 'btn hero-play', on: { click: () => player.playItem(provider, item.id) } },
+        icon('play'), item.progress > 0 ? ' 이어보기' : ' 재생') : null;
+    const more = item.route ? h('a', { class: 'btn hero-more', href: item.route }, icon('circle-info'), ' 자세히') : null;
+    const bar = progressBar(item.progress);
+    const box = h('section', { class: `hero${wideArt ? '' : ' hero-soft'}` },
+        h('div', { class: 'hero-art' }, src ? h('img', { src, alt: '', decoding: 'async', referrerpolicy: /^https?:/i.test(src) ? 'no-referrer' : null }) : null),
+        // 넓은 그림이 아니면(포스터·정사각형) 오른쪽에 원래 그림을 그대로 한 장 더
+        !wideArt && item.thumb ? h('img', { class: 'hero-poster', src: item.thumb, alt: '' }) : null,
+        h('div', { class: 'hero-shade' }),
+        h('div', { class: 'hero-body' },
+            item.heroLabel ? h('div', { class: 'hero-label', text: item.heroLabel }) : null,
+            h('h2', { class: 'hero-title', text: item.title }),
+            item.subtitle ? h('div', { class: 'hero-sub', text: item.subtitle }) : null,
+            f.summary ? h('p', { class: 'hero-summary', text: f.summary }) : null,
+            bar ? h('div', { class: 'hero-progress' }, bar) : null,
+            h('div', { class: 'hero-actions' }, play, more, ...actions)));
+    return box;
 }
 
 export function cardFor(item, playlist, wide = false) {

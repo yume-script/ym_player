@@ -2,7 +2,7 @@
 import { h, icon, clear, api, modal, toast } from '../util.js';
 import { registry, randomAcross } from '../providers/index.js';
 import { player } from '../player.js';
-import { hubRow, emptyState, skeletonRow } from '../cards.js';
+import { hubRow, emptyState, skeletonRow, heroBanner } from '../cards.js';
 
 export async function renderHome(main, _params, _query, ctx) {
     const providers = registry.providers;
@@ -24,7 +24,23 @@ export async function renderHome(main, _params, _query, ctx) {
         on: { click: () => player.playRandom(randomAcross(randomSources)) },
     }, icon('shuffle'), ' 랜덤 재생') : null;
     const actions = h('div', { class: 'home-actions' }, randomBtn);
+    // 맨 위 큰 배너: 이어볼 것 첫째(없으면 새로 올라온 것 첫째) - 넓은 그림이 있는 것을 먼저
+    const heroSlot = h('div', { class: 'home-hero' });
+    page.appendChild(heroSlot);
     if (randomBtn) page.appendChild(actions);
+    let heroKey = '';
+    const drawHero = () => {
+        const pick = (list, label) => {
+            const withArt = list.filter((it) => it.wideThumb || it.thumb);
+            const it = withArt.find((x) => x.shape === 'wide' || (x.wideThumb && x.wideThumb !== x.thumb)) || withArt[0];
+            return it ? { ...it, heroLabel: label } : null;
+        };
+        const it = pick(contItems, '이어보기') || pick(recentItems, '새로 올라옴');
+        if (!it || `${it.pid}/${it.id}` === heroKey) return;
+        heroKey = `${it.pid}/${it.id}`;
+        actions.remove();
+        clear(heroSlot).appendChild(heroBanner(it, randomBtn ? [randomBtn] : []));
+    };
 
     // 맨 위: 모든 소스의 이어보기를 최근에 본 순서로 한 줄에 (각 소스의 이어보기 줄은 따로 안 그린다)
     const contSlot = h('div', { class: 'home-slot' });
@@ -34,8 +50,21 @@ export async function renderHome(main, _params, _query, ctx) {
         const seen = new Set(contItems.map((it) => `${it.pid}/${it.id}`));
         items.forEach((it) => { if (!seen.has(`${it.pid}/${it.id}`)) { seen.add(`${it.pid}/${it.id}`); contItems.push(it); } });
         contItems.sort((a, b) => (b.ts || 0) - (a.ts || 0));
-        actions.remove();
-        clear(contSlot).appendChild(hubRow({ title: '이어보기', items: contItems.slice(0, 40), wide: true, action: randomBtn }));
+        clear(contSlot).appendChild(hubRow({ title: '이어보기', items: contItems.slice(0, 40), wide: true }));
+        drawHero();
+    };
+
+    // 그 아래: Plex 최근 추가와 텔레그램 새 영상을 합친 "새로 올라온 것" 한 줄 (올라온 날짜순, 소스마다의 그 줄은 따로 안 그린다)
+    const recentSlot = h('div', { class: 'home-slot' });
+    page.appendChild(recentSlot);
+    const recentItems = [];
+    const addedAt = (it) => it.added || (it.raw && (it.raw.addedAt ? it.raw.addedAt * 1000 : Date.parse(it.raw.date || '') || 0)) || 0;
+    const addRecent = (items) => {
+        const seen = new Set(recentItems.map((it) => `${it.pid}/${it.id}`));
+        items.forEach((it) => { if (!seen.has(`${it.pid}/${it.id}`)) { seen.add(`${it.pid}/${it.id}`); recentItems.push(it); } });
+        recentItems.sort((a, b) => addedAt(b) - addedAt(a));
+        clear(recentSlot).appendChild(hubRow({ title: '새로 올라온 것', items: recentItems.slice(0, 40) }));
+        drawHero();
     };
 
     // 소스마다 자리를 먼저 잡아두고 채운다 (느린 소스가 다른 소스를 막지 않게).
@@ -56,7 +85,8 @@ export async function renderHome(main, _params, _query, ctx) {
         clear(slot);
         if (!hubs.length) slot.appendChild(h('div', { class: 'home-note', text: `${p.name}: 보여줄 항목이 없습니다.` }));
         hubs.filter((hub) => hub.continue).forEach((hub) => addContinue(hub.items));
-        const rest = hubs.filter((hub) => !hub.continue);
+        hubs.filter((hub) => hub.recent && !hub.continue).forEach((hub) => addRecent(hub.items));
+        const rest = hubs.filter((hub) => !hub.continue && !hub.recent);
         if (!rest.length && hubs.length) slot.classList.add('home-slot-empty');
         rest.forEach((hub) => slot.appendChild(hubRow(hub)));
     };

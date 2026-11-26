@@ -305,7 +305,7 @@ export class TelegramProvider {
         }
         // 채널들을 합친 새 영상 (채널이 여럿일 때 서버가 보내 줌)
         if (data.recent && data.recent.length) {
-            hubs.push({ title: '새로 올라온 영상', source: this.name, items: data.recent.map((v) => this.toItem(v)) });
+            hubs.push({ title: '새로 올라온 영상', source: this.name, recent: true, items: data.recent.map((v) => this.toItem(v)) });
         }
         markSeen([...(data.recent || []), ...(data.channels || []).flatMap((r) => r.items)]);
         for (const row of data.channels || []) {

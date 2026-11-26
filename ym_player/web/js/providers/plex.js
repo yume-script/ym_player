@@ -178,6 +178,8 @@ export class PlexProvider {
                 title: `${hub.title}${suffix}`, source: suffix ? undefined : this.name, items: items.map((m) => this.toItem(m)),
                 // 이어보기/다음 볼 에피소드는 홈 맨 위의 통합 "이어보기" 줄로 모은다
                 continue: !suffix && CONTINUE_HUBS.has(hub.hubIdentifier),
+                // 최근 추가된 영화·TV는 홈의 "새로 올라온 것" 한 줄로 (텔레그램 새 영상과 합쳐 날짜순)
+                recent: !suffix && !CONTINUE_HUBS.has(hub.hubIdentifier) && /\.recent/i.test(hub.hubIdentifier || ''),
             }));
     }
 

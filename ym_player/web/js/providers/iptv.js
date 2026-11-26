@@ -134,6 +134,8 @@ export class IptvProvider {
             type: 'channel',
             title: ch.name,
             subtitle: cur ? cur[2] : (ch.group || ''),
+            // 카드 셋째 줄: 지금 프로그램이 언제까지·남은 시간 (편성표가 있을 때)
+            timeLine: cur && cur[1] ? `~${new Date(cur[1] * 1000).toTimeString().slice(0, 5)} · ${Math.max(1, Math.round((cur[1] - Date.now() / 1000) / 60))}분 남음` : '',
             logo: ch.logo,
             shape: 'channel',
             progress,
