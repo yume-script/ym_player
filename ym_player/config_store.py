@@ -124,6 +124,13 @@ def _clean_source(raw, old):
                                    "brunch": "브런치 연재", "recipe": "만개의레시피", "bookoasis": "BookOasis", "kradio": "공중파 라디오"}[stype]).strip(),
         "enabled": bool(raw.get("enabled", True)),
     }
+    # 사이드바·화면 제목에 쓸 아이콘(Font Awesome 이름)과 색 (비우면 소스 종류의 기본 아이콘·글자색)
+    icon = str(raw.get("icon") or "").strip()
+    if re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", icon):
+        src["icon"] = icon
+    color = str(raw.get("color") or "").strip()
+    if re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+        src["color"] = color.lower()
     if stype == "plex":
         src["url"] = str(raw.get("url") or "").strip().rstrip("/")
         if not src["url"]:

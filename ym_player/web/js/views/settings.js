@@ -768,9 +768,10 @@ export async function renderSettings(main, _params, query, ctx) {
             list.appendChild(h('div', { class: `src-card${src.enabled ? '' : ' disabled'}` },
                 h('div', { class: 'src-head' },
                     h('span', { class: `src-type ${src.type}` },
-                        icon(isKr ? 'tower-cell' : isBo ? 'book' : isCctv ? 'video' : isPod ? 'podcast' : isRadio ? 'radio' : isTg ? 'paper-plane' : isPlex ? 'server' : 'tower-broadcast'),
-                        isKr ? ' 공중파 라디오' : isBo ? ' BookOasis' : isCctv ? ' CCTV' : isPod ? ' 팟캐스트' : isRadio ? ' 라디오' : isTg ? ' 텔레그램' : isPlex ? ' Plex' : ' IPTV'),
+                        icon(src.type === 'recipe' ? 'utensils' : src.type === 'brunch' ? 'mug-hot' : isKr ? 'tower-cell' : isBo ? 'book' : isCctv ? 'video' : isPod ? 'podcast' : isRadio ? 'radio' : isTg ? 'paper-plane' : isPlex ? 'server' : 'tower-broadcast'),
+                        src.type === 'recipe' ? ' 레시피' : src.type === 'brunch' ? ' 브런치' : isKr ? ' 공중파 라디오' : isBo ? ' BookOasis' : isCctv ? ' CCTV' : isPod ? ' 팟캐스트' : isRadio ? ' 라디오' : isTg ? ' 텔레그램' : isPlex ? ' Plex' : ' IPTV'),
                     bindInput(src, 'name', h('input', { class: 'input src-name', value: src.name || '', placeholder: '이름' })),
+                    sourceLook(src),
                     h('label', { class: 'check' }, bindInput(src, 'enabled', h('input', { type: 'checkbox', checked: !!src.enabled }), 'checked'), ' 사용'),
                     h('button', { class: 'icon-btn', title: '위로', on: { click: () => move(-1) } }, icon('arrow-up')),
                     h('button', { class: 'icon-btn', title: '아래로', on: { click: () => move(1) } }, icon('arrow-down')),
@@ -780,6 +781,25 @@ export async function renderSettings(main, _params, query, ctx) {
                     }, icon('trash'))),
                 h('div', { class: 'src-fields' }, fields)));
         });
+    }
+
+    /** 소스 아이콘·색 (사이드바·화면 제목) - 비우면 소스 종류의 기본 아이콘·글자색 */
+    function sourceLook(src) {
+        const prev = h('span', { class: 'src-look-prev' });
+        const paint = () => {
+            prev.replaceChildren(icon(src.icon || 'shapes'));
+            prev.style.color = src.color || '';
+            prev.title = src.icon ? `아이콘: ${src.icon}` : '아이콘: 종류별 기본';
+        };
+        const sel = h('select', { class: 'select', title: '사이드바·화면 제목에 쓸 아이콘' },
+            [['', '아이콘: 기본'], ...SOURCE_ICONS].map(([v, t]) => h('option', { value: v, text: t, selected: (src.icon || '') === v })));
+        sel.addEventListener('change', () => { src.icon = sel.value; paint(); touch(); });
+        const col = h('input', { type: 'color', value: src.color || '#e5a00d', title: '아이콘 색' });
+        col.addEventListener('input', () => { src.color = col.value; paint(); touch(); });
+        const reset = h('button', { class: 'icon-btn', type: 'button', title: '색 지우기 (기본 글자색)',
+            on: { click: () => { src.color = ''; paint(); touch(); } } }, icon('eraser'));
+        paint();
+        return h('span', { class: 'src-look' }, prev, sel, col, reset);
     }
 
     /** 공중파 라디오: 채널 로고 (한 줄에 "채널 이름 | 그림 주소"). 없는 채널은 방송사 글자 로고를 그린다 */
@@ -1949,3 +1969,14 @@ function renderBackup(pane) {
         h('p', { text: '백업 파일의 내용으로 지금 설정과 사용자 목록을 통째로 바꿉니다. 내 계정이 백업에 없거나 관리자가 아니면 로그인 화면으로 갑니다.' }),
         restoreBtn, fileIn));
 }
+
+// 소스 아이콘 고르기 (Font Awesome solid 이름, 화면에 보일 이름)
+const SOURCE_ICONS = [
+    ['server', '서버'], ['film', '영화'], ['tv', 'TV'], ['clapperboard', '클래퍼'], ['video', '비디오'], ['paper-plane', '텔레그램'],
+    ['tower-broadcast', '방송'], ['satellite-dish', '위성'], ['radio', '라디오'], ['podcast', '팟캐스트'], ['music', '음악'],
+    ['headphones', '헤드폰'], ['microphone', '마이크'], ['book', '책'], ['book-open', '펼친 책'], ['newspaper', '신문'],
+    ['face-laugh', '예능'], ['masks-theater', '드라마'], ['dragon', '애니'], ['child', '어린이'], ['futbol', '축구'],
+    ['baseball', '야구'], ['basketball', '농구'], ['gamepad', '게임'], ['earth-asia', '해외'], ['star', '별'], ['heart', '하트'],
+    ['fire', '인기'], ['bolt', '번개'], ['crown', '왕관'], ['folder', '폴더'], ['box-archive', '보관함'], ['house', '집'],
+    ['mug-hot', '커피'], ['utensils', '요리'], ['camera', '카메라'], ['image', '사진'], ['circle-play', '재생'],
+];

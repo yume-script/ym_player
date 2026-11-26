@@ -46,7 +46,10 @@ export const registry = {
         this.config = await api('/api/config');
         this.providers = this.config.sources
             .filter((s) => s.enabled && TYPES[s.type])
-            .map((s) => new TYPES[s.type](s, this.config.client_id));
+            .map((s) => Object.assign(new TYPES[s.type](s, this.config.client_id), {
+                // 관리자가 설정에서 고른 아이콘·색 (사이드바·화면 제목) - 없으면 소스 종류의 기본
+                icon: s.icon || '', color: s.color || '',
+            }));
         return this.providers;
     },
 

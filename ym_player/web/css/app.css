@@ -1371,6 +1371,12 @@ body.docpip { margin: 0; background: #000; overflow: hidden; }
 .recipe-step-body img { max-width: 100%; border-radius: 6px; }
 /* 메뉴가 하나뿐인 소스: 소스 이름 줄이 바로 그 화면으로 가는 링크 (펼칠 하위 메뉴 없음) */
 .nav-group.nav-single .nav-items { display: none; }
+/* 소스 색 (설정 > 소스에서 고름): 아이콘과 화면 제목 아이콘 */
+.has-src-color > i:first-child, .has-src-color > .fa-solid:first-child { color: var(--src-color); }
+.src-look { display: inline-flex; align-items: center; gap: 0.35rem; }
+.src-look .select { max-width: 9.5rem; padding: 0.35rem 0.5rem; }
+.src-look input[type=color] { width: 34px; height: 30px; padding: 0; border: 1px solid var(--border); border-radius: 6px; background: none; cursor: pointer; }
+.src-look .src-look-prev { width: 30px; height: 30px; display: inline-grid; place-items: center; border-radius: 6px; background: var(--bg-elev2); }
 body.nav-editing .nav-group.nav-single .nav-items { display: block; }
 /* 라이브러리 화면 위쪽 칩 (같은 소스의 다른 라이브러리 - 텔레그램 채널 등) */
 .lib-chips { display: flex; gap: 0.5rem; overflow-x: auto; scrollbar-width: none; margin: -0.25rem -2rem 1.1rem; padding: 0.2rem 2rem; }

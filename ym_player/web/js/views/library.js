@@ -36,7 +36,8 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
     const page = h('div', { class: 'page library' },
         h('div', { class: 'page-head' },
             // 소스 › 라이브러리 (이름이 같으면 한 번만 - 만개의레시피 등 라이브러리가 하나인 소스)
-            h('h1', {}, icon(lib.icon || 'film'),
+            h('h1', { style: p.color ? `--src-color: ${p.color}` : null, class: p.color ? 'has-src-color' : null },
+                icon(libs.length > 1 ? lib.icon || 'film' : p.icon || lib.icon || 'film'),
                 p.name && p.name !== lib.title ? [h('span', { class: 'crumb-src', text: p.name }), h('span', { class: 'crumb-sep', text: '›' })] : null,
                 h('span', { class: 'crumb-title', text: lib.title })),
             p.getLibraryHubs ? h('div', { class: 'tabs' }, tabLink('recommended', '추천'), tabLink('library', '라이브러리')) : null),

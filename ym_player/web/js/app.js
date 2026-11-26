@@ -221,14 +221,17 @@ async function buildNav() {
             a.classList.add('nav-head', 'nav-single-link');
             a.title = p.name;
             a.dataset.src = p.id;
+            paint(a);
             group.replaceChild(a, group.querySelector('.nav-head'));
             group.classList.add('nav-single');
             return a;
         };
-        const srcLink = p.kind === 'iptv' ? null : single(`#/library/${encodeURIComponent(p.id)}/`, SOURCE_ICON[p.kind] || 'folder');
+        // 소스 색: 아이콘 색 (사이드바)
+        const paint = (a) => { if (a && p.color) { a.style.setProperty('--src-color', p.color); a.classList.add('has-src-color'); } return a; };
+        const srcLink = p.kind === 'iptv' ? null : single(`#/library/${encodeURIComponent(p.id)}/`, p.icon || SOURCE_ICON[p.kind] || 'folder');
         if (p.kind === 'iptv') {
             items.appendChild(navLink(`#/live/${p.id}`, 'list', '채널 편성표'));
-            single(`#/live/${p.id}`, 'tower-broadcast');
+            paint(single(`#/live/${p.id}`, p.icon || 'tower-broadcast'));
             continue;
         }
         const spinner = h('div', { class: 'nav-loading' }, icon('circle-notch', 'fa-spin'));
@@ -242,7 +245,7 @@ async function buildNav() {
                 if (document.body.classList.contains('nav-editing')) a.appendChild(moveButtons(a));
                 items.appendChild(a);
             });
-            if (libs.length === 1) single(`#/library/${p.id}/${libs[0].id}`, libs[0].icon || 'film');
+            if (libs.length === 1) paint(single(`#/library/${p.id}/${libs[0].id}`, p.icon || libs[0].icon || 'film'));
             else if (libs.length) {   // 마지막으로 연 라이브러리(없으면 순서상 첫 것)로
                 const last = storeGet(`yp_last_lib_${p.id}`, '');
                 const first = ordered(libs, (l) => l.id, libOrder[p.id])[0];
