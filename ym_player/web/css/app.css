@@ -201,6 +201,39 @@ body.lib-route .view-modes { display: block; border-bottom: 1px solid var(--bord
 .home-note { padding: 0.75rem 0; color: var(--muted); }
 .home-actions { display: flex; justify-content: flex-start; gap: 0.6rem; margin-bottom: 0.75rem; }
 .home-actions:empty { display: none; }
+/* 홈 맨 위 큰 배너 (넷플릭스풍) */
+.home-hero:empty { display: none; }
+.hero { position: relative; margin: -1.5rem -2rem 1.75rem; min-height: clamp(280px, 42vw, 520px); overflow: hidden; display: flex; align-items: flex-end;
+    background: var(--bg-elev); }
+.hero-art { position: absolute; inset: 0; }
+.hero-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.hero-soft .hero-art img { filter: blur(26px) brightness(0.6) saturate(1.2); transform: scale(1.15); }
+.hero-poster { position: absolute; right: 6%; top: 50%; transform: translateY(-50%); max-height: 74%; max-width: 32%; border-radius: 10px;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6); object-fit: contain; }
+.hero-shade { position: absolute; inset: 0;
+    background: linear-gradient(90deg, rgba(var(--bg-rgb), 0.92) 0%, rgba(var(--bg-rgb), 0.55) 45%, rgba(var(--bg-rgb), 0) 75%),
+        linear-gradient(0deg, rgba(var(--bg-rgb), 1) 0%, rgba(var(--bg-rgb), 0) 40%); }
+.hero-body { position: relative; z-index: 1; padding: 2rem 2rem 2.25rem; max-width: min(640px, 58%); }
+.hero-label { display: inline-block; font-size: 0.75rem; font-weight: 800; letter-spacing: 0.08em; color: var(--accent); margin-bottom: 0.5rem; }
+.hero-title { margin: 0 0 0.35rem; font-size: clamp(1.6rem, 3.2vw, 2.6rem); font-weight: 800; line-height: 1.15; letter-spacing: -0.01em;
+    text-shadow: 0 2px 12px rgba(0, 0, 0, 0.5); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.hero-sub { color: var(--text-soft, var(--muted)); font-weight: 600; margin-bottom: 0.6rem; }
+.hero-summary { margin: 0 0 1rem; color: var(--text-soft, var(--muted)); line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical; overflow: hidden; }
+.hero-progress { position: relative; height: 4px; max-width: 320px; margin-bottom: 1rem; border-radius: 2px; overflow: hidden; background: rgba(var(--fg-rgb), 0.2); }
+.hero-progress .card-progress { position: absolute; inset: 0; height: 4px; background: none; }
+.hero-actions { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; }
+.hero-actions .btn, .hero-actions .row-action { padding: 0.6rem 1.25rem; font-size: 0.98rem; font-weight: 700; border-radius: 8px; margin: 0; }
+.hero-play { background: var(--text); color: var(--bg); border-color: transparent; }
+.hero-play:hover { filter: brightness(0.9); }
+.hero-more { background: rgba(var(--fg-rgb), 0.18); color: var(--text); border-color: transparent; backdrop-filter: blur(6px); }
+@media (max-width: 900px) {
+    .hero { margin: -1rem -1rem 1.25rem; min-height: 300px; }
+    .hero-body { max-width: 100%; padding: 1.25rem 1rem 1.5rem; }
+    .hero-poster { display: none; }
+    .hero-shade { background: linear-gradient(0deg, rgba(var(--bg-rgb), 1) 10%, rgba(var(--bg-rgb), 0.35) 70%); }
+}
+.card-time { font-size: 0.75rem; color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 0.1rem; }
 /* 줄 제목 옆 단추 (이어보기의 [랜덤 재생]) */
 .row-action { margin-left: auto; margin-right: 1rem; display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.35rem 0.85rem;
     border-radius: 999px; border: 1px solid var(--border); background: var(--bg-elev2); color: var(--text); font: inherit; font-size: 0.85rem;
