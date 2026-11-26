@@ -329,17 +329,24 @@ def test_single_library_source_opens_from_nav(page, server):
 
 
 def test_nav_head_icons_and_library_crumb(page, server, upstream):
-    """하위 메뉴가 있는 소스 머리줄에 소스 종류 아이콘, 라이브러리 제목은 "소스 › 라이브러리" (이름이 같으면 한 번만)"""
+    """사이드바에는 소스만 한 줄씩(소스 종류 아이콘), 그 소스의 라이브러리는 화면 위쪽 칩으로.
+    라이브러리 제목은 "소스 › 라이브러리" (이름이 같으면 한 번만)"""
     set_sources(page, server, [{"type": "podcast", "name": "팟캐스트", "enabled": True, "feeds": [{"url": f"{upstream.base}/feed.xml"}]},
                                {"type": "recipe", "name": "만개의레시피", "enabled": True}])
     page.goto(server + "/#/home")
-    page.wait_for_selector(".nav-toggle .nav-head-icon.fa-podcast")
-    page.goto(server + "/" + page.get_attribute(".nav-link:has-text('새 에피소드')", "href"))
-    page.wait_for_selector(".page.library h1 .crumb-src")
+    page.wait_for_selector(".nav-single-link:has-text('팟캐스트') i.fa-podcast", state="attached")
+    assert page.locator(".nav-link:visible:has-text('새 에피소드')").count() == 0     # 라이브러리는 사이드바에 안 보임
+    page.wait_for_function("() => /#\\/library\\/[^/]+\\/.+/.test(document.querySelector(\".nav-single-link[data-src]\").getAttribute('href'))")
+    page.click(".nav-single-link:has-text('팟캐스트')")
+    page.wait_for_selector(".lib-chips .lib-chip.active")
+    page.click(".lib-chip:has-text('새 에피소드')")
+    page.wait_for_selector(".page.library h1 .crumb-title:has-text('새 에피소드')")
     assert page.inner_text(".page.library h1").replace("\n", " ").split() == ["팟캐스트", "›", "새", "에피소드"]
+    assert page.locator(".nav-single-link:has-text('팟캐스트')").get_attribute("class").count("active") == 1   # 그 소스 줄이 켜짐
     page.click(".nav-single-link:has-text('만개의레시피')")
     page.wait_for_selector(".page.library h1 .crumb-title:has-text('만개의레시피')")
     assert page.locator(".page.library h1 .crumb-src").count() == 0           # 소스 이름과 같으면 한 번만
+    assert page.locator(".lib-chips").count() == 0                               # 라이브러리가 하나면 칩 없음
 
 
 def test_home_sources_hide_and_lazy(page, server, upstream):
