@@ -2,7 +2,7 @@
 import { h, icon, clear, api, modal, toast } from '../util.js';
 import { registry, randomAcross } from '../providers/index.js';
 import { player } from '../player.js';
-import { hubRow, emptyState, loading } from '../cards.js';
+import { hubRow, emptyState, skeletonRow } from '../cards.js';
 
 export async function renderHome(main, _params, _query, ctx) {
     const providers = registry.providers;
@@ -17,14 +17,14 @@ export async function renderHome(main, _params, _query, ctx) {
     main.appendChild(page);
 
     // 고르기 귀찮을 때: Plex·텔레그램 전체에서 안 본 것 위주로 아무거나 계속 재생
+    // (이어보기 줄 제목 옆에 - 이어보기가 없으면 맨 위에)
     const randomSources = registry.randomProviders();
-    if (randomSources.length) {
-        page.appendChild(h('div', { class: 'home-actions' },
-            h('button', {
-                class: 'btn', title: `${randomSources.map((p) => p.name).join(', ')}에서 아무거나 골라 계속 재생`,
-                on: { click: () => player.playRandom(randomAcross(randomSources)) },
-            }, icon('shuffle'), ' 랜덤 재생')));
-    }
+    const randomBtn = randomSources.length ? h('button', {
+        class: 'row-action', title: `${randomSources.map((p) => p.name).join(', ')}에서 아무거나 골라 계속 재생`,
+        on: { click: () => player.playRandom(randomAcross(randomSources)) },
+    }, icon('shuffle'), ' 랜덤 재생') : null;
+    const actions = h('div', { class: 'home-actions' }, randomBtn);
+    if (randomBtn) page.appendChild(actions);
 
     // 맨 위: 모든 소스의 이어보기를 최근에 본 순서로 한 줄에 (각 소스의 이어보기 줄은 따로 안 그린다)
     const contSlot = h('div', { class: 'home-slot' });
@@ -34,7 +34,8 @@ export async function renderHome(main, _params, _query, ctx) {
         const seen = new Set(contItems.map((it) => `${it.pid}/${it.id}`));
         items.forEach((it) => { if (!seen.has(`${it.pid}/${it.id}`)) { seen.add(`${it.pid}/${it.id}`); contItems.push(it); } });
         contItems.sort((a, b) => (b.ts || 0) - (a.ts || 0));
-        clear(contSlot).appendChild(hubRow({ title: '이어보기', items: contItems.slice(0, 40), wide: true }));
+        actions.remove();
+        clear(contSlot).appendChild(hubRow({ title: '이어보기', items: contItems.slice(0, 40), wide: true, action: randomBtn }));
     };
 
     // 소스마다 자리를 먼저 잡아두고 채운다 (느린 소스가 다른 소스를 막지 않게).
@@ -42,7 +43,7 @@ export async function renderHome(main, _params, _query, ctx) {
     // - 이번 방문에서 한 번 받은 줄은 기억해 두었다가 홈에 돌아오면 바로 그리고, 오래됐으면 뒤에서 새로
     const shown = providers.filter((p) => !hiddenSet().has(p.id));
     const slots = shown.map((p) => {
-        const slot = h('div', { class: 'home-slot', dataset: { pid: p.id } }, loading(`${p.name} 불러오는 중...`));
+        const slot = h('div', { class: 'home-slot', dataset: { pid: p.id } }, skeletonRow(`${p.name} 불러오는 중`));
         page.appendChild(slot);
         return { p, slot };
     });

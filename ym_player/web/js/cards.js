@@ -9,8 +9,10 @@ const openViewer = (...a) => import('./viewer.js').then((m) => m.openViewer(...a
 
 const PLAYABLE = new Set(['movie', 'episode', 'track', 'clip']);
 
-function img(src, cls, fallbackIcon) {
-    const box = h('div', { class: cls });
+function img(src, cls, fallbackIcon, fit = '') {
+    const box = h('div', { class: cls + (src && fit === 'contain' ? ' art-contain' : '') });
+    // contain: 16:9 칸에 정사각형·세로 그림 - 자르지 않고 가운데에, 뒤는 같은 그림을 흐리게 (넷플릭스처럼)
+    if (src && fit === 'contain') box.style.setProperty('--art-bg', `url("${String(src).replace(/"/g, '%22')}")`);
     if (src) {
         // 다른 사이트 그림(브런치·만개의레시피 등)은 우리 주소를 알리지 않고 받는다 (퍼 가기 막는 곳이 있어서)
         const im = h('img', { src, alt: '', loading: 'lazy', decoding: 'async', referrerpolicy: /^https?:/i.test(src) ? 'no-referrer' : null });
@@ -31,8 +33,10 @@ export function progressBar(ratio) {
 export function posterCard(item, { wide = false } = {}) {
     const provider = registry.byId(item.pid);
     const shape = wide ? 'wide' : item.shape;
+    // 와이드 칸(이어보기)인데 그림이 넓은 그림이 아니면(팟캐스트·음악 정사각형, 책·포스터 세로) 자르지 않는다
+    const fit = wide && item.shape !== 'wide' && (!item.wideThumb || item.wideThumb === item.thumb) ? 'contain' : '';
     const fallback = { movie: 'film', show: 'tv', season: 'tv', episode: 'tv', artist: 'music', album: 'compact-disc', track: 'music', photo: 'image', book: 'book-open', article: 'newspaper' }[item.type] || 'photo-film';
-    const art = img(wide ? item.wideThumb : item.thumb, `card-art shape-${shape}`, fallback);
+    const art = img(wide ? (item.wideThumb || item.thumb) : item.thumb, `card-art shape-${shape}`, fallback, fit);
 
     if (item.isNew) art.appendChild(h('span', { class: 'card-new', title: '지난번에 본 뒤 새로 올라옴', text: 'NEW' }));
     if (item.watched) art.appendChild(h('span', { class: 'card-watched', title: '시청함' }, icon('check')));
@@ -215,13 +219,14 @@ export function playlistOf(items) {
 }
 
 /** 제목 + 좌우로 넘기는 카드 줄. hub.wide면 모든 카드를 16:9로 (여러 소스를 섞은 이어보기 줄) */
-export function hubRow(hub) {
+export function hubRow(hub) {   // hub.action: 줄 제목 오른쪽에 둘 단추 (이어보기의 [랜덤 재생])
     const playlist = hub.live ? playlistOf(hub.items) : null;
     const track = h('div', { class: 'row-track' }, hub.items.map((it) => cardFor(it, playlist, !!hub.wide)));
     const scroll = (dir) => track.scrollBy({ left: dir * track.clientWidth * 0.85, behavior: 'smooth' });
     return h('section', { class: 'row' },
         h('div', { class: 'row-head' },
             h('h3', {}, hub.title, hub.source ? h('span', { class: 'row-source', text: hub.source }) : null),
+            hub.action || null,
             hub.more ? h('a', { class: 'row-more', href: hub.more, text: '모두 보기' }) : null),
         h('div', { class: 'row-wrap' },
             h('button', { class: 'row-arrow left', title: '이전', on: { click: () => scroll(-1) } }, icon('chevron-left')),
@@ -235,6 +240,15 @@ export function emptyState(iconName, title, text, action) {
         h('h2', { text: title }),
         text ? h('p', { text }) : null,
         action || null);
+}
+
+/** 불러오는 동안 자리를 잡아 두는 빈 카드 줄 (글자 대신 - 다 불러와도 아래 내용이 밀리지 않게) */
+export function skeletonRow(label = '', { count = 6, shape = 'wide' } = {}) {
+    return h('section', { class: 'row skeleton-row', 'aria-busy': 'true', title: label },
+        h('div', { class: 'row-head' }, h('div', { class: 'sk-title' })),
+        h('div', { class: 'row-wrap' }, h('div', { class: 'row-track' },
+            Array.from({ length: count }, () => h('div', { class: `card card-${shape} sk-card` },
+                h('div', { class: `card-art shape-${shape} sk` }), h('div', { class: 'sk-line' }), h('div', { class: 'sk-line short' }))))));
 }
 
 export function loading(text = '불러오는 중...') {
