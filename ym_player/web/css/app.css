@@ -28,6 +28,18 @@
 }
 
 * { box-sizing: border-box; }
+/* 글씨 크기 3단계 (제목 / 본문 / 보조) - 카드·줄·배너가 같이 쓴다 */
+:root { --fs-title: 1.3rem; --fs-body: 0.95rem; --fs-meta: 0.8rem; }
+/* 손가락으로 누르는 기기: 누르는 곳을 44px 이상으로 */
+@media (pointer: coarse) {
+    .icon-btn { width: 44px; height: 44px; }
+    .btn { min-height: 44px; }
+    .nav-link, .nav-head.nav-single-link { min-height: 44px; }
+    .lib-chip { min-height: 40px; }
+    .tab { min-height: 40px; display: inline-flex; align-items: center; }
+    .row-action { min-height: 40px; }
+    .view-item { min-height: 44px; }
+}
 html, body { margin: 0; height: 100%; }
 body {
     background: var(--bg);
@@ -255,7 +267,7 @@ body.lib-route .view-modes { display: block; border-bottom: 1px solid var(--bord
 /* ---------- 카드 줄 ---------- */
 .row { margin-bottom: 1.75rem; }
 .row-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 0.6rem; }
-.row-head h3 { margin: 0; font-size: 1.3rem; font-weight: 800; letter-spacing: -0.01em; display: flex; align-items: baseline; gap: 0.6rem; }
+.row-head h3 { margin: 0; font-size: var(--fs-title); font-weight: 800; letter-spacing: -0.01em; display: flex; align-items: baseline; gap: 0.6rem; }
 .row-source { font-size: 0.75rem; font-weight: 500; color: var(--muted); }
 .row-more { color: var(--muted); font-size: 0.85rem; }
 .row-more:hover { color: var(--accent); }
@@ -312,8 +324,8 @@ body.lib-route .view-modes { display: block; border-bottom: 1px solid var(--bord
 @media (hover: none) { .card-star { opacity: 1; } }
 .card-fallback { font-size: 2rem; color: var(--bg-hover); }
 .card:hover .card-art, .card:focus-visible .card-art { outline-color: var(--accent); }
-.card-title { margin-top: 0.45rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.card-sub { font-size: 0.8rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card-title { margin-top: 0.45rem; font-weight: 500; font-size: var(--fs-body); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card-sub { font-size: var(--fs-meta); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card-progress { position: absolute; left: 0; right: 0; bottom: 0; height: 4px; background: rgba(0, 0, 0, 0.6); }
 .card-progress > div { height: 100%; background: var(--accent); }
 .card-watched, .card-count {
@@ -900,6 +912,13 @@ textarea.url-list { resize: vertical; min-height: 2.4rem; font-family: ui-monosp
     color-scheme: light;
     }
 }
+:root[data-theme="cinema"] {   /* 넷플릭스풍: 거의 검은 중성 회색, 층은 적게 */
+    --bg: #0b0b0d; --bg-elev: #141417; --bg-elev2: #1f1f23; --bg-hover: #2a2a2f;
+    --text: #f2f2f2; --text-soft: #cfcfd4; --muted: #9b9ba3;
+    --bg-rgb: 11, 11, 13; --border: rgba(255, 255, 255, 0.07);
+}
+:root[data-theme="cinema"] .sidebar { background: #0b0b0d; }
+:root[data-theme="cinema"] .topbar { background: linear-gradient(180deg, rgba(11, 11, 13, 0.98), rgba(11, 11, 13, 0.88)); border-bottom-color: transparent; }
 :root[data-theme="black"] {
     --bg: #000000; --bg-elev: #0d0e10; --bg-elev2: #18191c; --bg-hover: #25272b;
     --bg-rgb: 0, 0, 0; --border: rgba(255, 255, 255, 0.09);

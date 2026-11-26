@@ -116,6 +116,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 193,
+        "version": "1.3.34",
+        "date": "2026-11-27",
+        "title": "디자인 4단계(넷플릭스풍): 새 기본 테마 \"시네마\" - 거의 검은 중성 바탕·층 줄이기(관리자가 테마를 정해 두었거나 각자 고른 테마는 그대로), 글씨 크기 3단계, 터치 기기에서 누르는 곳 44px"
+    },
+    {
         "pr": 192,
         "version": "1.3.33",
         "date": "2026-11-27",

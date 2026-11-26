@@ -29,7 +29,7 @@ def _str_list(value):
 
 
 # 화면 테마와 강조색 (web/css/app.css의 :root[data-theme=...] / [data-accent=...]와 같은 이름)
-THEMES = ("dark", "light", "black", "navy", "auto")
+THEMES = ("cinema", "dark", "light", "black", "navy", "auto")   # cinema: 넷플릭스풍 (기본)
 ACCENTS = ("amber", "blue", "green", "purple", "red", "pink", "teal")
 
 

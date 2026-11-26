@@ -4013,7 +4013,7 @@ def branding_info():
     if title == "Yume Player":  # 예전 이름을 그대로 저장해 둔 경우는 새 기본 이름으로
         title = ""
     return {"title": title or DEFAULT_TITLE, "icon_url": f"/brand/icon?v={version}" if icon else None,
-            "theme": b.get("theme") if b.get("theme") in prefs.THEMES else "dark",
+            "theme": b.get("theme") if b.get("theme") in prefs.THEMES else "cinema",   # 관리자가 안 골랐으면 넷플릭스풍
             "accent": b.get("accent") if b.get("accent") in prefs.ACCENTS else "amber",
             "show_version": b.get("show_version", True) is not False, "version": __version__}
 
