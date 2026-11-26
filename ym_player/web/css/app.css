@@ -129,13 +129,19 @@ img { display: block; }
 .search input:focus { border-color: var(--accent); background: var(--bg); }
 .topbar > .icon-btn:last-child { margin-left: auto; }
 /* 포스터 크기 막대 */
-.poster-size { margin-left: auto; display: flex; align-items: center; gap: 0.45rem; color: var(--muted); font-size: 0.85rem; flex-shrink: 0; }
+.poster-size { display: flex; align-items: center; gap: 0.45rem; color: var(--muted); font-size: 0.85rem; flex-shrink: 0; }
 .poster-size input { width: 120px; accent-color: var(--accent); cursor: pointer; }
 .poster-size-val { min-width: 2.6rem; font-variant-numeric: tabular-nums; font-size: 0.75rem; }
 @media (max-width: 600px) { .poster-size input { width: 72px; } .poster-size-val { display: none; } }
 /* 보기 방식 메뉴 (viewmode.js) - 라이브러리 화면에서만 */
-.view-mode { position: relative; display: none; flex-shrink: 0; }
-body.lib-route .view-mode { display: block; }
+/* [보기] 메뉴: 포스터 크기(어디서나) + 보기 방식(라이브러리에서만) */
+.view-mode { position: relative; display: block; flex-shrink: 0; margin-left: auto; }
+.view-modes { display: none; }
+body.lib-route .view-modes { display: block; border-bottom: 1px solid var(--border); margin-bottom: 0.35rem; padding-bottom: 0.35rem; }
+.view-size { padding: 0.4rem 0.7rem 0.55rem; }
+.view-label { font-size: 0.75rem; color: var(--muted); margin-bottom: 0.4rem; }
+.view-menu .poster-size input { width: 150px; }
+.view-menu .poster-size-val { display: inline; }
 .view-btn { width: auto; padding: 0 0.55rem; gap: 0.3rem; border-radius: var(--radius); background: var(--bg-elev2); }
 .view-caret { font-size: 0.6rem; color: var(--muted); }
 .view-menu { position: absolute; right: 0; top: calc(100% + 6px); min-width: 11rem; padding: 0.35rem; z-index: 60;
@@ -193,14 +199,30 @@ body.lib-route .view-mode { display: block; }
 .empty p { margin: 0 0 1.5rem; }
 .empty.small { padding: 2rem 1rem; }
 .home-note { padding: 0.75rem 0; color: var(--muted); }
-.home-actions { display: flex; justify-content: flex-end; gap: 0.6rem; margin-bottom: 0.5rem; }
+.home-actions { display: flex; justify-content: flex-start; gap: 0.6rem; margin-bottom: 0.75rem; }
+.home-actions:empty { display: none; }
+/* 줄 제목 옆 단추 (이어보기의 [랜덤 재생]) */
+.row-action { margin-left: auto; margin-right: 1rem; display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.35rem 0.85rem;
+    border-radius: 999px; border: 1px solid var(--border); background: var(--bg-elev2); color: var(--text); font: inherit; font-size: 0.85rem;
+    font-weight: 600; cursor: pointer; }
+.row-action:hover { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.home-actions .row-action { margin: 0; }
+/* 불러오는 동안의 빈 카드 줄 (스켈레톤) */
+.sk, .sk-title, .sk-line { background: linear-gradient(90deg, var(--bg-elev2) 0%, var(--bg-hover) 50%, var(--bg-elev2) 100%);
+    background-size: 200% 100%; animation: sk-shine 1.4s ease-in-out infinite; }
+.sk-title { width: 9rem; height: 1.15rem; border-radius: 6px; }
+.sk-line { height: 0.8rem; margin-top: 0.55rem; border-radius: 4px; width: 85%; }
+.sk-line.short { width: 55%; margin-top: 0.35rem; }
+.sk-card { cursor: default; pointer-events: none; }
+@keyframes sk-shine { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
+@media (prefers-reduced-motion: reduce) { .sk, .sk-title, .sk-line { animation: none; } }
 .home-note.error { color: var(--danger); }
 .sentinel { height: 1px; }
 
 /* ---------- 카드 줄 ---------- */
 .row { margin-bottom: 1.75rem; }
 .row-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 0.6rem; }
-.row-head h3 { margin: 0; font-size: 1.15rem; font-weight: 700; display: flex; align-items: baseline; gap: 0.6rem; }
+.row-head h3 { margin: 0; font-size: 1.3rem; font-weight: 800; letter-spacing: -0.01em; display: flex; align-items: baseline; gap: 0.6rem; }
 .row-source { font-size: 0.75rem; font-weight: 500; color: var(--muted); }
 .row-more { color: var(--muted); font-size: 0.85rem; }
 .row-more:hover { color: var(--accent); }
@@ -233,12 +255,21 @@ body.lib-route .view-mode { display: block; }
     outline: 3px solid transparent; outline-offset: -3px; transition: outline-color 0.15s, transform 0.15s;
 }
 .card-art img { width: 100%; height: 100%; object-fit: cover; }
+/* 와이드 칸의 정사각형·세로 그림: 자르지 않고 가운데, 뒤는 같은 그림을 흐리게 */
+.card-art.art-contain::before { content: ""; position: absolute; inset: -12%; background: var(--art-bg) center / cover no-repeat;
+    filter: blur(18px) brightness(0.55) saturate(1.2); }
+.card-art.art-contain img { position: relative; object-fit: contain; }
+/* 넷플릭스처럼: 마우스를 올리면 카드가 살짝 커지고 떠오름 (터치 기기는 그대로) */
+@media (hover: hover) {
+    .row-track { padding-top: 0.6rem; padding-bottom: 0.9rem; }
+    .card:hover .card-art, .card:focus-visible .card-art { transform: scale(1.045); box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55); z-index: 1; }
+}
 .shape-poster { aspect-ratio: 2 / 3; }
 .shape-square { aspect-ratio: 1; }
 .shape-wide { aspect-ratio: 16 / 9; }
 .shape-channel { aspect-ratio: 16 / 9; background: radial-gradient(circle at 50% 40%, var(--bg-elev2), var(--bg-elev)); }
 .shape-channel img { object-fit: contain; width: 62%; height: 62%; }
-.shape-channel img.logo-tile, .shape-channel img[src^="data:image/svg+xml"] { width: 86%; height: 86%; }
+.shape-channel img.logo-tile, .shape-channel img[src^="data:image/svg+xml"] { width: 72%; height: 72%; border-radius: 8px; }
 /* 채널 카드의 즐겨찾기 별 (공중파 라디오) */
 .card-star { position: absolute; top: 0.4rem; right: 0.4rem; width: 2rem; height: 2rem; display: grid; place-items: center;
     border-radius: 999px; background: rgba(0, 0, 0, 0.45); color: #fff; opacity: 0; transition: opacity 0.15s; cursor: pointer; z-index: 2; }
