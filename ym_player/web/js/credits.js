@@ -116,6 +116,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 194,
+        "version": "1.3.35",
+        "date": "2026-11-27",
+        "title": "소스마다 아이콘·색 고르기 (설정 > 소스 카드의 이름 옆) - 사이드바와 라이브러리 화면 제목에 쓰임, 비우면 종류별 기본. 레시피·브런치 카드의 종류 표시가 IPTV로 나오던 것"
+    },
+    {
         "pr": 193,
         "version": "1.3.34",
         "date": "2026-11-27",
