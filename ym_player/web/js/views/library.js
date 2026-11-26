@@ -24,6 +24,15 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
         class: `tab${tab === id ? ' active' : ''}`, href: `#/library/${pid}/${libId}?tab=${id}`, text: label,
     });
     const body = h('div', { class: 'lib-body' });
+    // 같은 소스의 다른 라이브러리(텔레그램 채널 등)는 위쪽 칩으로 - 사이드바에는 소스만 (메뉴 순서 바꾸기의 순서대로)
+    storeSet(`yp_last_lib_${pid}`, libId);
+    const libOrder = ((registry.prefs && registry.prefs.nav_order) || {}).libs || {};
+    const rank = new Map((libOrder[pid] || []).map((k, i) => [String(k), i]));
+    const chips = libs.length > 1 ? h('nav', { class: 'lib-chips', 'aria-label': `${p.name} 라이브러리` },
+        libs.map((l, i) => [l, rank.has(String(l.id)) ? rank.get(String(l.id)) : 1e6 + i]).sort((a, b) => a[1] - b[1]).map(([l]) => h('a', {
+            class: `lib-chip${l.id === libId ? ' active' : ''}`, href: `#/library/${pid}/${l.id}`, title: l.title,
+        }, icon(l.icon || 'film'), h('span', { text: l.title })))) : null;
+    if (chips) requestAnimationFrame(() => { const a = chips.querySelector('.active'); if (a) a.scrollIntoView({ inline: 'center', block: 'nearest' }); });
     const page = h('div', { class: 'page library' },
         h('div', { class: 'page-head' },
             // 소스 › 라이브러리 (이름이 같으면 한 번만 - 만개의레시피 등 라이브러리가 하나인 소스)
@@ -31,6 +40,7 @@ export async function renderLibrary(main, [pid, libId], query, ctx) {
                 p.name && p.name !== lib.title ? [h('span', { class: 'crumb-src', text: p.name }), h('span', { class: 'crumb-sep', text: '›' })] : null,
                 h('span', { class: 'crumb-title', text: lib.title })),
             p.getLibraryHubs ? h('div', { class: 'tabs' }, tabLink('recommended', '추천'), tabLink('library', '라이브러리')) : null),
+        chips,
         body);
     main.appendChild(page);
 

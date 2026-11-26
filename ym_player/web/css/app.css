@@ -1319,6 +1319,34 @@ body.docpip { margin: 0; background: #000; overflow: hidden; }
 .recipe-step-body img { max-width: 100%; border-radius: 6px; }
 /* 메뉴가 하나뿐인 소스: 소스 이름 줄이 바로 그 화면으로 가는 링크 (펼칠 하위 메뉴 없음) */
 .nav-group.nav-single .nav-items { display: none; }
+body.nav-editing .nav-group.nav-single .nav-items { display: block; }
+/* 라이브러리 화면 위쪽 칩 (같은 소스의 다른 라이브러리 - 텔레그램 채널 등) */
+.lib-chips { display: flex; gap: 0.5rem; overflow-x: auto; scrollbar-width: none; margin: -0.25rem -2rem 1.1rem; padding: 0.2rem 2rem; }
+.lib-chips::-webkit-scrollbar { display: none; }
+.lib-chip { flex-shrink: 0; display: inline-flex; align-items: center; gap: 0.45rem; padding: 0.45rem 0.95rem; border-radius: 999px;
+    background: var(--bg-elev2); color: var(--muted); font-size: 0.88rem; font-weight: 600; white-space: nowrap; border: 1px solid transparent; }
+.lib-chip i { font-size: 0.8rem; }
+.lib-chip:hover { color: var(--text); background: var(--bg-hover); }
+.lib-chip.active { background: var(--text); color: var(--bg); }
+@media (max-width: 900px) { .lib-chips { margin: -0.25rem -1rem 1rem; padding: 0.2rem 1rem; } }
+/* 아이패드 등 중간 폭: 사이드바를 아이콘 줄로 접는다 (☰ 누르면 펼침) */
+@media (min-width: 901px) and (max-width: 1366px) {
+    :root { --sidebar-w: 76px; }
+    .menu-btn { display: inline-flex; }
+    .brand { width: auto; }
+    .brand-name { display: none; }
+    body:not(.nav-open) .sidebar { padding: 0.75rem 0.4rem 2rem; overflow-x: hidden; }
+    body:not(.nav-open) .sidebar .nav-link, body:not(.nav-open) .sidebar .nav-head { justify-content: center; padding-left: 0; padding-right: 0; gap: 0; }
+    body:not(.nav-open) .sidebar .nav-link > span, body:not(.nav-open) .sidebar .nav-head-name, body:not(.nav-open) .sidebar .nav-chevron,
+    body:not(.nav-open) .sidebar .nav-order, body:not(.nav-open) .sidebar .nav-account .who,
+    body:not(.nav-open) .sidebar .nav-account .icon-btn, body:not(.nav-open) .sidebar .nav-items { display: none; }
+    body:not(.nav-open) .sidebar .nav-link i, body:not(.nav-open) .sidebar .nav-head-icon { font-size: 1.15rem; width: auto; }
+    body:not(.nav-open) .sidebar .nav-link { height: 48px; }
+    body:not(.nav-open) .sidebar .nav-account { justify-content: center; padding: 0.5rem 0; }
+    body:not(.nav-open) .sidebar .nav-group { margin-top: 0.2rem; }
+    body.nav-open .sidebar { width: 260px; z-index: 40; box-shadow: 16px 0 40px rgba(0, 0, 0, 0.5); }
+    body.nav-open .nav-scrim { display: block; position: fixed; inset: var(--topbar-h) 0 0 0; z-index: 35; background: rgba(0, 0, 0, 0.45); }
+}
 .nav-group.nav-single { margin-top: 0.35rem; }
 .nav-head.nav-single-link { padding: 0.55rem 0.9rem; font-size: inherit; font-weight: 500; text-transform: none; letter-spacing: normal; }
 /* 사이드바 머리줄 아이콘 (메뉴 아이콘과 같은 자리) */
