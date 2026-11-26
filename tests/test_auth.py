@@ -500,7 +500,7 @@ def test_branding_title_and_icon(data):
 
 def test_theme_default_and_per_user(data):
     async def flow(c, app):
-        assert 'data-theme="dark" data-accent="amber"' in await (await c.get("/login")).text()
+        assert 'data-theme="cinema" data-accent="amber"' in await (await c.get("/login")).text()   # 기본: 넷플릭스풍
         await c.post("/api/auth/setup", json={"username": "admin", "password": "adminpw"})
         r = await c.put("/api/admin/branding", json={"title": "집", "theme": "light", "accent": "blue"})
         b = await r.json()

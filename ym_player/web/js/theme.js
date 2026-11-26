@@ -5,7 +5,8 @@ import { api, h, icon, modal, storeGet, storeSet, toast, DATA_SAVER_KEY, PREFER_
 import { TICKER_OFF_KEY, refreshTicker } from './ticker.js';
 
 export const THEMES = [
-    { id: 'dark', label: '다크', colors: ['#141517', '#1d1f22', '#ececec'] },
+    { id: 'cinema', label: '시네마 (넷플릭스풍)', colors: ['#0b0b0d', '#18181b', '#f2f2f2'] },
+    { id: 'dark', label: '다크 (예전 기본)', colors: ['#141517', '#1d1f22', '#ececec'] },
     { id: 'light', label: '라이트', colors: ['#f3f4f6', '#ffffff', '#1c1e22'] },
     { id: 'black', label: '블랙 (OLED)', colors: ['#000000', '#0d0e10', '#ececec'] },
     { id: 'navy', label: '네이비', colors: ['#0f1623', '#172030', '#e6ebf3'] },
