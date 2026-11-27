@@ -194,9 +194,7 @@ async function finishNavEdit(save, reset = false) {
 async function buildNav() {
     clear(nav);
     nav.appendChild(navLink('#/home', 'house', '홈'));
-    const iptvs = registry.ofKind('iptv');
-    // 모든 IPTV 소스를 합친 편성표. 소스가 하나뿐이면 그 소스의 "채널 편성표"와 똑같아서 메뉴에서 뺀다
-    if (iptvs.length > 1) nav.appendChild(navLink('#/live', 'tower-broadcast', '라이브 TV'));
+    // (모든 IPTV를 합친 편성표 #/live는 사이드바에서 뺐다 - IPTV 소스마다 줄이 있어서 겹침. 주소로는 그대로 열림)
 
     // 넷플릭스처럼 사이드바에는 소스만 한 줄씩 - 라이브러리(텔레그램 채널 등)는 그 화면 위쪽 칩으로 고른다 (views/library.js).
     // 소스 줄을 누르면 그 소스에서 마지막으로 연 라이브러리로. 순서 바꾸기 중에만 라이브러리 목록이 보인다
