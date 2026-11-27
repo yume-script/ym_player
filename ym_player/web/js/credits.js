@@ -116,6 +116,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 197,
+        "version": "1.3.38",
+        "date": "2026-11-27",
+        "title": "텔레그램 회차·곡 화면 위쪽에 카테고리(채널)도: \"방송중 > 드라마 › 엄마가 미쳤어요\" (예전엔 시리즈 이름만이라 카테고리가 사라졌다)"
+    },
+    {
         "pr": 196,
         "version": "1.3.37",
         "date": "2026-11-27",
