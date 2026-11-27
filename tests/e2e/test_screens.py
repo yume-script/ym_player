@@ -621,3 +621,30 @@ def test_tv_remote_arrow_navigation(page, server, upstream):
     page.wait_for_function("() => location.hash.startsWith('#/library/')")
     page.keyboard.press("Backspace")                               # 뒤로 키 -> 앞 화면으로
     page.wait_for_function("() => location.hash.startsWith('#/home')")
+
+
+def test_home_hide_continue_and_recent_rows(page, server, upstream):
+    """[홈에 보일 소스]에서 소스뿐 아니라 '이어보기'·'새로 올라온 것' 줄도 끄고 켠다 (끄면 그 줄도, 그 줄로 고르던 맨 위 배너도 없음)"""
+    set_sources(page, server, [{"id": "tg", "type": "telegram", "name": "Telegram", "enabled": True, "api_id": "1",
+                                "channels": [{"id": 1, "title": "예능"}]}])
+    v = lambda i, t: {"id": i, "channel": 1, "msg": i, "title": t, "caption": t, "file_name": f"{t}.mp4", "duration": 60,
+                      "date": "2026-11-26T10:00:00", "kind": "video", "has_thumb": True, "position": 10 if i == 1 else 0}
+    page.route("**/api/tg/tg/home", lambda r: r.fulfill(json={"continue": [v(1, "보던 것")], "recent": [v(2, "새 것")], "channels": []}))
+    page.goto(server + "/#/home")
+    page.wait_for_selector(".row-head h3:has-text('새로 올라온 것')")
+    assert page.locator(".row-head h3:has-text('이어보기')").count() == 1 and page.locator(".hero").count() == 1
+    page.click(".home-foot button")
+    page.locator(".home-src-row:has-text('이어보기') input").uncheck()
+    page.locator(".home-src-row:has-text('새로 올라온 것') input").uncheck()
+    page.click(".modal button:has-text('저장')")
+    page.wait_for_selector(".home-foot button:has-text('2개 숨김')")
+    page.reload()
+    page.wait_for_selector(".home-foot button:has-text('2개 숨김')")
+    page.wait_for_timeout(800)
+    assert page.locator(".row-head h3:has-text('이어보기')").count() == 0
+    assert page.locator(".row-head h3:has-text('새로 올라온 것')").count() == 0
+    assert page.locator(".hero").count() == 0
+    page.click(".home-foot button")                                   # 다시 켜면 돌아온다
+    page.locator(".home-src-row:has-text('이어보기') input").check()
+    page.click(".modal button:has-text('저장')")
+    page.wait_for_selector(".row-head h3:has-text('이어보기')")

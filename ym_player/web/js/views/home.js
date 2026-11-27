@@ -46,7 +46,10 @@ export async function renderHome(main, _params, _query, ctx) {
     const contSlot = h('div', { class: 'home-slot' });
     page.appendChild(contSlot);
     const contItems = [];
+    const hiddenNow = hiddenSet();
+    const showCont = !hiddenNow.has(ROW_CONTINUE), showRecent = !hiddenNow.has(ROW_RECENT);
     const addContinue = (items) => {
+        if (!showCont) return;   // [홈에 보일 소스]에서 끈 줄 (배너에도 안 씀)
         const seen = new Set(contItems.map((it) => `${it.pid}/${it.id}`));
         items.forEach((it) => { if (!seen.has(`${it.pid}/${it.id}`)) { seen.add(`${it.pid}/${it.id}`); contItems.push(it); } });
         contItems.sort((a, b) => (b.ts || 0) - (a.ts || 0));
@@ -60,6 +63,7 @@ export async function renderHome(main, _params, _query, ctx) {
     const recentItems = [];
     const addedAt = (it) => it.added || (it.raw && (it.raw.addedAt ? it.raw.addedAt * 1000 : Date.parse(it.raw.date || '') || 0)) || 0;
     const addRecent = (items) => {
+        if (!showRecent) return;
         const seen = new Set(recentItems.map((it) => `${it.pid}/${it.id}`));
         items.forEach((it) => { if (!seen.has(`${it.pid}/${it.id}`)) { seen.add(`${it.pid}/${it.id}`); recentItems.push(it); } });
         recentItems.sort((a, b) => addedAt(b) - addedAt(a));
@@ -76,7 +80,7 @@ export async function renderHome(main, _params, _query, ctx) {
         page.appendChild(slot);
         return { p, slot };
     });
-    const hiddenCount = providers.length - shown.length;
+    const hiddenCount = providers.length - shown.length + [showCont, showRecent].filter((x) => !x).length;
     page.appendChild(h('div', { class: 'home-foot' },
         h('button', { class: 'btn btn-sm', on: { click: () => homeSourcesDialog(() => window.dispatchEvent(new HashChangeEvent('hashchange'))) } },
             icon('eye'), hiddenCount ? ` 홈에 보일 소스 (${hiddenCount}개 숨김)` : ' 홈에 보일 소스')));
@@ -129,17 +133,27 @@ const HOME_CACHE = new Map();       // 소스 id -> { hubs, at } (이 탭에서 
 
 function hiddenSet() { return new Set((registry.prefs && registry.prefs.home_hidden) || []); }
 
+// 소스가 아닌 홈의 줄 (home_hidden에 소스 id와 같이 적는다 - "@"로 시작해 소스 id와 겹치지 않음)
+const ROW_CONTINUE = '@continue', ROW_RECENT = '@recent';
+const HOME_ROWS = [[ROW_CONTINUE, '이어보기 (모든 소스를 합친 줄)'], [ROW_RECENT, '새로 올라온 것 (Plex 최근 추가 + 텔레그램 새 영상)']];
+
 /** 홈에 보일 소스 고르기 (사람마다 서버에 저장 - 다른 기기에서도 같게). 숨겨도 사이드바·검색에서는 그대로 */
 function homeSourcesDialog(onSaved) {
     const hidden = hiddenSet();
-    const checks = registry.providers.map((p) => {
+    const rows = HOME_ROWS.map(([id, name]) => {
+        const c = h('input', { type: 'checkbox', checked: !hidden.has(id) });
+        return { p: { id, name }, c, row: h('label', { class: 'check home-src-row' }, c, ` ${name}`) };
+    });
+    const sources = registry.providers.map((p) => {
         const c = h('input', { type: 'checkbox', checked: !hidden.has(p.id) });
         return { p, c, row: h('label', { class: 'check home-src-row' }, c, ` ${p.name}`) };
     });
+    const checks = [...rows, ...sources];
     const save = h('button', { class: 'btn btn-accent' }, icon('check'), ' 저장');
     const m = modal('홈에 보일 소스', h('div', { class: 'home-src-list' },
-        h('p', { class: 'field-hint', text: '끈 소스는 홈에 줄이 안 생기고(요청도 안 함) 사이드바·검색에서는 그대로 쓸 수 있습니다. 홈이 가벼워집니다.' }),
-        ...checks.map((x) => x.row)), [save]);
+        h('p', { class: 'field-hint', text: '끈 줄은 홈에 안 보입니다 (맨 위 배너도 켜 둔 줄에서만 고름). 끈 소스는 홈에 줄이 안 생기고(요청도 안 함) 사이드바·검색에서는 그대로 쓸 수 있습니다. 홈이 가벼워집니다.' }),
+        h('div', { class: 'home-src-head', text: '줄' }), ...rows.map((x) => x.row),
+        h('div', { class: 'home-src-head', text: '소스' }), ...sources.map((x) => x.row)), [save]);
     save.addEventListener('click', async () => {
         const home_hidden = checks.filter((x) => !x.c.checked).map((x) => x.p.id);
         try {

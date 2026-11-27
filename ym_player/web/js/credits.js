@@ -116,6 +116,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 196,
+        "version": "1.3.37",
+        "date": "2026-11-27",
+        "title": "[홈에 보일 소스]에서 '이어보기'·'새로 올라온 것' 줄도 끄고 켜기 (끄면 맨 위 배너도 켜 둔 줄에서만 고름)"
+    },
+    {
         "pr": 195,
         "version": "1.3.36",
         "date": "2026-11-27",

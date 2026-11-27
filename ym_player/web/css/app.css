@@ -224,6 +224,7 @@ body.lib-route .view-modes { display: block; border-bottom: 1px solid var(--bord
 .home-note { padding: 0.75rem 0; color: var(--muted); }
 .home-actions { display: flex; justify-content: flex-start; gap: 0.6rem; margin-bottom: 0.75rem; }
 .home-actions:empty { display: none; }
+.home-src-head { margin: 0.8rem 0 0.2rem; font-size: 0.75rem; font-weight: 700; color: var(--muted); letter-spacing: 0.06em; }
 /* 홈 맨 위 큰 배너 (넷플릭스풍) */
 .home-hero:empty { display: none; }
 .hero { position: relative; margin: -1.5rem -2rem 1.75rem; min-height: clamp(280px, 42vw, 520px); overflow: hidden; display: flex; align-items: flex-end;
