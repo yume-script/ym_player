@@ -584,3 +584,40 @@ def test_music_queue_and_artist_view(page, server):
     assert page.inner_text(".detail h1") == "아이유"
     assert page.locator("button:has-text('전체 재생')").count() == 1 and page.locator("button:has-text('섞어 듣기')").count() == 1
     assert "Palette" in page.inner_text(".page.detail")
+
+
+def test_tv_remote_arrow_navigation(page, server, upstream):
+    """TV 리모컨: 방향키로 카드 사이를 옮기고(초점이 크게 보이는 tv-mode), 확인(Enter)으로 열고, 뒤로 키로 돌아온다"""
+    set_sources(page, server, [{"type": "recipe", "name": "만개의레시피", "enabled": True}])
+    page.goto(server + "/#/home")
+    page.wait_for_selector(".card:has-text('백종원 김치찌개')")
+    focused = lambda: page.evaluate("() => document.activeElement.className + '|' + document.activeElement.textContent.trim().slice(0, 40)")
+    for _ in range(6):                               # 본문의 첫 카드까지 내려가기 (배너 단추가 있으면 그다음)
+        page.keyboard.press("ArrowDown")
+        if focused().startswith("card"):
+            break
+    assert focused().startswith("card") and page.evaluate("document.body.classList.contains('tv-mode')")
+    for _ in range(6):                               # 카드가 둘 이상인 줄로
+        if page.evaluate("() => (document.activeElement.closest('.row-track') || {children: []}).children.length > 1"):
+            break
+        page.keyboard.press("ArrowDown")
+    first = focused()
+    page.keyboard.press("ArrowRight")
+    assert focused().startswith("card") and focused() != first    # 같은 줄의 다음 카드
+    page.keyboard.press("ArrowLeft")
+    assert focused() == first
+    page.keyboard.press("ArrowLeft")
+    assert "nav-link" in focused() and "홈" in focused()           # 본문 왼쪽 끝에서 왼쪽 -> 사이드바의 지금 메뉴
+    page.keyboard.press("ArrowRight")
+    assert focused() == first                                      # 사이드바에서 오른쪽 -> 들어가기 전에 보던 카드
+    page.keyboard.press("Escape")                                  # (아무 일 없음)
+    while not focused().startswith("card"):
+        page.keyboard.press("ArrowDown")
+    page.keyboard.press("Enter")                                   # 레시피 카드: 글 보기 창이 열림
+    page.wait_for_selector(".reader.article-reader")
+    page.keyboard.press("Backspace")                               # 리모컨 뒤로 키 -> 창 닫기
+    page.wait_for_selector(".reader.article-reader", state="detached")
+    page.click(".nav-single-link:has-text('만개의레시피')")         # 다른 화면으로 갔다가
+    page.wait_for_function("() => location.hash.startsWith('#/library/')")
+    page.keyboard.press("Backspace")                               # 뒤로 키 -> 앞 화면으로
+    page.wait_for_function("() => location.hash.startsWith('#/home')")

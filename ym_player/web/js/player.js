@@ -6,6 +6,7 @@
 //   kind 'direct' -> <video src>
 // 원본 주소가 막히면(CORS/혼합콘텐츠) playback.proxyUrl(서버 중계)로 한 번 더 시도한다.
 // 시도마다 token을 올려서, 늦게 도착한 이전 채널의 콜백이 새 채널을 건드리지 못하게 한다.
+import { isBackKey } from './tvnav.js';
 import { h, icon, clear, fmtClock, fmtHM, storeGet, storeSet, toast, IS_IOS, dataSaver } from './util.js';
 import { channelHealth, isFavorite, toggleFavorite } from './providers/iptv.js';
 import { registry } from './providers/index.js';
@@ -1964,7 +1965,16 @@ class Player {
         const tag = (document.activeElement && document.activeElement.tagName) || '';
         if (['INPUT', 'SELECT', 'TEXTAREA'].includes(tag) && e.key !== 'Escape') return;
         const live = this.pb.live;
-        const k = e.key;
+        // TV 리모컨: 뒤로 키는 Esc처럼, 확인(가운데)·재생/일시정지 키, 앞으로·뒤로 감기 키
+        let k = e.key;
+        if (isBackKey(e)) { e.preventDefault(); k = 'Escape'; }
+        const onCtl = document.activeElement && document.activeElement !== document.body && this.root.contains(document.activeElement)
+            && document.activeElement.matches('button, a, input, select');
+        if (k === 'MediaPlayPause' || k === 'MediaPlay' || k === 'MediaPause' || (k === 'Enter' && !onCtl)) { e.preventDefault(); k = ' '; }
+        else if (k === 'MediaFastForward' && !live) k = 'ArrowRight';
+        else if (k === 'MediaRewind' && !live) k = 'ArrowLeft';
+        else if (k === 'MediaTrackNext' && live) k = 'ArrowDown';
+        else if (k === 'MediaTrackPrevious' && live) k = 'ArrowUp';
         if (k === ' ' || k === 'k') { e.preventDefault(); this.togglePlay(); }
         else if (k === 'ArrowLeft' && !live) { e.preventDefault(); this.seekBy(-10); }
         else if (k === 'ArrowRight' && !live) { e.preventDefault(); this.seekBy(30); }

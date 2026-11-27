@@ -3,6 +3,7 @@ import { h, icon, clear, toast, storeGet, storeSet, api, modal } from './util.js
 import { registry } from './providers/index.js';
 import { emptyState } from './cards.js';
 import { player } from './player.js';
+import { initTvNav } from './tvnav.js';
 import { loadFavorites } from './providers/iptv.js';
 import { loadMyTheme, openThemeDialog } from './theme.js';
 import { initVersionNotice } from './notice.js';
@@ -341,6 +342,7 @@ function initPosterSize() {
 async function boot() {
     initPosterSize();
     initViewMode();
+    initTvNav();   // TV 리모컨: 방향키로 카드·메뉴 고르기, 뒤로 키
     document.getElementById('menuBtn').addEventListener('click', () => document.body.classList.toggle('nav-open'));
     document.getElementById('navScrim').addEventListener('click', () => document.body.classList.remove('nav-open'));
     document.getElementById('searchForm').addEventListener('submit', (e) => {
