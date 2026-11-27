@@ -116,6 +116,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 198,
+        "version": "1.3.39",
+        "date": "2026-11-27",
+        "title": "사이드바의 [라이브 TV](모든 IPTV를 합친 편성표) 빼기 - IPTV 소스마다 메뉴가 있어서 겹침"
+    },
+    {
         "pr": 197,
         "version": "1.3.38",
         "date": "2026-11-27",
