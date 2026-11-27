@@ -31,6 +31,17 @@
 /* 글씨 크기 3단계 (제목 / 본문 / 보조) - 카드·줄·배너가 같이 쓴다 */
 :root { --fs-title: 1.3rem; --fs-body: 0.95rem; --fs-meta: 0.8rem; }
 /* 손가락으로 누르는 기기: 누르는 곳을 44px 이상으로 */
+/* TV 리모컨으로 쓸 때 (tvnav.js가 body.tv-mode): 지금 고른 칸이 멀리서도 보이게 */
+body.tv-mode :focus { outline: none; }
+body.tv-mode :focus-visible, body.tv-mode .nav-link:focus, body.tv-mode .btn:focus, body.tv-mode .lib-chip:focus, body.tv-mode .tab:focus,
+body.tv-mode .row-action:focus, body.tv-mode .icon-btn:focus {
+    outline: 3px solid var(--accent); outline-offset: 3px; border-radius: 8px; }
+body.tv-mode .card:focus { outline: none; }
+body.tv-mode .card:focus .card-art { outline: 4px solid var(--accent); outline-offset: 0; transform: scale(1.07);
+    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.65); z-index: 2; }
+body.tv-mode .card:focus .card-title { color: var(--accent); }
+body.tv-mode .card:focus .card-play { opacity: 1; transform: scale(1); }
+body.tv-mode .row-track { padding-top: 0.8rem; padding-bottom: 1rem; }
 @media (pointer: coarse) {
     .icon-btn { width: 44px; height: 44px; }
     .btn { min-height: 44px; }
