@@ -122,7 +122,10 @@ export async function renderDetail(main, [pid, id], _query, ctx) {
     const hero = h('div', { class: 'detail-hero' },
         poster,
         h('div', { class: 'detail-info' },
-            d.parent ? h('a', { class: 'detail-parent', href: d.parent.route, text: d.parent.label }) : null,
+            // 위쪽 길: 채널(카테고리) › 시리즈 처럼 여러 단계면 d.crumbs, 아니면 d.parent 하나
+            (d.crumbs || (d.parent ? [d.parent] : [])).length ? h('div', { class: 'detail-crumbs' },
+                (d.crumbs || [d.parent]).flatMap((c, i) => [i ? h('span', { class: 'detail-crumb-sep', text: '›' }) : null,
+                    h('a', { class: 'detail-parent', href: c.route, text: c.label })])) : null,
             h('h1', { text: d.title }),
             d.subtitle && !d.parent ? h('div', { class: 'detail-sub', text: d.subtitle }) : null,
             h('div', { class: 'detail-meta' },

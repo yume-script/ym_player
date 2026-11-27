@@ -404,6 +404,8 @@ body.lib-route .view-modes { display: block; border-bottom: 1px solid var(--bord
 .detail-info { flex: 1; min-width: 0; max-width: 820px; }
 .detail-parent { color: var(--muted); font-weight: 500; font-size: 1.05rem; }
 .detail-parent:hover { color: var(--accent); }
+.detail-crumbs { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.45rem; }
+.detail-crumb-sep { color: var(--muted); }
 .detail-info h1 { margin: 0.2rem 0 0.2rem; font-size: 2.4rem; line-height: 1.2; }
 .detail-sub { color: var(--muted); font-size: 1.05rem; }
 .detail-meta { display: flex; flex-wrap: wrap; gap: 0.4rem 1.1rem; margin: 0.8rem 0 1.4rem; color: var(--text-soft); font-weight: 500; }

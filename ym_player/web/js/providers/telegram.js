@@ -839,6 +839,8 @@ export class TelegramProvider {
             playable: true, watched: !!v.watched, viewOffset: 0, duration: (v.duration || 0) * 1000, progress: 0,
             parent: v.series ? { label: v.series.title, route: `#/item/${this.id}/${encodeURIComponent(`series:${v.channel}:${v.series.key}`)}` }
                 : { label: this.channelTitle(v.channel), route: `#/library/${this.id}/${v.channel}` },
+            crumbs: v.series ? [{ label: this.channelTitle(v.channel), route: `#/library/${this.id}/${v.channel}` },
+                { label: v.series.title, route: `#/item/${this.id}/${encodeURIComponent(`series:${v.channel}:${v.series.key}`)}` }] : null,
             children: [],
         };
     }
@@ -864,6 +866,8 @@ export class TelegramProvider {
         const parent = v.series
             ? { label: v.series.title, route: `#/item/${this.id}/${encodeURIComponent(`series:${v.channel}:${v.series.key}`)}` }
             : (facts ? { label: facts, route: `#/library/${this.id}/${v.channel}` } : null);
+        // 회차 화면에서도 시리즈 화면처럼 카테고리(채널)가 보이게: 채널 › 시리즈 (예전엔 시리즈 이름만이라 채널이 사라졌다)
+        const crumbs = v.series ? [{ label: facts || this.channelTitle(v.channel), route: `#/library/${this.id}/${v.channel}` }, parent] : null;
         const base = {
             ...item,
             subtitle: '',
@@ -883,6 +887,7 @@ export class TelegramProvider {
             viewOffset: (v.position || 0) * 1000,
             duration: (v.duration || 0) * 1000,
             parent,
+            crumbs,
             children: [],
             onDeck: null,
             extraActions: this._fixAction({ channel: v.channel, msg: v.msg }, t && t.kind === 'tv' && v.series ? v.series.title : (m ? m.title : item.title),
