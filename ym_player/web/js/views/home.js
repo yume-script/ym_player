@@ -48,6 +48,7 @@ export async function renderHome(main, _params, _query, ctx) {
     const contItems = [];
     const hiddenNow = hiddenSet();
     const showCont = !hiddenNow.has(ROW_CONTINUE), showRecent = !hiddenNow.has(ROW_RECENT);
+    const showPlexRecent = !hiddenNow.has(ROW_RECENT_PLEX), showTgRecent = !hiddenNow.has(ROW_RECENT_TG);
     const addContinue = (items) => {
         if (!showCont) return;   // [홈에 보일 소스]에서 끈 줄 (배너에도 안 씀)
         const seen = new Set(contItems.map((it) => `${it.pid}/${it.id}`));
@@ -58,15 +59,29 @@ export async function renderHome(main, _params, _query, ctx) {
     };
 
     // 그 아래: Plex 최근 추가와 텔레그램 새 영상을 합친 "새로 올라온 것" 한 줄 (올라온 날짜순, 소스마다의 그 줄은 따로 안 그린다)
+    // + 그 아래에 종류별 두 줄 "Plex 최근 추가" · "텔레그램 새 영상" (각각 [홈에 보일 소스]에서 끌 수 있음)
     const recentSlot = h('div', { class: 'home-slot' });
     page.appendChild(recentSlot);
     const recentItems = [];
     const addedAt = (it) => it.added || (it.raw && (it.raw.addedAt ? it.raw.addedAt * 1000 : Date.parse(it.raw.date || '') || 0)) || 0;
-    const addRecent = (items) => {
+    // 같은 것을 소스 종류별로도: "Plex 최근 추가" / "텔레그램 새 영상" (합친 줄은 그대로 두고 그 아래에 따로)
+    const plexSlot = h('div', { class: 'home-slot' }), tgSlot = h('div', { class: 'home-slot' });
+    page.append(plexSlot, tgSlot);
+    const byKind = { plex: { slot: plexSlot, items: [], title: 'Plex 최근 추가', on: showPlexRecent },
+                     telegram: { slot: tgSlot, items: [], title: '텔레그램 새 영상', on: showTgRecent } };
+    const mergeInto = (list, items) => {
+        const seen = new Set(list.map((it) => `${it.pid}/${it.id}`));
+        items.forEach((it) => { if (!seen.has(`${it.pid}/${it.id}`)) { seen.add(`${it.pid}/${it.id}`); list.push(it); } });
+        list.sort((a, b) => addedAt(b) - addedAt(a));
+    };
+    const addRecent = (items, kind) => {
+        const k = byKind[kind];
+        if (k && k.on) {
+            mergeInto(k.items, items);
+            clear(k.slot).appendChild(hubRow({ title: k.title, items: k.items.slice(0, 40) }));
+        }
         if (!showRecent) return;
-        const seen = new Set(recentItems.map((it) => `${it.pid}/${it.id}`));
-        items.forEach((it) => { if (!seen.has(`${it.pid}/${it.id}`)) { seen.add(`${it.pid}/${it.id}`); recentItems.push(it); } });
-        recentItems.sort((a, b) => addedAt(b) - addedAt(a));
+        mergeInto(recentItems, items);
         clear(recentSlot).appendChild(hubRow({ title: '새로 올라온 것', items: recentItems.slice(0, 40) }));
         drawHero();
     };
@@ -80,7 +95,7 @@ export async function renderHome(main, _params, _query, ctx) {
         page.appendChild(slot);
         return { p, slot };
     });
-    const hiddenCount = providers.length - shown.length + [showCont, showRecent].filter((x) => !x).length;
+    const hiddenCount = providers.length - shown.length + [showCont, showRecent, showPlexRecent, showTgRecent].filter((x) => !x).length;
     page.appendChild(h('div', { class: 'home-foot' },
         h('button', { class: 'btn btn-sm', on: { click: () => homeSourcesDialog(() => window.dispatchEvent(new HashChangeEvent('hashchange'))) } },
             icon('eye'), hiddenCount ? ` 홈에 보일 소스 (${hiddenCount}개 숨김)` : ' 홈에 보일 소스')));
@@ -89,7 +104,7 @@ export async function renderHome(main, _params, _query, ctx) {
         clear(slot);
         if (!hubs.length) slot.appendChild(h('div', { class: 'home-note', text: `${p.name}: 보여줄 항목이 없습니다.` }));
         hubs.filter((hub) => hub.continue).forEach((hub) => addContinue(hub.items));
-        hubs.filter((hub) => hub.recent && !hub.continue).forEach((hub) => addRecent(hub.items));
+        hubs.filter((hub) => hub.recent && !hub.continue).forEach((hub) => addRecent(hub.items, p.kind));
         const rest = hubs.filter((hub) => !hub.continue && !hub.recent);
         if (!rest.length && hubs.length) slot.classList.add('home-slot-empty');
         rest.forEach((hub) => slot.appendChild(hubRow(hub)));
@@ -134,8 +149,9 @@ const HOME_CACHE = new Map();       // 소스 id -> { hubs, at } (이 탭에서 
 function hiddenSet() { return new Set((registry.prefs && registry.prefs.home_hidden) || []); }
 
 // 소스가 아닌 홈의 줄 (home_hidden에 소스 id와 같이 적는다 - "@"로 시작해 소스 id와 겹치지 않음)
-const ROW_CONTINUE = '@continue', ROW_RECENT = '@recent';
-const HOME_ROWS = [[ROW_CONTINUE, '이어보기 (모든 소스를 합친 줄)'], [ROW_RECENT, '새로 올라온 것 (Plex 최근 추가 + 텔레그램 새 영상)']];
+const ROW_CONTINUE = '@continue', ROW_RECENT = '@recent', ROW_RECENT_PLEX = '@recent-plex', ROW_RECENT_TG = '@recent-tg';
+const HOME_ROWS = [[ROW_CONTINUE, '이어보기 (모든 소스를 합친 줄)'], [ROW_RECENT, '새로 올라온 것 (Plex 최근 추가 + 텔레그램 새 영상)'],
+    [ROW_RECENT_PLEX, 'Plex 최근 추가 (Plex 소스들을 합친 줄)'], [ROW_RECENT_TG, '텔레그램 새 영상 (텔레그램 소스들을 합친 줄)']];
 
 /** 홈에 보일 소스 고르기 (사람마다 서버에 저장 - 다른 기기에서도 같게). 숨겨도 사이드바·검색에서는 그대로 */
 function homeSourcesDialog(onSaved) {

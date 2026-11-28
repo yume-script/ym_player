@@ -680,3 +680,40 @@ def test_telegram_channel_chat_id(page, server):
     page.wait_for_timeout(800)
     cfg = page.evaluate("fetch('/api/config').then(r => r.json())")
     assert [c.get("kind") for c in cfg["sources"][0]["channels"]] == ["videolink"]
+
+
+def test_home_recent_split_by_source_kind(page, server, upstream):
+    """'새로 올라온 것'(합친 줄)은 그대로, 그 아래 'Plex 최근 추가'·'텔레그램 새 영상' 줄도 따로 - 각각 끌 수 있음"""
+    set_sources(page, server, [
+        {"id": "px", "type": "plex", "name": "우리집 Plex", "url": "http://127.0.0.1:9", "token": "t", "enabled": True},
+        {"id": "tg", "type": "telegram", "name": "Telegram", "enabled": True, "api_id": "1", "channels": [{"id": 1, "title": "예능"}]}])
+    tg = {"id": 2, "channel": 1, "msg": 2, "title": "텔레 새 것", "caption": "", "file_name": "a.mp4", "duration": 60,
+          "date": "2026-11-26T10:00:00", "kind": "video", "has_thumb": False, "position": 0}
+    page.route("**/api/tg/tg/home", lambda r: r.fulfill(json={"continue": [], "recent": [tg], "channels": []}))
+
+    def plex(r):
+        if "/hubs" in r.request.url:
+            return r.fulfill(json={"MediaContainer": {"Hub": [{"hubIdentifier": "movie.recentlyadded", "title": "최근 추가된 영화", "type": "movie",
+                                                              "Metadata": [{"ratingKey": "500", "key": "/library/metadata/500", "title": "플렉스 영화",
+                                                                            "type": "movie", "addedAt": 1764200000}]}]}})
+        return r.fulfill(json={"MediaContainer": {}})
+    page.route("**/api/plex/px/**", plex)
+    page.goto(server + "/#/home")
+    page.evaluate("fetch('/api/me/prefs', {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({home_hidden: []})})")
+    page.reload()                                                     # (앞 시험이 숨겨 둔 줄을 되돌리고)
+    row = lambda t: page.locator(f".home-slot:has(.row-head h3:text-is('{t}'))")
+    for t in ("새로 올라온 것", "Plex 최근 추가", "텔레그램 새 영상"):
+        page.wait_for_selector(f".row-head h3:text-is('{t}')", timeout=20000)
+    merged = row("새로 올라온 것").inner_text()
+    assert "플렉스 영화" in merged and "텔레 새 것" in merged                     # 합친 줄은 그대로
+    assert "플렉스 영화" in row("Plex 최근 추가").inner_text() and "텔레 새 것" not in row("Plex 최근 추가").inner_text()
+    assert "텔레 새 것" in row("텔레그램 새 영상").inner_text() and "플렉스 영화" not in row("텔레그램 새 영상").inner_text()
+    page.click(".home-foot button")
+    page.locator(".home-src-row:has-text('텔레그램 새 영상 (텔레그램') input").uncheck()
+    page.click(".modal button:has-text('저장')")
+    page.wait_for_selector(".home-foot button:has-text('1개 숨김')")
+    page.wait_for_selector(".row-head h3:text-is('Plex 최근 추가')")
+    page.wait_for_timeout(500)
+    assert page.locator(".row-head h3:text-is('텔레그램 새 영상')").count() == 0
+    assert page.locator(".row-head h3:text-is('새로 올라온 것')").count() == 1
+    page.evaluate("fetch('/api/me/prefs', {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({home_hidden: []})})")

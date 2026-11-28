@@ -116,6 +116,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 203,
+        "version": "1.3.44",
+        "date": "2026-11-28",
+        "title": "홈: 합친 \"새로 올라온 것\" 줄은 그대로 두고, 그 아래 \"Plex 최근 추가\"·\"텔레그램 새 영상\" 줄을 따로 ([홈에 보일 소스]에서 각각 끄고 켜기)"
+    },
+    {
         "pr": 202,
         "version": "1.3.43",
         "date": "2026-11-28",
