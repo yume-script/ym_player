@@ -279,7 +279,7 @@ def _link_item(msg):
     return {"msg": int(msg.id), "kind": "link", "title": _link_title(text, url), "caption": caption[:4000],
             "file_name": url.split("?", 1)[0].rsplit("/", 1)[-1][:300], "mime": "video/mp4", "duration": 0, "size": 0,
             "width": int(m.group(1)) if m else 0, "height": int(m.group(2)) if m else 0,
-            "date": date.isoformat() if date else "", "has_thumb": 0, "url": url}
+            "date": date.isoformat() if date else "", "has_thumb": 1, "url": url}   # 미리보기는 서버가 영상에서 한 장 떠서
 
 
 def message_to_media(msg):
@@ -655,6 +655,11 @@ def db():
                 conn.execute("DELETE FROM videos WHERE kind='link' AND lower(url) NOT LIKE 'https://video.twimg.com/%' "
                              "AND lower(url) NOT LIKE 'http://video.twimg.com/%'")
             conn.execute("PRAGMA user_version = 18")
+        if conn.execute("PRAGMA user_version").fetchone()[0] < 19:
+            # mp4 주소 글도 미리보기(서버가 영상에서 한 장 떠서 저장)를 쓴다
+            with conn:
+                conn.execute("UPDATE videos SET has_thumb=1 WHERE kind='link'")
+            conn.execute("PRAGMA user_version = 19")
     return conn
 
 
@@ -2499,6 +2504,8 @@ class RemoteFile(io.RawIOBase):
 
 # 카드/목록 그림은 작게: 원본 표지(수 MB)나 웹툰 첫 쪽(아주 긴 그림)을 그대로 내보내면 카드가 늦게, 반쯤 그려진다
 THUMB_MAX_BYTES = 300 * 1024      # 이보다 크면 줄인다
+LINK_THUMB_TIMEOUT = 40          # mp4 주소에서 미리보기 한 장 뜨기 (ffmpeg) 최대 초
+LINK_THUMB_RETRY_SEC = 3600      # 못 떴으면(주소 만료 등) 이만큼 뒤에 다시
 _SHRINK_SEM = asyncio.Semaphore(2)
 
 
@@ -2570,6 +2577,7 @@ class TelegramSource:
         self._tasks = {}            # 뒤에서 도는 작업 (같은 일을 겹쳐 돌리지 않게 이름으로)
         self._thumb_sem = asyncio.Semaphore(THUMB_CONCURRENCY)
         self._thumb_inflight = {}
+        self._link_thumb_fail = {}   # (채널, 메시지) -> 실패한 때 (mp4 주소 미리보기)
         self._dl_sem = asyncio.Semaphore(DOWNLOAD_CONCURRENCY)  # 이 계정으로 동시에 받는 파일 조각 수
         self._zips = OrderedDict()  # (channel, msg) -> (열어 둔 ZipFile, 쪽 목록) - 웹툰 압축 파일
         self._zip_opening = {}      # (channel, msg) -> 여는 중 (목차 읽기, 같은 파일은 한 번만)
@@ -3042,6 +3050,10 @@ class TelegramSource:
         async with self._thumb_sem:
             if os.path.exists(path):
                 return path
+            url = await asyncio.to_thread(video_url, self.sid, channel, msg)
+            if url:   # mp4 주소 글: 텔레그램 썸네일이 없다 - 영상에서 한 장 떠서 저장 (다음부터는 저장한 것)
+                await self._link_thumb(channel, msg, url, path)
+                return path
             client = await self.authorized_client()
             m = await self._message(channel, msg)
             data = await client.download_media(m, file=bytes, thumb=-1)
@@ -3053,6 +3065,42 @@ class TelegramSource:
                 f.write(data)
             os.replace(tmp, path)
             return path
+
+    async def _link_thumb(self, channel, msg, url, path):
+        """mp4 주소에서 ffmpeg로 한 장(1초 지점, 짧으면 첫 장)을 떠서 가로 480으로 저장. 실패하면 한 시간 뒤에 다시"""
+        from . import transcode
+        key = (int(channel), int(msg))
+        if time.time() - self._link_thumb_fail.get(key, 0) < LINK_THUMB_RETRY_SEC:
+            raise TgError("미리보기를 만들지 못했습니다 (잠시 뒤에 다시).")
+        ff = transcode.ffmpeg_path()
+        if not ff:
+            raise TgError("서버에 ffmpeg가 없어 mp4 미리보기를 만들 수 없습니다.")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp.jpg"
+        why = ""
+        for at in ("1", "0"):
+            web = ["-user_agent", "Mozilla/5.0"] if url.startswith(("http://", "https://")) else []
+            args = [ff, "-nostdin", "-hide_banner", "-loglevel", "error", *web,
+                    "-ss", at, "-i", url, "-frames:v", "1", "-vf", "scale=480:-2", "-q:v", "4", "-y", tmp]
+            proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+            try:
+                _, err = await asyncio.wait_for(proc.communicate(), LINK_THUMB_TIMEOUT)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                why = "시간 초과"
+                break
+            if proc.returncode == 0 and os.path.exists(tmp) and os.path.getsize(tmp) > 0:
+                os.replace(tmp, path)
+                self._link_thumb_fail.pop(key, None)
+                return path
+            why = (err or b"").decode("utf-8", "replace").strip().splitlines()[-1:] or ["알 수 없음"]
+            why = why[0][:200]
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        self._link_thumb_fail[key] = time.time()
+        log.info("telegram %s/%s mp4 미리보기 실패: %s", channel, msg, why)
+        raise TgError(f"미리보기를 만들지 못했습니다: {why}")
 
     # ----- 사진 원본 (뷰어) -----
     IMAGE_CACHE_MAX = 1024 * 1024 * 1024  # 받아 둔 사진 원본은 합쳐서 1GB까지 (넘으면 오래 안 본 것부터 지움)
