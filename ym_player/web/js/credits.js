@@ -116,6 +116,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 199,
+        "version": "1.3.40",
+        "date": "2026-11-28",
+        "title": "텔레그램 소스: 채널 목록(설정 > 소스 · 사용자 볼 수 있는 범위)에 chat_id(-100…)도 표시 - 누르면 복사"
+    },
+    {
         "pr": 198,
         "version": "1.3.39",
         "date": "2026-11-27",

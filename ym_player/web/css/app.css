@@ -1493,3 +1493,5 @@ body.nav-editing .nav-group.nav-single .nav-items { display: block; }
 .selfupdate-commits code { font-size: 0.8rem; opacity: 0.75; }
 .selfupdate-log { margin: 0 0 0.6rem; padding: 0.6rem 0.75rem; max-height: 12rem; overflow: auto; background: var(--bg); border: 1px solid var(--border);
     border-radius: var(--radius); font-size: 0.8rem; white-space: pre-wrap; word-break: break-all; }
+.tg-chat-id { font-size: 0.78rem; color: var(--muted); background: var(--bg-elev2); padding: 0.05rem 0.4rem; border-radius: 4px; cursor: copy; white-space: nowrap; }
+.tg-chat-id:hover { color: var(--text); }
