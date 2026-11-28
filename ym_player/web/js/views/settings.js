@@ -247,13 +247,13 @@ export async function renderSettings(main, _params, query, ctx) {
                         libs[src.id] = libs[src.id] || new Set();
                         if (c.checked) libs[src.id].add(it.id); else libs[src.id].delete(it.id);
                     });
-                    box.appendChild(h('label', { class: 'check lib-check' }, c, icon(it.icon), ` ${it.title}`));
+                    box.appendChild(h('label', { class: 'check lib-check' }, c, icon(it.icon), ` ${it.title}`, it.chat ? [' ', chatIdTag(it.chat)] : null));
                 });
                 sub.append(h('label', { class: 'check' }, everyIn, ` 모든 ${what} (새로 추가하는 것 포함)`), box);
                 paint();
             };
             if (src.type === 'telegram') {
-                fill((src.channels || []).map((c) => ({ id: String(c.id), title: c.name || c.title, icon: 'bullhorn' })));
+                fill((src.channels || []).map((c) => ({ id: String(c.id), title: c.name || c.title, icon: 'bullhorn', chat: c.id })));
                 return;
             }
             if (src.type === 'radio') {
@@ -615,7 +615,7 @@ export async function renderSettings(main, _params, query, ctx) {
                     list.appendChild(h('div', { class: 'lib-check-row' },
                         h('label', { class: 'check lib-check', title: c.username ? `@${c.username}` : '' },
                             chk, icon(c.kind === 'group' ? 'users' : 'bullhorn'), ` ${c.title}`),
-                        nameIn, kindSel, orderSel));
+                        chatIdTag(c.id), nameIn, kindSel, orderSel));
                 });
             } catch (e) {
                 clear(list).appendChild(say(`채널 목록 실패: ${e.message}`, 'muted error'));
@@ -937,6 +937,18 @@ export async function renderSettings(main, _params, query, ctx) {
 
     showSrcType(srcType);
     showTab((query && query.get('tab')) || storeGet('yp_settings_tab', 'sources'));
+}
+
+// 텔레그램 채널 id(목록에 쓰는 양수) -> Bot API·다른 프로그램에서 쓰는 chat_id (채널·슈퍼그룹은 -100을 붙인다)
+const tgChatId = (id) => { const s = String(id || ''); return /^-/.test(s) ? s : `-100${s}`; };
+function chatIdTag(id) {
+    const cid = tgChatId(id);
+    const el = h('code', { class: 'tg-chat-id', title: '클릭하면 chat_id 복사', text: cid });
+    el.addEventListener('click', async (ev) => {
+        ev.preventDefault(); ev.stopPropagation();
+        try { await navigator.clipboard.writeText(cid); toast(`chat_id ${cid} 복사함`, 'success'); } catch (e) { toast(cid, 'info', 6000); }
+    });
+    return el;
 }
 
 const TYPE_ICON = { plex: 'server', iptv: 'tower-broadcast', telegram: 'paper-plane', radio: 'radio', podcast: 'podcast', cctv: 'video', brunch: 'mug-hot', recipe: 'utensils', bookoasis: 'book', kradio: 'tower-cell' };

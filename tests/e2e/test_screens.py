@@ -648,3 +648,28 @@ def test_home_hide_continue_and_recent_rows(page, server, upstream):
     page.locator(".home-src-row:has-text('이어보기') input").check()
     page.click(".modal button:has-text('저장')")
     page.wait_for_selector(".row-head h3:has-text('이어보기')")
+
+
+def test_telegram_channel_chat_id(page, server):
+    """설정 > 소스 > 텔레그램: 채널 목록에 chat_id(-100…)도 보이고, 누르면 복사"""
+    set_sources(page, server, [{"id": "tg", "type": "telegram", "name": "텔레", "api_id": "1", "api_hash": "h", "enabled": True,
+                                "channels": [{"id": 1234567890, "title": "영화 채널"}]}])
+
+    def route(r):
+        u = r.request.url
+        if u.endswith("/api/tg/tg/status"):
+            return r.fulfill(json={"authorized": True, "name": "나"})
+        if u.endswith("/api/tg/tg/channels"):
+            return r.fulfill(json={"channels": [{"id": 1234567890, "title": "영화 채널", "kind": "channel"},
+                                                {"id": 2222222222, "title": "잡담방", "kind": "group"}]})
+        return r.continue_()
+    page.route("**/api/tg/**", route)
+    page.context.grant_permissions(["clipboard-read", "clipboard-write"])
+    page.goto(server + "/#/settings")
+    page.wait_for_selector(".src-tabs")
+    page.click(".src-tabs .tab:has-text('텔레그램')")
+    page.wait_for_selector(".lib-picker .tg-chat-id", timeout=10000)
+    assert page.locator(".lib-picker .tg-chat-id").all_inner_texts() == ["-1001234567890", "-1002222222222"]
+    page.locator(".lib-picker .tg-chat-id").first.click()
+    assert page.evaluate("navigator.clipboard.readText()") == "-1001234567890"
+    assert not page.locator(".lib-picker input[type=checkbox]").nth(1).is_checked()   # 복사를 눌러도 체크는 안 바뀜
