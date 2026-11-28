@@ -116,6 +116,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 204,
+        "version": "1.3.45",
+        "date": "2026-11-28",
+        "title": "북오아시스 책 표지: BO3D·BookOasis 화면과 같은 순서로 찾기 - 시리즈 대표 표지({보관함}/series_…jpg → series_…jpg) 먼저, 그다음 책 표지 (표지 값 뒤의 ?…·역슬래시도 정리)"
+    },
+    {
         "pr": 203,
         "version": "1.3.44",
         "date": "2026-11-28",

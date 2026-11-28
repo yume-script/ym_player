@@ -1017,6 +1017,43 @@ async def bookoasis_proxy(request):
         upstream.release()
 
 
+_BO_COVER_PICK = {}   # (소스, 이름, 보관함, 표지 값) -> (찾은 꼬리 또는 "", 찾은 때)
+BO_COVER_PICK_SEC = 3600
+
+
+async def bookoasis_series_cover(request):
+    """GET /api/bo/{sid}/series-cover?name=&lib=&img= -> 시리즈 표지 (BookOasis 화면·BO3D와 같은 순서로 찾아 처음 있는 것).
+    {보관함}/series_{md5(시리즈)}.jpg -> series_{md5}.jpg -> 책의 cover_image. 찾은 것은 한 시간 기억한다"""
+    src = _source_or_404(request.match_info["sid"], "bookoasis", request)
+    q = request.query
+    key = (src["id"], q.get("name", ""), q.get("lib", ""), q.get("img", ""))
+    hit = _BO_COVER_PICK.get(key)
+    if hit and time.time() - hit[1] < BO_COVER_PICK_SEC:
+        tails = [hit[0]] if hit[0] else []
+    else:
+        tails = bookoasis.series_cover_tails(q.get("name", ""), q.get("lib", ""), q.get("img", ""))
+    client = request.app[BOOKOASIS].of(src)
+    for tail in tails:
+        if not bookoasis.allowed(tail):
+            continue
+        try:
+            upstream = await client.request("GET", tail, headers={"Accept": "image/*"})
+        except Exception:  # noqa: BLE001
+            continue
+        try:
+            ctype = upstream.headers.get("Content-Type", "")
+            if upstream.status != 200 or not ctype.startswith("image/"):
+                continue
+            body = await upstream.read()
+        finally:
+            upstream.release()
+        _BO_COVER_PICK[key] = (tail, time.time())
+        return web.Response(body=body, content_type=ctype.split(";")[0],
+                            headers={"Cache-Control": "private, max-age=86400"})
+    _BO_COVER_PICK[key] = ("", time.time())
+    return _json_error(404, "표지가 없습니다.")
+
+
 async def bookoasis_progress(request):
     """POST /api/bo/{sid}/progress {kind: book|audio|video, …} -> 보던 위치를 BookOasis에 저장"""
     src = _source_or_404(request.match_info["sid"], "bookoasis", request)
@@ -4528,6 +4565,7 @@ def create_app(require_auth=True):
     app.router.add_get("/api/kradio/{sid}/stations", kradio_stations)
     app.router.add_get(r"/api/kradio/{sid}/live/{station:[\w.\-]+}", kradio_live)
     app.router.add_post("/api/bo/{sid}/progress", bookoasis_progress)
+    app.router.add_get("/api/bo/{sid}/series-cover", bookoasis_series_cover)
     app.router.add_get("/api/bo/{sid}/{tail:.+}", bookoasis_proxy)
     app.router.add_post("/api/admin/bookoasis/test", admin_bookoasis_test)
     app.router.add_post("/api/podcast/{sid}/progress", podcast_progress)
