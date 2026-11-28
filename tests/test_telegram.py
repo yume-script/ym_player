@@ -715,7 +715,7 @@ def test_existing_index_titles_are_repaired_once(monkeypatch, tmp_path):
     row = telegram_src.get_video("tg", 1, 2)
     assert row["title"] == "영화" and row["file_name"] == "영화.mkv"
     with telegram_src.db() as c:
-        assert c.execute("PRAGMA user_version").fetchone()[0] == 18
+        assert c.execute("PRAGMA user_version").fetchone()[0] == 19
 
 
 def test_split_parts_are_grouped(monkeypatch, tmp_path):
@@ -2290,3 +2290,51 @@ def test_mp4_link_stream_is_proxied(env, monkeypatch):
         assert r.status == 200 and await r.read() == b"mp4" and seen == [(u, "bytes=0-99")]
         assert (await c.post("/api/tg/tg/probe/777/1")).status == 200
     run(flow)
+
+
+def test_mp4_link_thumbnail_is_captured_and_cached(env, monkeypatch, tmp_path):
+    """mp4 주소 글: 서버가 영상에서 한 장 떠서 미리보기로 저장 (다음부터는 저장한 것), 못 뜨면 잠시 다시 안 함"""
+    import shutil
+    import subprocess
+
+    from ym_player import transcode
+    if not transcode.ffmpeg_path():
+        pytest.skip("ffmpeg 없음")
+    clip = tmp_path / "clip.mp4"
+    subprocess.run([transcode.ffmpeg_path(), "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=640x360:rate=10:duration=3",
+                    "-pix_fmt", "yuv420p", "-y", str(clip)], check=True)
+    u = "https://video.twimg.com/amplify_video/1790000000000000002/vid/avc1/640x360/x.mp4"
+    bad = "https://video.twimg.com/amplify_video/1790000000000000003/vid/avc1/640x360/gone.mp4"
+    env.msgs[1] = SimpleNamespace(id=1, document=None, photo=None, message=u, date=datetime(2026, 1, 2, tzinfo=timezone.utc))
+    env.msgs[2] = SimpleNamespace(id=2, document=None, photo=None, message=bad, date=datetime(2026, 1, 2, tzinfo=timezone.utc))
+    cfg = config_store.load()
+    cfg["sources"][0]["channels"] = [{"id": 777, "title": "영화 채널", "kind": "videolink"}]
+    config_store.save(cfg)
+    real = telegram_src.video_url
+    monkeypatch.setattr(telegram_src, "video_url", lambda sid, ch, m: {u: str(clip), bad: str(tmp_path / "nope.mp4")}.get(real(sid, ch, m), real(sid, ch, m)))
+    calls = []
+    real_exec = asyncio.create_subprocess_exec
+
+    async def counting_exec(*a, **kw):
+        calls.append(a[0])
+        return await real_exec(*a, **kw)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", counting_exec)
+
+    async def flow(c):
+        env.authorized = True
+        for _ in range(50):
+            items = (await (await c.get("/api/tg/tg/videos?channel=777&limit=500")).json())["items"]
+            if any(i["msg"] == 1 for i in items):
+                break
+            await asyncio.sleep(0.05)
+        assert next(i for i in items if i["msg"] == 1)["has_thumb"] == 1
+        r = await c.get("/api/tg/tg/thumb/777/1")
+        body = await r.read()
+        assert r.status == 200 and body.startswith(b"\xff\xd8")
+        n = len(calls)
+        assert (await c.get("/api/tg/tg/thumb/777/1")).status == 200 and len(calls) == n     # 저장한 것 (ffmpeg 다시 안 돎)
+        assert (await c.get("/api/tg/tg/thumb/777/2")).status == 404
+        n = len(calls)
+        assert (await c.get("/api/tg/tg/thumb/777/2")).status == 404 and len(calls) == n     # 실패는 한 시간 동안 다시 안 함
+    run(flow)
+    assert shutil.which(transcode.ffmpeg_path())

@@ -116,6 +116,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 202,
+        "version": "1.3.43",
+        "date": "2026-11-28",
+        "title": "텔레그램 \"영상+mp4 주소\" 채널: mp4 주소 글도 미리보기 화면 - 서버가 영상에서 한 장(1초 지점)을 떠서 저장해 두고 씀 (ffmpeg 필요, 못 뜨면 한 시간 뒤에 다시)"
+    },
+    {
         "pr": 201,
         "version": "1.3.42",
         "date": "2026-11-28",
