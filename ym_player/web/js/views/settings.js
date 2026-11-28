@@ -585,8 +585,9 @@ export async function renderSettings(main, _params, query, ctx) {
                     const id = String(c.id);
                     const chk = h('input', { type: 'checkbox', checked: chosen.has(id) });
                     // 채널 종류: 영상만 보이게(사진 숨김) / 사진만 / 웹툰(zip·cbz 압축 파일을 웹툰 보기로) / 책(PDF·EPUB만) / 영상+사진
+                    // / 영상+mp4 주소(영상 파일과, mp4 주소만 적은 글 - 서버가 그 주소를 중계해 재생)
                     const kindSel = h('select', { class: 'select select-sm', title: '이 채널에서 보여 줄 것' },
-                        [['', '영상+사진'], ['video', '영상만'], ['image', '사진만'], ['webtoon', '웹툰(압축 파일)'], ['doc', '책(PDF·EPUB)'], ['music', '음악(mp3·flac 등)']].map(([v, label]) =>
+                        [['', '영상+사진'], ['video', '영상만'], ['image', '사진만'], ['webtoon', '웹툰(압축 파일)'], ['doc', '책(PDF·EPUB)'], ['music', '음악(mp3·flac 등)'], ['videolink', '영상+mp4 주소']].map(([v, label]) =>
                             h('option', { value: v, text: label, selected: ((chosen.get(id) || {}).kind || '') === v })));
                     // 시리즈(회차 묶음) 상세의 회차 순서
                     const orderSel = h('select', { class: 'select select-sm', title: '시리즈 회차 목록 순서' },

@@ -715,7 +715,7 @@ def test_existing_index_titles_are_repaired_once(monkeypatch, tmp_path):
     row = telegram_src.get_video("tg", 1, 2)
     assert row["title"] == "영화" and row["file_name"] == "영화.mkv"
     with telegram_src.db() as c:
-        assert c.execute("PRAGMA user_version").fetchone()[0] == 16
+        assert c.execute("PRAGMA user_version").fetchone()[0] == 17
 
 
 def test_split_parts_are_grouped(monkeypatch, tmp_path):
@@ -872,7 +872,7 @@ def test_photos_are_indexed_and_old_index_rescans(monkeypatch, tmp_path):
 
     # kind 칸이 없던 예전 색인: 칸을 더하고 (기존 행은 video), 채널을 처음부터 다시 훑게 한다
     conn = sqlite3.connect(str(tmp_path / "telegram.db"))
-    conn.executescript(telegram_src._SCHEMA.replace("    kind TEXT DEFAULT 'video', PRIMARY KEY", "    PRIMARY KEY"))
+    conn.executescript(telegram_src._SCHEMA.replace("    kind TEXT DEFAULT 'video', url TEXT DEFAULT '', PRIMARY KEY", "    PRIMARY KEY"))
     conn.execute("INSERT INTO videos(source,channel,msg,title,caption,file_name,mime,duration,size,width,height,date,has_thumb)"
                  " VALUES('tg',1,2,'영상','','a.mp4','video/mp4',1,1,1,1,'',0)")
     conn.execute("INSERT INTO sync_state(source,channel,newest,oldest,complete) VALUES('tg',1,99,1,1)")
@@ -2219,3 +2219,68 @@ def test_refresh_channel_syncs_latest():
             calls.append((channel, force))
     asyncio.run(telegram_src.refresh_channel(FakeTg(), "-100"))
     assert calls == [(-100, True)]
+
+
+def test_mp4_link_messages(monkeypatch, tmp_path):
+    """채널 종류 "영상+mp4 주소": mp4 주소만 적은 글도 영상처럼 (그 채널에서만), 주소는 화면으로 안 나감"""
+    monkeypatch.setattr(config_store, "DATA_DIR", str(tmp_path))
+    u = "https://video.twimg.com/ext_tw_video/1790000000000000001/pu/vid/avc1/720x1280/AbC.mp4?tag=12"
+    m = SimpleNamespace(id=10, document=None, photo=None, message=f"고양이 모음 {u}\n둘째 줄", date=None)
+    it = telegram_src.message_to_media(m)
+    assert (it["kind"], it["url"], it["title"], it["width"], it["height"]) == ("link", u, "고양이 모음", 720, 1280)
+    bare = telegram_src.message_to_media(SimpleNamespace(id=11, document=None, photo=None, message=u, date=None))
+    assert bare["title"] == "X 영상 1790000000000000001"
+    hidden = SimpleNamespace(id=12, document=None, photo=None, message="여기", date=None,
+                             entities=[SimpleNamespace(url="https://cdn.example.org/v/clip.mp4")])
+    assert telegram_src.message_to_media(hidden)["url"] == "https://cdn.example.org/v/clip.mp4"
+    assert telegram_src.message_to_media(text_msg(13)) is None
+    assert telegram_src.message_to_media(SimpleNamespace(id=14, document=None, photo=None,
+                                                         message="https://e.org/a.mp4x https://e.org/b.m3u8", date=None)) is None
+    vid = video_msg(15, caption=u)                       # 영상 파일 + 캡션의 주소 -> 영상 파일 그대로
+    assert telegram_src.message_to_media(vid)["kind"] == "video"
+
+    # 색인: 채널 1 = 기본(영상+사진), 채널 2 = 영상+mp4 주소
+    for ch in (1, 2):
+        telegram_src.upsert_videos("tg", ch, [{**it, "msg": 10}, {**telegram_src.message_to_media(vid), "msg": 15}])
+    kinds = {1: "", 2: "videolink"}
+    got = {ch: [r["msg"] for r in telegram_src.query_videos("tg", [ch], kinds=kinds)[0]] for ch in (1, 2)}
+    assert got == {1: [15], 2: [15, 10]}
+    assert [r["msg"] for r in telegram_src.query_videos("tg", [2], kind="video", kinds=kinds)[0]] == [15, 10]
+    row = telegram_src.get_video("tg", 2, 10)
+    assert row["kind"] == "video" and row["link"] is True and "url" not in row
+    assert telegram_src.video_url("tg", 2, 10) == u and telegram_src.video_url("tg", 2, 15) == ""
+    picks = {telegram_src.random_video("tg", [1], kinds=kinds)["msg"] for _ in range(10)}
+    assert picks == {15}                                  # 기본 채널에서는 주소 글이 뽑히지 않음
+
+
+def test_mp4_link_stream_is_proxied(env, monkeypatch):
+    from aiohttp import web
+
+    from ym_player import server
+    u = "https://video.twimg.com/amplify_video/1790000000000000002/vid/avc1/1080x1920/x.mp4"
+    env.msgs[1] = SimpleNamespace(id=1, document=None, photo=None, message=u, date=datetime(2026, 1, 2, tzinfo=timezone.utc))
+    cfg = config_store.load()
+    cfg["sources"][0]["channels"] = [{"id": 777, "title": "영화 채널", "kind": "videolink"}]
+    config_store.save(cfg)
+    seen = []
+
+    async def fake_proxy(request, target, ua="", referer=""):
+        seen.append((target, request.headers.get("Range")))
+        return web.Response(body=b"mp4", content_type="video/mp4")
+    monkeypatch.setattr(server, "_proxy", fake_proxy)
+
+    async def flow(c):
+        env.authorized = True
+        for _ in range(50):
+            items = (await (await c.get("/api/tg/tg/videos?channel=777&limit=500")).json())["items"]
+            if any(i["msg"] == 1 for i in items):
+                break
+            await asyncio.sleep(0.05)
+        link = next(i for i in items if i["msg"] == 1)
+        assert link["kind"] == "video" and link["link"] and "url" not in link and link["title"] == "X 영상 1790000000000000002"
+        item = (await (await c.get("/api/tg/tg/video/777/1?probe=1")).json())["item"]
+        assert item["play"]["mode"] == "direct"
+        r = await c.get("/api/tg/tg/stream/777/1", headers={"Range": "bytes=0-99"})
+        assert r.status == 200 and await r.read() == b"mp4" and seen == [(u, "bytes=0-99")]
+        assert (await c.post("/api/tg/tg/probe/777/1")).status == 200
+    run(flow)

@@ -673,3 +673,10 @@ def test_telegram_channel_chat_id(page, server):
     page.locator(".lib-picker .tg-chat-id").first.click()
     assert page.evaluate("navigator.clipboard.readText()") == "-1001234567890"
     assert not page.locator(".lib-picker input[type=checkbox]").nth(1).is_checked()   # 복사를 눌러도 체크는 안 바뀜
+    kind = page.locator(".lib-picker select").first
+    assert "영상+mp4 주소" in kind.inner_text()
+    kind.select_option("videolink")                                                    # 채널 종류 "영상+mp4 주소"
+    page.click("button:has-text('저장') >> nth=0")
+    page.wait_for_timeout(800)
+    cfg = page.evaluate("fetch('/api/config').then(r => r.json())")
+    assert [c.get("kind") for c in cfg["sources"][0]["channels"]] == ["videolink"]

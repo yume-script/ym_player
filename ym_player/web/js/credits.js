@@ -116,6 +116,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 200,
+        "version": "1.3.41",
+        "date": "2026-11-28",
+        "title": "텔레그램 채널 종류 \"영상+mp4 주소\": 영상 파일과 함께, mp4 주소(예: video.twimg.com)만 적은 글도 영상으로 보이고 재생 (서버가 그 주소를 중계해 탐색도 됨)"
+    },
+    {
         "pr": 199,
         "version": "1.3.40",
         "date": "2026-11-28",

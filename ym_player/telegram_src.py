@@ -230,6 +230,49 @@ def _photo_item(msg, photo):
             "date": date.isoformat() if date else "", "has_thumb": 1}
 
 
+# mp4 주소만 적은 글 (채널 종류 "영상+mp4 주소"에서 영상처럼 보임 - 재생은 서버가 그 주소를 중계)
+MP4_LINK_RE = re.compile(r"https?://[^\s<>\"']+?\.mp4(?:\?[^\s<>\"']*)?(?![^\s<>\"'])", re.I)
+
+
+def message_links(msg):
+    """글에 든 mp4 주소들 (본문의 주소 + 글자에 숨긴 링크), 나온 순서·같은 것은 한 번"""
+    text = str(getattr(msg, "message", "") or "")
+    found = MP4_LINK_RE.findall(text)
+    for ent in getattr(msg, "entities", None) or []:
+        url = str(getattr(ent, "url", "") or "")
+        if url and MP4_LINK_RE.fullmatch(url):
+            found.append(url)
+    return list(dict.fromkeys(u for u in found if u.lower().startswith(("http://", "https://"))))
+
+
+def _link_title(text, url):
+    """제목: 글에서 주소를 뺀 첫 줄, 없으면 X 영상 번호(video.twimg.com) 또는 파일 이름"""
+    for line in fix_text(text or "").splitlines():
+        line = MP4_LINK_RE.sub("", line).strip(" \t-·|:")
+        if line:
+            return line[:300]
+    path = url.split("?", 1)[0]
+    m = re.search(r"video\.twimg\.com/.*?/(\d{8,25})(?:/|$)", path)
+    if m:
+        return f"X 영상 {m.group(1)}"
+    return (os.path.splitext(path.rsplit("/", 1)[-1])[0] or "mp4 영상")[:300]
+
+
+def _link_item(msg):
+    """미디어 없이 mp4 주소만 적은 글 -> kind "link" (첫 주소). 아니면 None"""
+    links = message_links(msg)
+    if not links:
+        return None
+    url = links[0][:2000]
+    text = str(getattr(msg, "message", "") or "")
+    date = getattr(msg, "date", None)
+    m = re.search(r"/(\d{2,5})x(\d{2,5})/", url)
+    return {"msg": int(msg.id), "kind": "link", "title": _link_title(text, url), "caption": fix_text(text)[:4000],
+            "file_name": url.split("?", 1)[0].rsplit("/", 1)[-1][:300], "mime": "video/mp4", "duration": 0, "size": 0,
+            "width": int(m.group(1)) if m else 0, "height": int(m.group(2)) if m else 0,
+            "date": date.isoformat() if date else "", "has_thumb": 0, "url": url}
+
+
 def message_to_media(msg):
     """색인할 메시지면 dict (kind = video | image), 아니면 None.
     움짤/스티커/둥근 영상 메시지는 뺀다. 사진은 압축 사진과 이미지 파일(문서) 둘 다."""
@@ -238,7 +281,7 @@ def message_to_media(msg):
         return _photo_item(msg, photo)
     doc = getattr(msg, "document", None) or getattr(msg, "video", None)
     if doc is None:
-        return None
+        return _link_item(msg)
     mime = str(getattr(doc, "mime_type", "") or "").lower()
     file_name, duration, width, height, is_video = "", 0, 0, 0, False
     audio = None
@@ -468,7 +511,7 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS videos(
     source TEXT, channel INTEGER, msg INTEGER, title TEXT, caption TEXT, file_name TEXT, mime TEXT,
     duration INTEGER, size INTEGER, width INTEGER, height INTEGER, date TEXT, has_thumb INTEGER,
-    kind TEXT DEFAULT 'video', PRIMARY KEY(source, channel, msg));
+    kind TEXT DEFAULT 'video', url TEXT DEFAULT '', PRIMARY KEY(source, channel, msg));
 CREATE INDEX IF NOT EXISTS videos_by_date ON videos(source, channel, msg DESC);
 CREATE INDEX IF NOT EXISTS videos_by_posted ON videos(source, channel, date DESC);
 CREATE TABLE IF NOT EXISTS sync_state(
@@ -590,6 +633,13 @@ def db():
             for sid, ch in conn.execute("SELECT DISTINCT source, channel FROM videos").fetchall():
                 _link_series(conn, sid, ch)
             conn.execute("PRAGMA user_version = 16")
+        if conn.execute("PRAGMA user_version").fetchone()[0] < 17:
+            # mp4 주소만 적은 글도 색인한다 (채널 종류 "영상+mp4 주소") -> 예전에 훑은 채널은 글을 건너뛰었으니 처음부터 다시 훑게
+            if "url" not in {r[1] for r in conn.execute("PRAGMA table_info(videos)")}:
+                conn.execute("ALTER TABLE videos ADD COLUMN url TEXT DEFAULT ''")
+            with conn:
+                conn.execute("DELETE FROM sync_state")
+            conn.execute("PRAGMA user_version = 17")
     return conn
 
 
@@ -612,14 +662,15 @@ def upsert_videos(sid, channel, items):
         return
     with db() as conn:
         conn.executemany(
-            """INSERT INTO videos(source,channel,msg,title,caption,file_name,mime,duration,size,width,height,date,has_thumb,kind)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """INSERT INTO videos(source,channel,msg,title,caption,file_name,mime,duration,size,width,height,date,has_thumb,kind,url)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(source,channel,msg) DO UPDATE SET title=excluded.title, caption=excluded.caption,
                  file_name=excluded.file_name, mime=excluded.mime, duration=excluded.duration, size=excluded.size,
                  width=excluded.width, height=excluded.height, date=excluded.date, has_thumb=excluded.has_thumb,
-                 kind=excluded.kind""",
+                 kind=excluded.kind, url=excluded.url""",
             [(sid, channel, it["msg"], it["title"], it["caption"], it["file_name"], it["mime"], it["duration"],
-              it["size"], it["width"], it["height"], it["date"], it["has_thumb"], it.get("kind", "video")) for it in items])
+              it["size"], it["width"], it["height"], it["date"], it["has_thumb"], it.get("kind", "video"), it.get("url", ""))
+             for it in items])
 
 
 # ---------------------------------------------------------------------------
@@ -1834,6 +1885,9 @@ def _row(r, prog, posters=None):
     d["poster"] = (posters or {}).get((d["channel"], d["msg"]), 0)
     if d.get("kind") in ("book", "doc"):   # 웹툰·책: 보던 위치는 쪽(EPUB은 천분율), duration은 쪽 수 (처음 열어 봐야 앎)
         d["duration"] = p["duration"] if p else 0
+    if d.get("kind") == "link":            # mp4 주소 글: 화면에는 영상으로 (재생은 서버가 주소를 중계)
+        d["kind"], d["link"] = "video", True
+    d.pop("url", None)                     # 주소는 서버만 (사용자 권한을 거쳐 /stream으로)
     return d
 
 
@@ -1846,7 +1900,7 @@ def _progress_map(conn, sid, rows, user=""):
     return {(p["channel"], p["msg"]): dict(p) for p in got if (p["channel"], p["msg"]) in keys}
 
 
-CHANNEL_KINDS = ("video", "image", "webtoon", "doc", "music")
+CHANNEL_KINDS = ("video", "image", "webtoon", "doc", "music", "videolink")
 LIST_KINDS = ("video", "image", "book", "doc", "audio")
 
 
@@ -1864,11 +1918,13 @@ def _channel_clause(channels, kinds, col=""):
             parts.append(f"({col}channel IN ({marks}) AND {col}kind IN ('book','doc'))")
         elif k == "music":
             parts.append(f"({col}channel IN ({marks}) AND {col}kind='audio')")
+        elif k == "videolink":   # 영상 파일 + mp4 주소만 적은 글
+            parts.append(f"({col}channel IN ({marks}) AND {col}kind IN ('video','link'))")
         elif k:
             parts.append(f"({col}channel IN ({marks}) AND {col}kind=?)")
-        else:
-            parts.append(f"({col}channel IN ({marks}) AND {col}kind NOT IN ('book','audio'))")   # (음악은 음악 채널에서만)
-        args += [*chans, *([k] if k and k not in ("webtoon", "music") else [])]
+        else:   # (음악은 음악 채널에서만, mp4 주소 글은 "영상+mp4 주소" 채널에서만)
+            parts.append(f"({col}channel IN ({marks}) AND {col}kind NOT IN ('book','audio','link'))")
+        args += [*chans, *([k] if k and k not in ("webtoon", "music", "videolink") else [])]
     return "(" + " OR ".join(parts) + ")", args
 
 
@@ -1925,11 +1981,13 @@ def query_videos(sid, channels, offset=0, limit=40, q="", sort="latest", user=""
     where = f"source=? AND {clause}"
     args = [sid, *cargs]
     want = [k for k in str(kind or "").split(",") if k in LIST_KINDS]
+    if "video" in want:
+        want.append("link")   # mp4 주소 글도 영상 (어느 채널에서 보일지는 _channel_clause가)
     if want:
         where += f" AND kind IN ({','.join('?' * len(want))})"
         args += want
     else:
-        where += " AND kind IN ('video','image','book','doc','audio')"   # 자막 파일은 목록에 안 보임 (영상에 붙음). 음악은 음악 채널만(_channel_clause)
+        where += " AND kind IN ('video','link','image','book','doc','audio')"   # 자막 파일은 목록에 안 보임 (영상에 붙음). 음악은 음악 채널만(_channel_clause)
         where += (" AND NOT (kind='image' AND EXISTS (SELECT 1 FROM posters p WHERE p.source=videos.source"
                   " AND p.channel=videos.channel AND p.image=videos.msg))")
     if group and kind != "image":
@@ -2154,8 +2212,10 @@ def random_video(sid, channels, user="", unwatched=False, exclude=(), kinds=None
     if not channels:
         return None
     marks = ",".join("?" * len(channels))
-    where = f"v.source=? AND v.channel IN ({marks}) AND v.kind='video'"
-    args = [user, sid, *channels]
+    links = [c for c in channels if (kinds or {}).get(c, "") == "videolink"]
+    lmarks = ",".join("?" * len(links)) or "NULL"
+    where = f"v.source=? AND v.channel IN ({marks}) AND (v.kind='video' OR (v.kind='link' AND v.channel IN ({lmarks})))"
+    args = [user, sid, *channels, *links]
     if unwatched:
         where += " AND COALESCE(p.watched, 0)=0"
     skip = {(int(c), int(m)) for c, m in exclude}
@@ -2172,6 +2232,14 @@ def random_video(sid, channels, user="", unwatched=False, exclude=(), kinds=None
     if parts and parts[0]["msg"] != pick["msg"]:
         return get_video(sid, pick["channel"], parts[0]["msg"], user=user)
     return get_video(sid, pick["channel"], pick["msg"], user=user)
+
+
+def video_url(sid, channel, msg):
+    """mp4 주소 글이면 그 주소, 아니면 "" """
+    with db() as conn:
+        r = conn.execute("SELECT url FROM videos WHERE source=? AND channel=? AND msg=? AND kind='link'",
+                         (sid, channel, msg)).fetchone()
+        return (r["url"] or "") if r else ""
 
 
 def get_video(sid, channel, msg, user=""):
