@@ -715,7 +715,7 @@ def test_existing_index_titles_are_repaired_once(monkeypatch, tmp_path):
     row = telegram_src.get_video("tg", 1, 2)
     assert row["title"] == "영화" and row["file_name"] == "영화.mkv"
     with telegram_src.db() as c:
-        assert c.execute("PRAGMA user_version").fetchone()[0] == 17
+        assert c.execute("PRAGMA user_version").fetchone()[0] == 18
 
 
 def test_split_parts_are_grouped(monkeypatch, tmp_path):
@@ -2231,8 +2231,14 @@ def test_mp4_link_messages(monkeypatch, tmp_path):
     bare = telegram_src.message_to_media(SimpleNamespace(id=11, document=None, photo=None, message=u, date=None))
     assert bare["title"] == "X 영상 1790000000000000001"
     hidden = SimpleNamespace(id=12, document=None, photo=None, message="여기", date=None,
-                             entities=[SimpleNamespace(url="https://cdn.example.org/v/clip.mp4")])
-    assert telegram_src.message_to_media(hidden)["url"] == "https://cdn.example.org/v/clip.mp4"
+                             entities=[SimpleNamespace(url=u)])
+    assert telegram_src.message_to_media(hidden)["url"] == u
+    # X 영상 파일(video.twimg.com) mp4만 - 다른 사이트의 mp4·페이지 주소는 무시, 제목·설명에서도 주소는 뺌
+    assert telegram_src.message_to_media(SimpleNamespace(id=16, document=None, photo=None, date=None,
+                                                         message="https://cdn.example.org/v/clip.mp4")) is None
+    mixed = telegram_src.message_to_media(SimpleNamespace(id=17, document=None, photo=None, date=None,
+                                                          message=f"🔗 https://example.org/page\n{u}\n고양이 https://e.org/x.mp4 모음"))
+    assert (mixed["url"], mixed["title"], mixed["caption"]) == (u, "고양이 모음", "고양이 모음")
     assert telegram_src.message_to_media(text_msg(13)) is None
     assert telegram_src.message_to_media(SimpleNamespace(id=14, document=None, photo=None,
                                                          message="https://e.org/a.mp4x https://e.org/b.m3u8", date=None)) is None

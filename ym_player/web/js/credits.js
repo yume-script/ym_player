@@ -116,6 +116,12 @@ export const REPO = 'https://github.com/yume-script/ym_player';
 
 export const CHANGELOG = [
     {
+        "pr": 201,
+        "version": "1.3.42",
+        "date": "2026-11-28",
+        "title": "텔레그램 \"영상+mp4 주소\" 채널: X 영상 파일(video.twimg.com)의 mp4만 영상으로 - 다른 사이트의 mp4·페이지 주소는 무시하고, 제목·설명에서도 주소를 뺌"
+    },
+    {
         "pr": 200,
         "version": "1.3.41",
         "date": "2026-11-28",

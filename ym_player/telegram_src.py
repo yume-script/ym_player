@@ -230,8 +230,10 @@ def _photo_item(msg, photo):
             "date": date.isoformat() if date else "", "has_thumb": 1}
 
 
-# mp4 주소만 적은 글 (채널 종류 "영상+mp4 주소"에서 영상처럼 보임 - 재생은 서버가 그 주소를 중계)
-MP4_LINK_RE = re.compile(r"https?://[^\s<>\"']+?\.mp4(?:\?[^\s<>\"']*)?(?![^\s<>\"'])", re.I)
+# mp4 주소만 적은 글 (채널 종류 "영상+mp4 주소"에서 영상처럼 보임 - 재생은 서버가 그 주소를 중계).
+# X 영상 파일(video.twimg.com)의 mp4만 - 다른 주소(다른 사이트의 mp4, 페이지 주소 등)는 모두 무시
+MP4_LINK_RE = re.compile(r"https?://video\.twimg\.com/[^\s<>\"']+?\.mp4(?:\?[^\s<>\"']*)?(?![^\s<>\"'])", re.I)
+ANY_URL_RE = re.compile(r"https?://\S+", re.I)
 
 
 def message_links(msg):
@@ -245,10 +247,16 @@ def message_links(msg):
     return list(dict.fromkeys(u for u in found if u.lower().startswith(("http://", "https://"))))
 
 
+def _no_urls(line):
+    """한 줄에서 주소를 모두 빼고 남은 글 (주소 앞 표시 🔗·구분 기호만 남으면 빈 줄)"""
+    line = re.sub(r"\s{2,}", " ", ANY_URL_RE.sub(" ", line)).strip()
+    return "" if not line.strip(" \t-·|:🔗▶️") else line
+
+
 def _link_title(text, url):
     """제목: 글에서 주소를 뺀 첫 줄, 없으면 X 영상 번호(video.twimg.com) 또는 파일 이름"""
     for line in fix_text(text or "").splitlines():
-        line = MP4_LINK_RE.sub("", line).strip(" \t-·|:")
+        line = _no_urls(line)
         if line:
             return line[:300]
     path = url.split("?", 1)[0]
@@ -267,7 +275,8 @@ def _link_item(msg):
     text = str(getattr(msg, "message", "") or "")
     date = getattr(msg, "date", None)
     m = re.search(r"/(\d{2,5})x(\d{2,5})/", url)
-    return {"msg": int(msg.id), "kind": "link", "title": _link_title(text, url), "caption": fix_text(text)[:4000],
+    caption = "\n".join(_no_urls(x) for x in fix_text(text).splitlines() if _no_urls(x))   # 주소는 빼고
+    return {"msg": int(msg.id), "kind": "link", "title": _link_title(text, url), "caption": caption[:4000],
             "file_name": url.split("?", 1)[0].rsplit("/", 1)[-1][:300], "mime": "video/mp4", "duration": 0, "size": 0,
             "width": int(m.group(1)) if m else 0, "height": int(m.group(2)) if m else 0,
             "date": date.isoformat() if date else "", "has_thumb": 0, "url": url}
@@ -640,6 +649,12 @@ def db():
             with conn:
                 conn.execute("DELETE FROM sync_state")
             conn.execute("PRAGMA user_version = 17")
+        if conn.execute("PRAGMA user_version").fetchone()[0] < 18:
+            # mp4 주소 글은 X 영상(video.twimg.com)만 - 그 밖의 주소로 색인한 것은 지운다
+            with conn:
+                conn.execute("DELETE FROM videos WHERE kind='link' AND lower(url) NOT LIKE 'https://video.twimg.com/%' "
+                             "AND lower(url) NOT LIKE 'http://video.twimg.com/%'")
+            conn.execute("PRAGMA user_version = 18")
     return conn
 
 
