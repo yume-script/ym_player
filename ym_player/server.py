@@ -659,8 +659,11 @@ async def stream_proxy(request):
     target = request.query.get("url", "")
     if not target.startswith(("http://", "https://")):
         return _json_error(400, "http(s) 주소만 중계합니다.")
-    ua = request.query.get("ua", "")
-    referer = request.query.get("ref", "")
+    return await _proxy(request, target, request.query.get("ua", ""), request.query.get("ref", ""))
+
+
+async def _proxy(request, target, ua="", referer=""):
+    """target을 받아 그대로 넘긴다 (Range 그대로 - 탐색 가능, m3u8/mpd는 안 주소를 바꿔서)"""
     headers = {"User-Agent": ua or DEFAULT_UA}
     if referer:
         headers["Referer"] = referer
@@ -2484,6 +2487,9 @@ async def tg_play_error(request, tg):
 @telegram_api
 async def tg_stream(request, tg):
     channel, msg = _ids(request, tg)
+    url = telegram_src.video_url(tg.sid, channel, msg)
+    if url:   # mp4 주소 글 (채널 종류 "영상+mp4 주소"): 그 주소를 중계 (텔레그램에서 받을 파일이 없음)
+        return await _proxy(request, url)
     return await _tg_range_response(request, tg, channel, msg)
 
 
@@ -2666,6 +2672,8 @@ async def internal_tg(request):
 async def _tg_decision(request, tg, channel, msg):
     """ffprobe로 이 영상을 어떻게 보낼지. 결과는 DB에 남겨 두고(파일은 안 바뀜), 같은 영상을 동시에
     물어보면(상세 화면이 미리 물어본 직후 [재생]) 돌고 있는 것을 같이 기다린다. ffmpeg가 없으면 원본 그대로."""
+    if telegram_src.video_url(tg.sid, channel, msg):   # mp4 주소 글: 브라우저가 바로 (서버 중계 /stream)
+        return {"mode": "direct", "available": transcode.available(), "reason": "mp4 주소"}
     if not transcode.available():
         return {"mode": "direct", "available": False, "reason": "서버에 ffmpeg가 없습니다"}
     saved = telegram_src.get_probe(tg.sid, channel, msg)
@@ -2709,6 +2717,8 @@ async def tg_probe(request, tg):
     row = telegram_src.get_video(tg.sid, channel, msg)
     if not row or row.get("kind") != "video":
         return _json_error(404, "색인에 없는 영상입니다.")
+    if row.get("link"):   # mp4 주소 글: 미리 확인할 텔레그램 파일이 없음
+        return web.json_response({"success": True})
     need_probe = transcode.available() and not telegram_src.get_probe(tg.sid, channel, msg)
     if need_probe or request.query.get("head"):
         await tg.authorized_client()
@@ -3289,7 +3299,7 @@ async def _mcp_call(request, user, name, args):
                          "url": f"{base}/#/library/{quote(src['id'], safe='')}/{d.get('key')}"}
                         for d in dirs if str(d.get("key")) not in hidden and (allowed is None or str(d.get("key")) in allowed)]
             if src["type"] == "telegram":
-                kinds = {"video": "영상", "image": "사진", "webtoon": "웹툰", "doc": "책(PDF·EPUB)", "music": "음악"}
+                kinds = {"video": "영상", "image": "사진", "webtoon": "웹툰", "doc": "책(PDF·EPUB)", "music": "음악", "videolink": "영상+mp4 주소"}
                 return [{"source": src["name"], "library": c.get("title"), "type": "telegram:" + (c.get("kind") or "video+photo"),
                          "kind": kinds.get(c.get("kind"), "영상+사진"),
                          "url": f"{base}/#/library/{quote(src['id'], safe='')}/{c['id']}"} for c in _mcp_tg_channels(user, src)]
