@@ -51,6 +51,36 @@ def clean_settings(raw, old):
             "verify_ssl": bool(raw.get("verify_ssl", True))}
 
 
+def cover_tail(value):
+    """BookOasis 표지 값(books.cover_image 등) -> 이어 줄 주소 꼬리 "covers/…" (BookOasis 화면의 getBookCoverSrc와 같은 규칙,
+    BO3D와 같음): 뒤의 ?…는 떼고, \\는 /로, 파일 이름에 확장자가 있어야. 바깥 주소·/api/…·빈 값은 "" """
+    c = str(value or "").strip()
+    if not c or c.startswith(("http://", "https://", "/api/")):
+        return ""
+    c = c.split("?", 1)[0].split("#", 1)[0].replace("\\", "/").lstrip("/")
+    if c.lower().startswith("covers/"):
+        c = c[7:].lstrip("/")
+    if not c or ".." in c.split("/") or "." not in c.rsplit("/", 1)[-1]:
+        return ""
+    return "covers/" + c
+
+
+def series_cover_tails(name, lib=None, cover_image=""):
+    """시리즈 카드 표지 후보 (BO3D와 같은 순서): 시리즈 대표 표지 {보관함}/series_{md5}.jpg -> series_{md5}.jpg -> 책 표지"""
+    import hashlib
+    out = []
+    name = str(name or "")
+    if name:
+        h = hashlib.md5(name.encode("utf-8")).hexdigest()
+        if str(lib or "").isdigit():
+            out.append(f"covers/{lib}/series_{h}.jpg")
+        out.append(f"covers/series_{h}.jpg")
+    t = cover_tail(cover_image)
+    if t:
+        out.append(t)
+    return out
+
+
 def allowed(tail):
     return any(p.match(tail) for p in ALLOW_GET)
 

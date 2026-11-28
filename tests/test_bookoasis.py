@@ -24,6 +24,15 @@ def test_settings_and_rules():
     assert bookoasis.session_of("api/media/list", "type=adult&page=1") == "adult"
     assert bookoasis.session_of("api/media/stream", "db_type=adult&book_id=1") == "adult"
     assert bookoasis.session_of("api/media/list", "") == "general" and bookoasis.session_of("covers/a.jpg", "") == ""
+    # 표지 값 -> 주소 꼬리 (BookOasis getBookCoverSrc·BO3D와 같은 규칙)
+    assert bookoasis.cover_tail("a.jpg") == "covers/a.jpg" and bookoasis.cover_tail("/covers/x/a.webp?v=2") == "covers/x/a.webp"
+    assert bookoasis.cover_tail("covers\\x\\a.png") == "covers/x/a.png"
+    for bad in ("", "https://e/x.jpg", "/api/media/videos/1/cover", "covers/dir.v2/noext", "../a.jpg"):
+        assert bookoasis.cover_tail(bad) == "", bad
+    import hashlib
+    h = hashlib.md5("작품".encode()).hexdigest()
+    assert bookoasis.series_cover_tails("작품", 3, "a.jpg?v=1") == [f"covers/3/series_{h}.jpg", f"covers/series_{h}.jpg", "covers/a.jpg"]
+    assert bookoasis.series_cover_tails("", None, "") == []
     assert bookoasis.session_of("api/media/videos/1/cover", "") == "video"
     assert bookoasis.rewrite_playlist("#EXTM3U\n/api/media/videos/1/episodes/2/hls-segment/a.ts\n", "bo") == \
         "#EXTM3U\n/api/bo/bo/api/media/videos/1/episodes/2/hls-segment/a.ts\n"
@@ -110,7 +119,17 @@ def test_bookoasis_proxy(data):
         return web.Response(body=video, content_type="video/mp4")
 
     async def cover(request):
+        if "missing" in request.match_info["name"]:
+            return web.Response(status=404, text="없음")
         return web.Response(body=b"img:" + request.match_info["name"].encode(), content_type="image/webp")
+
+    import hashlib
+    series_md5 = hashlib.md5("작품".encode()).hexdigest()
+
+    async def lib_cover(request):   # 보관함 1에는 "작품"의 시리즈 대표 표지만 있다
+        if request.match_info["lib"] == "1" and request.match_info["name"] == f"series_{series_md5}.jpg":
+            return web.Response(body=b"lib-series", content_type="image/jpeg")
+        return web.Response(status=404, text="없음")
 
     async def progress(request):
         state["progress"].append((request.path, await request.json()))
@@ -123,6 +142,7 @@ def test_bookoasis_proxy(data):
         up.router.add_get("/api/media/list", need(listing))
         up.router.add_get("/api/media/videos/1/episodes/2/stream", need(stream))
         up.router.add_get("/covers/{name}", cover)
+        up.router.add_get("/covers/{lib}/{name}", lib_cover)
         up.router.add_post("/api/media/progress", need(progress))
         up.router.add_post("/api/media/videos/1/progress", need(progress))
         upstream = TestServer(up)
@@ -159,6 +179,13 @@ def test_bookoasis_proxy(data):
             assert "Safari" in state["ua"][-1] and "Safari" not in state["ua"][0]
             r = await c.get("/api/bo/bo/covers/%EA%B0%80%20(1).webp")
             assert await r.read() == "img:가 (1).webp".encode() and "max-age" in r.headers["Cache-Control"]
+            # 시리즈 표지: BookOasis·BO3D와 같은 순서 ({보관함}/series_{md5} -> series_{md5} -> 책 표지)
+            sc = lambda **q: c.get("/api/bo/bo/series-cover", params=q)   # noqa: E731
+            assert await (await sc(name="작품", lib="1", img="b.jpg")).read() == b"lib-series"
+            assert await (await sc(name="다른", lib="1", img="b.jpg")).read() == f"img:series_{hashlib.md5('다른'.encode()).hexdigest()}.jpg".encode()
+            assert await (await sc(name="", img="covers\\b c.jpg?v=3")).read() == b"img:b c.jpg"          # ?·\ 정리
+            assert (await sc(name="", img="missing.jpg")).status == 404
+            assert (await sc(name="", img="missing.jpg")).status == 404                                  # (기억해 둔 '없음')
 
             assert (await (await c.post("/api/bo/bo/progress", json={"kind": "book", "book_id": 7, "page_idx": 3, "total_pages": 10})).json())["success"]
             assert (await (await c.post("/api/bo/bo/progress", json={"kind": "video", "id": 1, "episode": 2, "time": 30})).json())["success"]

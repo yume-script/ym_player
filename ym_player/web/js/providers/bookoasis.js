@@ -37,8 +37,18 @@ export class BookOasisProvider {
         if (!c) return '';
         if (/^https?:\/\//.test(c)) return c;
         if (c.startsWith('/api/media/')) return `${this.base}${c}`;
-        c = c.replace(/^[/\\]+/, '').replace(/^covers[/\\]+/i, '');
-        return c && c.includes('.') ? `${this.base}/covers/${c.split('/').map(encodeURIComponent).join('/')}` : '';
+        // BookOasis 화면(getBookCoverSrc)·BO3D와 같은 규칙: 뒤의 ?v=… 는 떼고, \ 는 /로, 파일 이름에 확장자가 있어야
+        c = c.split(/[?#]/)[0].replace(/\\/g, '/').replace(/^\/+/, '').replace(/^covers\/+/i, '');
+        const name = c.split('/').pop();
+        return c && name.includes('.') && !c.split('/').includes('..') ? `${this.base}/covers/${c.split('/').map(encodeURIComponent).join('/')}` : '';
+    }
+
+    /** 책 시리즈 표지: 서버가 BookOasis·BO3D와 같은 순서로 찾는다 ({보관함}/series_{md5}.jpg -> series_{md5}.jpg -> 책 표지) */
+    seriesCover(name, lib, coverImage) {
+        if (!name) return this.cover(coverImage);
+        const q = new URLSearchParams({ name, img: coverImage || '' });
+        if (lib !== undefined && lib !== null && lib !== '' && lib !== 'all') q.set('lib', String(lib));
+        return `${this.base}/series-cover?${q}`;
     }
 
     _route(id) { return `#/item/${this.id}/${encodeURIComponent(id)}`; }
@@ -46,7 +56,8 @@ export class BookOasisProvider {
     seriesItem(sess, s) {
         const id = `s:${sess}:${s.library_id ?? 'all'}:${s.representative_book_id ?? ''}:${s.series_key || s.series_name || ''}`;
         const n = sess === 'general' || sess === 'adult' ? s.book_count : (s.total_tracks || s.book_count);
-        const art = this.cover(s.cover_image)
+        const isBook = sess === 'general' || sess === 'adult';
+        const art = (isBook ? this.seriesCover(s.series_name, s.library_id, s.cover_image) : this.cover(s.cover_image))
             || (sess === 'video' && s.representative_book_id ? `${this.base}/api/media/videos/${s.representative_book_id}/cover` : '')
             || (sess === 'audiobook' && s.representative_book_id ? `${this.base}/api/media/audiobooks/${s.representative_book_id}/cover` : '');
         return {
@@ -120,7 +131,8 @@ export class BookOasisProvider {
         this._seen.set(id, { ...b, sess, series });
         const fmt = String(b.file_format || '').toLowerCase();
         const total = b.total_pages || 0;
-        const art = this.cover(b.cover_image);
+        // 책 표지가 없으면 그 시리즈 표지 (BO3D처럼)
+        const art = this.cover(b.cover_image) || (b.series_name ? this.seriesCover(b.series_name, b.library_id, '') : '');
         return {
             pid: this.id, id, type: 'book', playable: true, title: b.title || series,
             subtitle: [fmt.toUpperCase(), total ? `${total}쪽` : ''].filter(Boolean).join(' · '),
@@ -176,7 +188,7 @@ export class BookOasisProvider {
         const title = this._title(meta) || key;
         const books = d.books || [];
         const isBook = sess === 'general' || sess === 'adult';
-        const art = this.cover(meta.cover_image)
+        const art = (isBook ? this.seriesCover(meta.series_name || key, lib, meta.cover_image) : this.cover(meta.cover_image))
             || (sess === 'video' && rep ? `${this.base}/api/media/videos/${rep}/cover` : '')
             || (sess === 'audiobook' && rep ? `${this.base}/api/media/audiobooks/${rep}/cover` : '');
         const children = isBook ? books.map((b) => this.bookItem(sess, b, title))
